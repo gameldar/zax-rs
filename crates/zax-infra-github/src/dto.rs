@@ -1,5 +1,20 @@
-//! GitHub's JSON, and the mapping into domain types. Every field is optional
-//! here so a shape change degrades a row rather than failing the pane.
+//! GitHub's JSON, and the mapping into domain types.
+//!
+//! Optional fields are used where an absent value has a sensible reading: a
+//! missing title shows as blank, a missing rollup means no checks. They are NOT
+//! a general shape-change defence, and it is worth being precise about that,
+//! because the reassuring version of this sentence hid a real bug.
+//!
+//! A pull request that arrives without the fields identifying it is reported as
+//! an error, not skipped. Skipping is reserved for a node that is not a pull
+//! request at all, which `search(type: ISSUE)` returns as `{}`. The difference
+//! matters: a dropped row would take a pull request out of the review queue
+//! with nothing to say it had gone, and a review queue that is quietly short is
+//! the one failure this pane must never have.
+//!
+//! Nested fields that GitHub's schema declares non-nullable are typed
+//! non-optional, so a rename there fails the whole response. That is deliberate.
+//! Showing a confidently wrong queue is worse than showing an error.
 
 use std::time::SystemTime;
 
@@ -88,6 +103,27 @@ struct ThreadNode {
     is_resolved: bool,
 }
 
+impl PrNode {
+    /// Is this the `{}` a search returns for a node that is not a pull request?
+    ///
+    /// Every field absent means the inline fragment did not match. One field
+    /// absent means a pull request came back in a shape we did not expect, and
+    /// the two must not be confused: the first is routine, the second is a
+    /// pull request about to disappear from somebody's review queue.
+    fn is_empty_node(&self) -> bool {
+        self.number.is_none()
+            && self.title.is_none()
+            && self.url.is_none()
+            && self.is_draft.is_none()
+            && self.created_at.is_none()
+            && self.mergeable.is_none()
+            && self.review_decision.is_none()
+            && self.repository.is_none()
+            && self.commits.is_none()
+            && self.review_threads.is_none()
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct PrHeadJson {
     number: u32,
@@ -133,14 +169,17 @@ where
 
 pub fn parse_search_response(json: &str) -> Result<Vec<PullRequest>, String> {
     let data: SearchData = unwrap_envelope(json)?;
-    // A node that is not a pull request comes back as `{}` because the inline
-    // fragment did not match. Skip it.
-    Ok(data
-        .search
+    data.search
         .nodes
         .into_iter()
-        .filter_map(to_pull_request)
-        .collect())
+        // `{}` is a node that is not a pull request: the inline fragment did
+        // not match and nothing at all came back. That one is skipped.
+        .filter(|node| !node.is_empty_node())
+        // Everything else presented itself as a pull request, so a field it
+        // should have carried is a shape change worth reporting rather than a
+        // row to drop quietly.
+        .map(to_pull_request)
+        .collect()
 }
 
 pub fn parse_branch_status_response(json: &str) -> Result<Option<BranchStatus>, String> {
@@ -160,9 +199,7 @@ pub fn parse_branch_status_response(json: &str) -> Result<Option<BranchStatus>, 
     let review = review_state(node.review_decision.as_deref());
     let mergeable = mergeable_state(node.mergeable.as_deref());
 
-    let Some(pr) = to_pull_request(node) else {
-        return Err("pull request node was missing required fields".to_owned());
-    };
+    let pr = to_pull_request(node)?;
 
     Ok(Some(BranchStatus {
         pr,
@@ -192,11 +229,17 @@ pub fn parse_pr_head_response(json: &str) -> Result<PullRequestHead, String> {
     })
 }
 
-fn to_pull_request(node: PrNode) -> Option<PullRequest> {
-    let repo = RepoSlug::parse(&node.repository?.name_with_owner).ok()?;
-    Some(PullRequest {
+fn to_pull_request(node: PrNode) -> Result<PullRequest, String> {
+    let repository = node
+        .repository
+        .ok_or("a pull request arrived with no repository")?;
+    let repo = RepoSlug::parse(&repository.name_with_owner).map_err(|e| e.to_string())?;
+
+    Ok(PullRequest {
         repo,
-        number: node.number?,
+        number: node.number.ok_or("a pull request arrived with no number")?,
+        // These have a sensible absent reading, so they degrade rather than
+        // fail: a blank title is legible, a missing rollup means no checks.
         title: node.title.unwrap_or_default(),
         url: node.url.unwrap_or_default(),
         is_draft: node.is_draft.unwrap_or(false),

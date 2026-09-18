@@ -59,6 +59,37 @@ fn a_pr_head_response_names_the_fork_it_came_from() {
 }
 
 #[test]
+fn a_pull_request_missing_a_field_is_an_error_not_a_disappearance() {
+    // A node that is not a pull request is `{}` and is skipped. A node that IS
+    // one but lacks an identifying field must not take the same path, or a real
+    // pull request leaves the review queue with nothing to say it has gone.
+    let json = include_str!("fixtures/search_prs.json");
+
+    let without_repo = json.replacen(
+        r#""repository": { "nameWithOwner": "acme/omega" },"#,
+        "",
+        1,
+    );
+    assert_ne!(
+        without_repo, json,
+        "the fixture shape changed; fix this test"
+    );
+    let err = dto::parse_search_response(&without_repo).unwrap_err();
+    assert!(err.contains("repository"), "got: {err}");
+
+    let without_number = json.replacen(r#""number": 1963,"#, "", 1);
+    assert_ne!(
+        without_number, json,
+        "the fixture shape changed; fix this test"
+    );
+    let err = dto::parse_search_response(&without_number).unwrap_err();
+    assert!(err.contains("number"), "got: {err}");
+
+    // And the genuine non-pull-request node is still skipped, not reported.
+    assert_eq!(dto::parse_search_response(json).unwrap().len(), 3);
+}
+
+#[test]
 fn a_graphql_errors_payload_is_reported_rather_than_parsed_as_empty() {
     let json = r#"{"errors":[{"message":"Could not resolve to a Repository"}]}"#;
     let err = dto::parse_search_response(json).unwrap_err();

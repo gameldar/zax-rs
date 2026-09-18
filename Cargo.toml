@@ -1,0 +1,34 @@
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.97"
+license = "MIT"
+
+[workspace.dependencies]
+zax-domain = { path = "crates/zax-domain" }
+zax-app = { path = "crates/zax-app" }
+zax-config = { path = "crates/zax-config" }
+zax-exec = { path = "crates/zax-exec" }
+zax-infra-git = { path = "crates/zax-infra-git" }
+zax-infra-github = { path = "crates/zax-infra-github" }
+zax-infra-tmux = { path = "crates/zax-infra-tmux" }
+zax-tui = { path = "crates/zax-tui" }
+
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+ratatui = "0.29"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tempfile = "3"
+thiserror = "2"
+time = { version = "0.3", features = ["parsing"] }
+toml = "0.9"
+
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+indexing_slicing = "deny"

@@ -174,6 +174,12 @@ fn is_short_description(s: &str) -> bool {
 fn validate_ref_syntax(raw: &str) -> Result<(), BranchNameError> {
     let bad = || BranchNameError::NotARef(raw.to_owned());
 
+    // git itself refuses a ref beginning with `-`: such a name would land in
+    // an argv position where git (or anything else invoked the same way)
+    // reads it as an option rather than as a ref, e.g. `--upload-pack=evil`.
+    if raw.starts_with('-') {
+        return Err(bad());
+    }
     if raw == "@" || raw.contains("..") || raw.contains("@{") {
         return Err(bad());
     }
@@ -297,6 +303,28 @@ mod tests {
     fn local_branches_are_a_single_component() {
         let b = BranchName::parse_local("OMEGA-1963-stamp").unwrap();
         assert_eq!(b.components().count(), 1);
+    }
+
+    #[test]
+    fn a_branch_may_not_begin_with_a_dash() {
+        // git itself refuses these, and they would land in an argv position
+        // where git reads them as options rather than as a ref.
+        for bad in ["-foo", "-", "--force", "--upload-pack=evil"] {
+            assert!(
+                matches!(
+                    BranchName::parse_foreign(bad),
+                    Err(BranchNameError::NotARef(_))
+                ),
+                "expected `{bad}` to be rejected"
+            );
+            assert!(
+                BranchName::parse_local(bad).is_err(),
+                "expected `{bad}` to be rejected"
+            );
+        }
+        // A dash anywhere else is ordinary and must stay legal.
+        assert!(BranchName::parse_foreign("a-b").is_ok());
+        assert!(BranchName::parse_local("OMEGA-1-topic").is_ok());
     }
 
     #[test]

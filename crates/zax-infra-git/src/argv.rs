@@ -37,6 +37,11 @@ pub fn branch_exists(branch: &BranchName) -> Vec<String> {
     ]
 }
 
+/// Note the `--`. `base` is whatever the user typed after `--from` and is the
+/// one value reaching git here that nothing validates. Without the separator
+/// git reads `--from --force` as the `--force` FLAG and silently creates the
+/// worktree at HEAD instead, discarding the base the user asked for: wrong
+/// behaviour with no error at all, which is worse than a refusal.
 pub fn add_worktree_new_branch(
     path: &Path,
     branch: &BranchName,
@@ -47,6 +52,7 @@ pub fn add_worktree_new_branch(
         s("add"),
         s("-b"),
         s(branch.as_str()),
+        s("--"),
         p(path),
     ];
     if let Some(base) = base {
@@ -139,6 +145,7 @@ mod tests {
                 "add",
                 "-b",
                 "OMEGA-1963-stamp",
+                "--",
                 "/Users/me/src/worktrees/acme/OMEGA-1963-stamp",
             ]
         );
@@ -158,9 +165,25 @@ mod tests {
                 "add",
                 "-b",
                 "OMEGA-1963-stamp",
+                "--",
                 "/w/OMEGA-1963-stamp",
                 "origin/main"
             ]
+        );
+    }
+
+    #[test]
+    fn a_base_that_looks_like_a_flag_stays_after_the_separator() {
+        // `--from` is unvalidated, and without the `--` git reads a base of
+        // `--force` as the flag and silently builds the worktree at HEAD.
+        let branch = BranchName::parse_local("OMEGA-1963-stamp").unwrap();
+        let argv =
+            add_worktree_new_branch(Path::new("/w/OMEGA-1963-stamp"), &branch, Some("--force"));
+        let separator = argv.iter().position(|a| a == "--").expect("a separator");
+        let base = argv.iter().position(|a| a == "--force").expect("the base");
+        assert!(
+            separator < base,
+            "the base must follow the separator: {argv:?}"
         );
     }
 

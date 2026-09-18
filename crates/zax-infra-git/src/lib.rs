@@ -282,6 +282,7 @@ mod tests {
                 "add",
                 "-b",
                 "OMEGA-1963-stamp",
+                "--",
                 "/Users/me/src/worktrees/acme/OMEGA-1963-stamp",
                 "origin/main",
             ]

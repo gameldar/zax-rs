@@ -9,6 +9,14 @@ use zax_domain::BranchName;
 pub fn parse_worktree_list(text: &str) -> Result<Vec<WorktreeEntry>, String> {
     let mut entries = Vec::new();
 
+    // Normalise line endings before splitting on the blank line. `\r\n\r\n`
+    // contains no `\n\n`, so on CRLF input the raw split would return the whole
+    // listing as one stanza and quietly report it as a single worktree carrying
+    // whichever flags happened to appear anywhere in the output. Silent nonsense
+    // is worse than an error, and this costs one allocation on a listing that is
+    // a handful of lines long.
+    let text = text.replace("\r\n", "\n");
+
     for (index, stanza) in text.split("\n\n").enumerate() {
         if stanza.trim().is_empty() {
             continue;
@@ -41,7 +49,10 @@ pub fn parse_worktree_list(text: &str) -> Result<Vec<WorktreeEntry>, String> {
         entries.push(WorktreeEntry {
             path,
             branch,
-            // git always lists the main working tree first.
+            // Documented behaviour, not an inference: git-worktree(1) says
+            // "The main worktree is listed first, followed by each of the
+            // linked worktrees." The order of the linked ones is not specified
+            // and nothing here depends on it.
             is_main: index == 0,
             is_detached: detached || bare,
         });
@@ -117,6 +128,16 @@ detached
         let entries = parse_worktree_list("worktree /srv/git/acme.git\nbare\n\n").unwrap();
         assert!(entries[0].is_main);
         assert_eq!(entries[0].branch, None);
+    }
+
+    #[test]
+    fn crlf_output_parses_the_same_as_lf() {
+        // A raw split on a blank line finds none in CRLF text, which would
+        // collapse the whole listing into one entry reporting the wrong flags.
+        let lf = parse_worktree_list(SAMPLE).unwrap();
+        let crlf = parse_worktree_list(&SAMPLE.replace('\n', "\r\n")).unwrap();
+        assert_eq!(lf, crlf);
+        assert_eq!(crlf.len(), 3);
     }
 
     #[test]

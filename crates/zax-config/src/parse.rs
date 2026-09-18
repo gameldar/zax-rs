@@ -122,24 +122,32 @@ fn default_panes() -> Result<Vec<PaneSpec>, ConfigError> {
     ])
 }
 
+/// Turn one `[[layout.panes]]` table into a pane.
+///
+/// serde has already refused any field this file does not know about. What is
+/// left is whether the fields present suit the `kind` that was asked for, which
+/// serde cannot express for a flat table, and which is checked here so the
+/// error can name both the kind and the field.
 fn pane_from_raw(raw: RawPane) -> Result<PaneSpec, ConfigError> {
-    match raw {
-        RawPane::Builtin { name, size } => Ok(PaneSpec {
-            kind: PaneKind::Builtin(BuiltinPane::parse(&name).map_err(|e| {
-                ConfigError::Invalid {
-                    field: "layout.panes.name",
-                    detail: e.to_string(),
-                }
-            })?),
-            size: parse_size(size)?,
-        }),
-        RawPane::Exec {
-            title,
-            every,
-            command,
-            size,
-        } => Ok(PaneSpec {
-            kind: PaneKind::Exec {
+    let size = parse_size(raw.size)?;
+
+    let kind = match raw.kind.as_str() {
+        "builtin" => {
+            let name = require(raw.name, "builtin", "name")?;
+            reject(raw.title.is_some(), "builtin", "title")?;
+            reject(raw.every.is_some(), "builtin", "every")?;
+            reject(raw.command.is_some(), "builtin", "command")?;
+            PaneKind::Builtin(BuiltinPane::parse(&name).map_err(|e| ConfigError::Invalid {
+                field: "layout.panes.name",
+                detail: e.to_string(),
+            })?)
+        }
+        "exec" => {
+            let title = require(raw.title, "exec", "title")?;
+            let every = require(raw.every, "exec", "every")?;
+            let command = require(raw.command, "exec", "command")?;
+            reject(raw.name.is_some(), "exec", "name")?;
+            PaneKind::Exec {
                 title,
                 every: parse_duration(&every).map_err(|e| ConfigError::Invalid {
                     field: "layout.panes.every",
@@ -149,18 +157,35 @@ fn pane_from_raw(raw: RawPane) -> Result<PaneSpec, ConfigError> {
                     field: "layout.panes.command",
                     detail: e.to_string(),
                 })?,
-            },
-            size: parse_size(size)?,
-        }),
-        RawPane::Raw { command, size } => Ok(PaneSpec {
-            kind: PaneKind::Raw {
+            }
+        }
+        "raw" => {
+            let command = require(raw.command, "raw", "command")?;
+            reject(raw.name.is_some(), "raw", "name")?;
+            reject(raw.title.is_some(), "raw", "title")?;
+            reject(raw.every.is_some(), "raw", "every")?;
+            PaneKind::Raw {
                 command: Command::new(command).map_err(|e| ConfigError::Invalid {
                     field: "layout.panes.command",
                     detail: e.to_string(),
                 })?,
-            },
-            size: parse_size(size)?,
-        }),
+            }
+        }
+        other => return Err(ConfigError::UnknownPaneKind(other.to_owned())),
+    };
+
+    Ok(PaneSpec { kind, size })
+}
+
+fn require<T>(value: Option<T>, kind: &'static str, field: &'static str) -> Result<T, ConfigError> {
+    value.ok_or(ConfigError::MissingPaneField { kind, field })
+}
+
+fn reject(present: bool, kind: &'static str, field: &'static str) -> Result<(), ConfigError> {
+    if present {
+        Err(ConfigError::UnexpectedPaneField { kind, field })
+    } else {
+        Ok(())
     }
 }
 
@@ -297,6 +322,69 @@ hooks = ["direnv allow", "bundle install"]
             toml::from_str("[[layout.panes]]\nkind = \"builtin\"\nname = \"worktrees\"").unwrap();
         let err = from_raw(raw, "/home/me").unwrap_err();
         assert!(err.to_string().contains("prs-for-review"), "got: {err}");
+    }
+
+    #[test]
+    fn a_mistyped_pane_field_is_an_error_not_a_silent_default() {
+        // This is why the pane table is flat. As an internally tagged enum,
+        // serde accepted `siz` and the pane quietly took a default size, in the
+        // one table people hand-edit most.
+        let err = toml::from_str::<RawConfig>(
+            "[[layout.panes]]\nkind = \"builtin\"\nname = \"prs-for-review\"\nsiz = \"30%\"",
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("siz"), "got: {err}");
+    }
+
+    #[test]
+    fn an_unrelated_key_in_a_pane_table_is_an_error() {
+        let err = toml::from_str::<RawConfig>(
+            "[[layout.panes]]\nkind = \"raw\"\ncommand = [\"lazygit\"]\nnonsense = 1",
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("nonsense"), "got: {err}");
+    }
+
+    #[test]
+    fn a_pane_carrying_a_field_its_kind_does_not_use_is_rejected() {
+        let raw: RawConfig = toml::from_str(
+            "[[layout.panes]]\nkind = \"builtin\"\nname = \"prs-for-review\"\n\
+             command = [\"lazygit\"]",
+        )
+        .unwrap();
+        assert!(matches!(
+            from_raw(raw, "/home/me"),
+            Err(ConfigError::UnexpectedPaneField {
+                kind: "builtin",
+                field: "command"
+            })
+        ));
+    }
+
+    #[test]
+    fn a_pane_missing_a_field_its_kind_needs_is_rejected() {
+        let raw: RawConfig = toml::from_str(
+            "[[layout.panes]]\nkind = \"exec\"\ntitle = \"Deploys\"\ncommand = [\"true\"]",
+        )
+        .unwrap();
+        assert!(matches!(
+            from_raw(raw, "/home/me"),
+            Err(ConfigError::MissingPaneField {
+                kind: "exec",
+                field: "every"
+            })
+        ));
+    }
+
+    #[test]
+    fn an_unknown_pane_kind_lists_the_kinds_that_exist() {
+        let raw: RawConfig =
+            toml::from_str("[[layout.panes]]\nkind = \"buitin\"\nname = \"x\"").unwrap();
+        let err = from_raw(raw, "/home/me").unwrap_err();
+        assert!(
+            err.to_string().contains("builtin, exec or raw"),
+            "got: {err}"
+        );
     }
 
     #[test]

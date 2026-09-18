@@ -10,4 +10,16 @@ pub enum ConfigError {
     Parse { path: PathBuf, detail: String },
     #[error("invalid `{field}`: {detail}")]
     Invalid { field: &'static str, detail: String },
+    #[error("`{0}` is not a pane kind; write builtin, exec or raw")]
+    UnknownPaneKind(String),
+    #[error("a `{kind}` pane needs a `{field}`")]
+    MissingPaneField {
+        kind: &'static str,
+        field: &'static str,
+    },
+    #[error("a `{kind}` pane has no `{field}`")]
+    UnexpectedPaneField {
+        kind: &'static str,
+        field: &'static str,
+    },
 }

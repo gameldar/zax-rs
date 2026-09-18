@@ -66,7 +66,7 @@ fn merge_tmux(base: Option<RawTmux>, over: Option<RawTmux>) -> Option<RawTmux> {
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)]
-    use crate::raw::{RawConfig, RawPane};
+    use crate::raw::RawConfig;
 
     use super::*;
 
@@ -109,7 +109,7 @@ mod tests {
         ]);
         let panes = merged.layout.unwrap().panes.unwrap();
         assert_eq!(panes.len(), 1);
-        assert!(matches!(panes[0], RawPane::Raw { .. }));
+        assert_eq!(panes[0].kind, "raw");
     }
 
     #[test]

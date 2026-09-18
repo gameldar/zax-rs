@@ -26,25 +26,27 @@ pub struct RawLayout {
     pub panes: Option<Vec<RawPane>>,
 }
 
-// `deny_unknown_fields` is not supported on an internally tagged enum, so a typo
-// inside a pane table is caught by the `kind` match rather than by serde.
+/// One `[[layout.panes]]` table, flat rather than an enum.
+///
+/// The obvious shape here is an internally tagged enum keyed on `kind`, and it
+/// was the first attempt. serde cannot apply `deny_unknown_fields` to one, and
+/// the consequence is not academic: `siz = "30%"` parsed happily and the pane
+/// silently took a default size, in the one table people hand-edit most. Every
+/// other typo in this file is an error naming the key, so that gap would have
+/// been the single place a mistyped setting vanished without a word.
+///
+/// Flat, every field optional, `deny_unknown_fields` on. Which fields a given
+/// `kind` actually requires, and which it must not carry, is then checked in
+/// `parse::pane_from_raw`, where the error can say what was wrong.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(tag = "kind", rename_all = "lowercase")]
-pub enum RawPane {
-    Builtin {
-        name: String,
-        size: Option<String>,
-    },
-    Exec {
-        title: String,
-        every: String,
-        command: Vec<String>,
-        size: Option<String>,
-    },
-    Raw {
-        command: Vec<String>,
-        size: Option<String>,
-    },
+#[serde(deny_unknown_fields)]
+pub struct RawPane {
+    pub kind: String,
+    pub name: Option<String>,
+    pub title: Option<String>,
+    pub every: Option<String>,
+    pub command: Option<Vec<String>>,
+    pub size: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]

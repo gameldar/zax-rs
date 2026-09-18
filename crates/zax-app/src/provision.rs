@@ -116,13 +116,20 @@ pub fn apply<F: FileSystem, P: ProcessRunner>(
     Ok(report)
 }
 
-/// The human-readable form of a hook, for an error message. Hooks are built by
-/// `Command::shell`, so the script is the last argument.
+/// The human-readable form of a hook, for an error message.
+///
+/// Hooks that came from configuration are built by `Command::shell` and look
+/// like `["sh", "-c", script]`, where the script is what the user actually
+/// wrote and is the only useful thing to show. But `Provisioning::hooks` is a
+/// `Vec<Command>` and nothing in the type system says a hook must have that
+/// shape, so anything else is rendered in full rather than by guessing which
+/// argument is the interesting one. Taking the last argument unconditionally
+/// reported `bundle install --quiet` as the bare flag `--quiet`.
 fn script_of(hook: &Command) -> String {
-    hook.argv()
-        .last()
-        .cloned()
-        .unwrap_or_else(|| hook.program().to_owned())
+    match hook.argv() {
+        [program, flag, script] if program == "sh" && flag == "-c" => script.clone(),
+        argv => argv.join(" "),
+    }
 }
 
 #[cfg(test)]
@@ -289,6 +296,80 @@ mod tests {
         assert_eq!(report.hooks_run, 0);
         assert_eq!(report.copied.len(), 1);
         assert!(runner.calls().is_empty());
+    }
+
+    #[test]
+    fn files_are_copied_before_any_hook_runs() {
+        // A hook such as `direnv allow` or `bundle install` may need a file that
+        // was just copied, so the order is part of the contract. Nothing else in
+        // this suite would fail if the two loops were swapped.
+        let fs = FakeFs::with_existing(["/Users/me/src/acme/.env"]);
+        // Fail the very first hook. If hooks ran before copying, `apply` would
+        // return here having copied nothing, which is what makes this assert
+        // the ordering rather than merely observe it.
+        let runner = FakeRunner::failing_at(0, "no direnv here");
+        let plan = Provisioning {
+            copy: vec![PathBuf::from(".env")],
+            hooks: vec![Command::shell("direnv allow").unwrap()],
+            run_hooks: true,
+        };
+
+        let err = apply(
+            &fs,
+            &runner,
+            Path::new("/Users/me/src/acme"),
+            &target(),
+            &branch(),
+            Path::new("/Users/me/src/acme"),
+            &plan,
+        )
+        .unwrap_err();
+
+        assert!(
+            matches!(err, ProvisionError::Hook { index: 0, .. }),
+            "got: {err:?}"
+        );
+        assert_eq!(
+            fs.copies().len(),
+            1,
+            "the file must already be copied when the first hook runs"
+        );
+    }
+
+    #[test]
+    fn an_error_names_a_hook_that_was_not_built_from_a_shell_script() {
+        // `script_of` must not assume every hook is `sh -c <script>`; taking the
+        // last argument blindly once reported this hook as `--quiet`.
+        let fs = FakeFs::default();
+        let runner = FakeRunner::failing_at(0, "no bundler here");
+        let plan = Provisioning {
+            copy: vec![],
+            hooks: vec![Command::new(vec![
+                "bundle".to_owned(),
+                "install".to_owned(),
+                "--quiet".to_owned(),
+            ])
+            .unwrap()],
+            run_hooks: true,
+        };
+
+        let err = apply(
+            &fs,
+            &runner,
+            Path::new("/Users/me/src/acme"),
+            &target(),
+            &branch(),
+            Path::new("/Users/me/src/acme"),
+            &plan,
+        )
+        .unwrap_err();
+
+        match err {
+            ProvisionError::Hook { ref script, .. } => {
+                assert_eq!(script, "bundle install --quiet");
+            }
+            other => panic!("expected a hook failure, got {other:?}"),
+        }
     }
 
     #[test]

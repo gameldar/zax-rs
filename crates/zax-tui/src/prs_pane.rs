@@ -323,6 +323,32 @@ mod tests {
     }
 
     #[test]
+    fn an_unfocused_pane_does_not_claim_to_hold_the_cursor() {
+        // A reversed row reads as "your cursor is here". Only the focused pane
+        // may say that, or every pane says it at once.
+        let mut pane = loaded();
+        pane.set_focused(false);
+        let unfocused = draw(&pane, t(100));
+        assert!(
+            !reversed_cells(&unfocused),
+            "nothing may be highlighted while the pane is not focused"
+        );
+
+        pane.set_focused(true);
+        assert!(
+            reversed_cells(&draw(&pane, t(100))),
+            "the selected row is highlighted when the pane is focused"
+        );
+    }
+
+    /// Does anything on screen carry the reversed attribute?
+    fn reversed_cells(buffer: &Buffer) -> bool {
+        (0..buffer.area.height).any(|y| {
+            (0..buffer.area.width).any(|x| buffer[(x, y)].modifier.contains(Modifier::REVERSED))
+        })
+    }
+
+    #[test]
     fn an_empty_queue_says_so_rather_than_showing_nothing() {
         let mut pane = PrsForReviewPane::new();
         pane.apply(Ok(vec![]), t(100));

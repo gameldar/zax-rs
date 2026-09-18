@@ -136,8 +136,16 @@ macro_rules! pane_loop {
                             }
                         }
                     },
-                    // Refreshing on focus is what the spec asks for.
-                    Event::FocusGained => due = Instant::now(),
+                    // Refreshing on focus is what the spec asks for. The flag
+                    // has to be cleared again, or every pane draws as the
+                    // focused one for the rest of the session: all headers
+                    // bold at once, and a reversed "selected" row in
+                    // prs-for-review while the cursor is in the agent pane.
+                    Event::FocusGained => {
+                        pane.set_focused(true);
+                        due = Instant::now();
+                    }
+                    Event::FocusLost => pane.set_focused(false),
                     _ => {}
                 }
             }

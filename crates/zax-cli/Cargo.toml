@@ -1,0 +1,29 @@
+[package]
+name = "zax-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "zax"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+ratatui.workspace = true
+zax-app.workspace = true
+zax-config.workspace = true
+zax-domain.workspace = true
+zax-exec.workspace = true
+zax-infra-git.workspace = true
+zax-infra-github.workspace = true
+zax-infra-tmux.workspace = true
+zax-tui.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

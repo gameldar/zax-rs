@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+use unicode_width::UnicodeWidthStr;
 
 const MINUTE: u64 = 60;
 const HOUR: u64 = 60 * MINUTE;
@@ -25,6 +25,11 @@ pub fn format_age(age: Duration) -> String {
     }
 }
 
+/// Flatten anything that is not printable on a single line into spaces.
+///
+/// Two reasons, and the second is the one that bites. A pane header is one
+/// line, while an error from `gh` or `kubectl` is frequently several, so a
+/// newline in a header is a broken layout however it is measured. And
 /// `unicode-width` scores a control character one column when it measures a
 /// whole string but refuses to score it at all on its own, so a truncation loop
 /// that walks characters and a fast path that measures the string disagree
@@ -67,18 +72,33 @@ pub fn truncate(text: &str, width: usize) -> String {
 
     // One column goes to the ellipsis, which is itself one column wide.
     let budget = width.saturating_sub(1);
+
+    // Grown one character at a time and measured WITH THE SAME FUNCTION that
+    // decided the text did not fit. Summing per-character widths instead was
+    // wrong twice over, for two unrelated character classes, because no
+    // per-character total reproduces a string measurement: a control character
+    // scores nothing alone and one column in a string, and a base character
+    // followed by a variation selector scores one alone and two together, which
+    // is how `❤️` overflowed. Both were the same defect - two functions
+    // disagreeing - and measuring one way makes that disagreement impossible
+    // rather than merely absent for the classes anyone has thought of.
+    //
+    // This measures the accumulated string once per character. The strings are
+    // a pane row wide, so the cost is irrelevant and correctness is not.
     let mut out = String::new();
-    let mut used = 0;
     for c in text.chars() {
-        let advance = UnicodeWidthChar::width(c).unwrap_or(0);
-        if used + advance > budget {
+        out.push(c);
+        if display_width(&out) > budget {
+            out.pop();
             break;
         }
-        out.push(c);
-        used += advance;
     }
-    // A two-column character that did not fit can leave one column spare.
-    for _ in used..budget {
+
+    // Cutting between a base character and its variation selector leaves the
+    // base in its text presentation, one column narrower. That is a change of
+    // glyph, not of width, and the alternative is grapheme segmentation and
+    // another dependency to avoid trimming one emoji slightly differently.
+    for _ in display_width(&out)..budget {
         out.push(' ');
     }
     out.push('\u{2026}');
@@ -120,6 +140,31 @@ mod tests {
     fn truncation_adds_an_ellipsis_within_the_budget() {
         assert_eq!(truncate("abcdefghij", 5), "abcd\u{2026}");
         assert_eq!(display_width(&truncate("abcdefghij", 5)), 5);
+    }
+
+    #[test]
+    fn an_emoji_with_a_variation_selector_cannot_overflow() {
+        // `❤️` is U+2764 followed by U+FE0F. The base scores one column on its
+        // own and the pair scores two, so any per-character total is wrong
+        // about it. Hearts and thumbs-up in pull request titles are ordinary.
+        let text = "AB\u{2764}\u{FE0F}CD";
+        for width in 1..=display_width(text) {
+            assert_eq!(
+                display_width(&truncate(text, width)),
+                width,
+                "width {width} produced {:?}",
+                truncate(text, width)
+            );
+        }
+        // And a row of them, where the error used to compound.
+        let hearts = "\u{2764}\u{FE0F}".repeat(10);
+        for width in 1..=20 {
+            assert_eq!(
+                display_width(&truncate(&hearts, width)),
+                width,
+                "width {width}"
+            );
+        }
     }
 
     #[test]

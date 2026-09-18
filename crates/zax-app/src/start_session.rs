@@ -75,27 +75,48 @@ impl<'a, M: Multiplexer, G: GitRepo> StartSession<'a, M, G> {
             return Ok(StartSessionOutcome::Attached(name));
         }
 
+        // A session that is only half built must not survive. It would satisfy
+        // `session_exists` on the next start, so every later invocation would
+        // take the attach branch above and silently hand the user a session
+        // missing its panes, with no error and no way to finish it.
+        if let Err(error) = self.build_layout(&name, &req) {
+            // Best effort, and its own failure is deliberately discarded: the
+            // session was created moments ago in this same call and holds
+            // nothing the user can have touched, so reporting a teardown
+            // problem would only bury the error that actually matters.
+            let _ = self.mux.kill_session(&name);
+            return Err(error);
+        }
+
+        // Past this point the layout is complete and the session is usable, so
+        // a failure is reported without tearing it down. Attaching is the step
+        // most likely to fail for reasons that say nothing about the session -
+        // no controlling terminal, most often - and the user can still reach it
+        // with a later `zax session start`.
+        self.mux.select_pane(&name, 0)?;
+        self.mux.attach(&name)?;
+        Ok(StartSessionOutcome::Created(name))
+    }
+
+    /// Create the session and everything around the agent pane.
+    fn build_layout(
+        &self,
+        name: &SessionName,
+        req: &StartSessionRequest,
+    ) -> Result<(), StartSessionError> {
         self.mux
-            .create_session(&name, &req.cwd, req.layout.agent())?;
+            .create_session(name, &req.cwd, req.layout.agent())?;
 
         for (index, pane) in req.layout.panes().iter().enumerate() {
             let command = pane_command(&req.zax_bin, &pane.kind)?;
             // Pane 0 is the agent. The first context pane splits it
             // horizontally; every later one stacks below its predecessor.
             let target_pane = u32::try_from(index).unwrap_or(u32::MAX);
-            self.mux.split_pane(
-                &name,
-                target_pane,
-                index == 0,
-                pane.size,
-                &req.cwd,
-                &command,
-            )?;
+            self.mux
+                .split_pane(name, target_pane, index == 0, pane.size, &req.cwd, &command)?;
         }
 
-        self.mux.select_pane(&name, 0)?;
-        self.mux.attach(&name)?;
-        Ok(StartSessionOutcome::Created(name))
+        Ok(())
     }
 }
 
@@ -171,6 +192,17 @@ mod tests {
         .unwrap()
     }
 
+    /// The session name these fakes derive. Never spelled out: this file tests
+    /// the call sequence, not how a name is built.
+    fn session_name(git: &FakeGitRepo) -> String {
+        zax_domain::SessionName::derive(
+            &git.root_repo_name().unwrap(),
+            &git.current_branch().unwrap().unwrap(),
+        )
+        .as_str()
+        .to_owned()
+    }
+
     fn request() -> StartSessionRequest {
         StartSessionRequest {
             cwd: PathBuf::from("/Users/me/src/worktrees/acme/OMEGA-1963-stamp"),
@@ -231,15 +263,7 @@ mod tests {
         let mux = FakeMultiplexer::default();
         let git = FakeGitRepo::new("/Users/me/src/acme", "OMEGA-1963-stamp");
         let cwd = PathBuf::from("/Users/me/src/worktrees/acme/OMEGA-1963-stamp");
-        // Derived, never hand-written. This test is about the call sequence, not
-        // about how a name is built, and `SessionName::derive` appends a
-        // fingerprint that a literal here would silently fall out of step with.
-        let name = zax_domain::SessionName::derive(
-            &git.root_repo_name().unwrap(),
-            &git.current_branch().unwrap().unwrap(),
-        )
-        .as_str()
-        .to_owned();
+        let name = session_name(&git);
 
         let outcome = StartSession::new(&mux, &git).run(request()).unwrap();
         assert!(matches!(outcome, StartSessionOutcome::Created(_)));
@@ -308,22 +332,92 @@ mod tests {
     fn a_layout_with_no_context_panes_still_creates_and_attaches() {
         let mux = FakeMultiplexer::default();
         let git = FakeGitRepo::new("/Users/me/src/acme", "OMEGA-1963-stamp");
+        let cwd = PathBuf::from("/Users/me/src/worktrees/acme/OMEGA-1963-stamp");
         let bare =
             LayoutSpec::new(Command::new(vec!["claude".to_owned()]).unwrap(), vec![]).unwrap();
+        let name = session_name(&git);
 
-        StartSession::new(&mux, &git)
+        let outcome = StartSession::new(&mux, &git)
             .run(StartSessionRequest {
                 layout: bare,
                 ..request()
             })
             .unwrap();
 
-        let kinds: Vec<_> = mux
-            .calls()
-            .into_iter()
-            .map(|c| matches!(c, MuxCall::SplitPane { .. }))
-            .collect();
-        assert_eq!(kinds, vec![false, false, false]);
+        // Assert the whole sequence, not just the absence of splits: reducing
+        // it to "did any split happen" cannot tell a wrong select index, a
+        // swapped select and attach, or a wrong cwd from a correct run.
+        assert_eq!(
+            outcome,
+            StartSessionOutcome::Created(zax_domain::SessionName::parse(&name).unwrap())
+        );
+        assert_eq!(
+            mux.calls(),
+            vec![
+                MuxCall::CreateSession {
+                    name: name.clone(),
+                    cwd,
+                    argv: vec!["claude".to_owned()],
+                },
+                MuxCall::SelectPane {
+                    name: name.clone(),
+                    index: 0
+                },
+                MuxCall::Attach { name },
+            ]
+        );
+    }
+
+    #[test]
+    fn a_session_that_cannot_be_finished_is_torn_down() {
+        // Call 0 creates the session, call 1 is the first split. Fail the
+        // second split, leaving a session with one context pane of three.
+        let mux = FakeMultiplexer::failing_at(2, "no space for a new pane");
+        let git = FakeGitRepo::new("/Users/me/src/acme", "OMEGA-1963-stamp");
+        let name = session_name(&git);
+
+        let error = StartSession::new(&mux, &git).run(request()).unwrap_err();
+        assert!(
+            matches!(error, StartSessionError::Port(_)),
+            "got: {error:?}"
+        );
+
+        assert!(
+            matches!(mux.calls().last(), Some(MuxCall::KillSession { .. })),
+            "the half-built session must be torn down: {:?}",
+            mux.calls()
+        );
+        assert!(
+            !mux.session_exists(&zax_domain::SessionName::parse(&name).unwrap())
+                .unwrap(),
+            "a surviving half-built session would be attached to forever after"
+        );
+    }
+
+    #[test]
+    fn a_complete_session_survives_a_failure_to_attach() {
+        // Six calls: create, three splits, select, attach. Fail the attach.
+        let mux = FakeMultiplexer::failing_at(5, "open terminal failed: not a terminal");
+        let git = FakeGitRepo::new("/Users/me/src/acme", "OMEGA-1963-stamp");
+        let name = session_name(&git);
+
+        let error = StartSession::new(&mux, &git).run(request()).unwrap_err();
+        assert!(
+            matches!(error, StartSessionError::Port(_)),
+            "got: {error:?}"
+        );
+
+        assert!(
+            !mux.calls()
+                .iter()
+                .any(|c| matches!(c, MuxCall::KillSession { .. })),
+            "a fully built session must not be destroyed over a failed attach"
+        );
+        assert!(
+            mux.session_exists(&zax_domain::SessionName::parse(&name).unwrap())
+                .unwrap(),
+            "the session is complete and the user can still reach it"
+        );
     }
 
     #[test]

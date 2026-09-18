@@ -46,18 +46,50 @@ pub enum MuxCall {
 pub struct FakeMultiplexer {
     calls: RefCell<Vec<MuxCall>>,
     sessions: RefCell<HashSet<String>>,
+    fail_at: Option<usize>,
+    failure: String,
 }
 
 impl FakeMultiplexer {
     pub fn with_sessions(names: impl IntoIterator<Item = SessionName>) -> Self {
         Self {
-            calls: RefCell::new(Vec::new()),
             sessions: RefCell::new(names.into_iter().map(|n| n.as_str().to_owned()).collect()),
+            ..Self::default()
+        }
+    }
+
+    /// Fail the call at `index`, counting every recorded call from zero, the
+    /// same way [`FakeRunner::failing_at`] does. The failing call is still
+    /// recorded, so a test can assert what was attempted before the failure.
+    pub fn failing_at(index: usize, message: &str) -> Self {
+        Self {
+            fail_at: Some(index),
+            failure: message.to_owned(),
+            ..Self::default()
         }
     }
 
     pub fn calls(&self) -> Vec<MuxCall> {
         self.calls.borrow().clone()
+    }
+
+    /// Call after recording. Borrows and drops in one statement, so it cannot
+    /// collide with the `borrow_mut` that recorded the call.
+    fn outcome_of_call(&self, index: usize) -> Result<(), PortError> {
+        if self.fail_at == Some(index) {
+            return Err(PortError::CommandFailed {
+                tool: "tmux",
+                status: 1,
+                stderr: self.failure.clone(),
+            });
+        }
+        Ok(())
+    }
+
+    fn record(&self, call: MuxCall) -> Result<(), PortError> {
+        let index = self.calls.borrow().len();
+        self.calls.borrow_mut().push(call);
+        self.outcome_of_call(index)
     }
 }
 
@@ -82,12 +114,11 @@ impl Multiplexer for FakeMultiplexer {
         command: &Command,
     ) -> Result<(), PortError> {
         self.sessions.borrow_mut().insert(name.as_str().to_owned());
-        self.calls.borrow_mut().push(MuxCall::CreateSession {
+        self.record(MuxCall::CreateSession {
             name: name.as_str().to_owned(),
             cwd: cwd.to_owned(),
             argv: command.argv().to_vec(),
-        });
-        Ok(())
+        })
     }
 
     fn split_pane(
@@ -99,38 +130,34 @@ impl Multiplexer for FakeMultiplexer {
         cwd: &Path,
         command: &Command,
     ) -> Result<(), PortError> {
-        self.calls.borrow_mut().push(MuxCall::SplitPane {
+        self.record(MuxCall::SplitPane {
             name: name.as_str().to_owned(),
             target_pane,
             horizontal,
             size: size.map(PaneSize::get),
             cwd: cwd.to_owned(),
             argv: command.argv().to_vec(),
-        });
-        Ok(())
+        })
     }
 
     fn select_pane(&self, name: &SessionName, index: u32) -> Result<(), PortError> {
-        self.calls.borrow_mut().push(MuxCall::SelectPane {
+        self.record(MuxCall::SelectPane {
             name: name.as_str().to_owned(),
             index,
-        });
-        Ok(())
+        })
     }
 
     fn attach(&self, name: &SessionName) -> Result<(), PortError> {
-        self.calls.borrow_mut().push(MuxCall::Attach {
+        self.record(MuxCall::Attach {
             name: name.as_str().to_owned(),
-        });
-        Ok(())
+        })
     }
 
     fn kill_session(&self, name: &SessionName) -> Result<(), PortError> {
         self.sessions.borrow_mut().remove(name.as_str());
-        self.calls.borrow_mut().push(MuxCall::KillSession {
+        self.record(MuxCall::KillSession {
             name: name.as_str().to_owned(),
-        });
-        Ok(())
+        })
     }
 
     fn probe(&self) -> Result<String, PortError> {

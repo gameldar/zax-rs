@@ -298,3 +298,20 @@ version = "0.1.0"
 dependencies = [
  "thiserror",
 ]
+
+[[package]]
+name = "zax-exec"
+version = "0.1.0"
+dependencies = [
+ "thiserror",
+]
+
+[[package]]
+name = "zax-infra-git"
+version = "0.1.0"
+dependencies = [
+ "tempfile",
+ "zax-app",
+ "zax-domain",
+ "zax-exec",
+]

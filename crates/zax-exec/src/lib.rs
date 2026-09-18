@@ -157,6 +157,56 @@ impl Exec for RecordingExec {
     }
 }
 
+/// Handing the terminal over to another program.
+///
+/// This is not `Exec`: attaching to a multiplexer needs the real terminal, not
+/// a captured pipe, and on success the current process ceases to exist.
+pub trait Handover {
+    /// Replace the current process. Returns only on failure.
+    fn handover(&self, program: &str, args: &[String]) -> Result<(), ExecError>;
+}
+
+pub struct SystemHandover;
+
+impl Handover for SystemHandover {
+    fn handover(&self, program: &str, args: &[String]) -> Result<(), ExecError> {
+        use std::os::unix::process::CommandExt;
+
+        // `exec` returns only if it failed.
+        let error = StdCommand::new(program).args(args).exec();
+        Err(if error.kind() == std::io::ErrorKind::NotFound {
+            ExecError::NotFound {
+                program: program.to_owned(),
+            }
+        } else {
+            ExecError::Io {
+                program: program.to_owned(),
+                detail: error.to_string(),
+            }
+        })
+    }
+}
+
+#[derive(Default)]
+pub struct RecordingHandover {
+    calls: RefCell<Vec<(String, Vec<String>)>>,
+}
+
+impl RecordingHandover {
+    pub fn calls(&self) -> Vec<(String, Vec<String>)> {
+        self.calls.borrow().clone()
+    }
+}
+
+impl Handover for RecordingHandover {
+    fn handover(&self, program: &str, args: &[String]) -> Result<(), ExecError> {
+        self.calls
+            .borrow_mut()
+            .push((program.to_owned(), args.to_vec()));
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)]
@@ -255,5 +305,28 @@ mod tests {
     fn the_recording_runner_errors_when_it_runs_out_of_responses() {
         let exec = RecordingExec::with_responses(vec![]);
         assert!(exec.exec("git", &[], None, &[]).is_err());
+    }
+
+    #[test]
+    fn the_recording_handover_remembers_what_it_was_asked_to_become() {
+        let handover = RecordingHandover::default();
+        handover
+            .handover("tmux", &["attach-session".to_owned(), "-t".to_owned()])
+            .unwrap();
+        assert_eq!(
+            handover.calls(),
+            vec![(
+                "tmux".to_owned(),
+                vec!["attach-session".to_owned(), "-t".to_owned()]
+            )]
+        );
+    }
+
+    #[test]
+    fn the_system_handover_reports_a_missing_program_rather_than_replacing_the_process() {
+        let err = SystemHandover
+            .handover("definitely-not-a-real-program-zax", &[])
+            .unwrap_err();
+        assert!(matches!(err, ExecError::NotFound { .. }));
     }
 }

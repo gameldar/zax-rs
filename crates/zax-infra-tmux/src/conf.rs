@@ -11,6 +11,14 @@ pub fn render(prefix: &str) -> String {
 
 /// Write `tmux.conf` into `dir`, replacing any previous one, and return its
 /// path. The caller picks a per-run or cache directory.
+///
+/// Rewriting this file does not change a running server. tmux reads `-f` only
+/// when it starts one, and every zax session shares the single `-L zax`
+/// socket, so the prefix is a property of that shared server: the first
+/// session to start it fixes the prefix for every repository until it exits.
+/// A later repository's `[tmux] prefix` is written here and has no effect
+/// until the server is restarted. That is the accepted cost of one socket,
+/// which is what keeps `zax session list` whole and sessions persistent.
 pub fn write_to(dir: &Path, prefix: &str) -> Result<PathBuf, std::io::Error> {
     std::fs::create_dir_all(dir)?;
     let path = dir.join("tmux.conf");

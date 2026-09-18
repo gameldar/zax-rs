@@ -78,6 +78,11 @@ pub fn resolve() -> Result<Resolved> {
 }
 
 /// A tmux adapter configured with the rendered conf for this repo's prefix.
+///
+/// The conf is rewritten on every command, but tmux consults `-f` only when it
+/// starts a server and every zax session shares one socket, so this repo's
+/// prefix only takes effect if this is the session that starts the server.
+/// The prefix is global to the zax server by design; see `conf::write_to`.
 pub fn tmux(config: &Config) -> Result<Tmux> {
     let conf_path = conf::write_to(&runtime_dir()?, &config.tmux.prefix)
         .context("could not write zax's tmux configuration")?;

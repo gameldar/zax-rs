@@ -13,7 +13,7 @@ use zax_domain::{CheckState, PullRequest};
 use crate::action::PaneAction;
 use crate::cache::Cached;
 use crate::chrome::{error_line, header_line, GLYPH_FAIL, GLYPH_NONE, GLYPH_PASS, GLYPH_PENDING};
-use crate::fmt::{format_age, truncate};
+use crate::fmt::{display_width, format_age, truncate};
 
 const TITLE: &str = "Review requests";
 
@@ -101,15 +101,34 @@ impl PrsForReviewPane {
     }
 
     fn row(&self, pr: &PullRequest, selected: bool, width: u16, now: SystemTime) -> Line<'static> {
-        let reference = pr.short_ref();
         let age = format_age(pr.age(now));
         let check = check_glyph(pr.checks).to_owned();
         let draft = if pr.is_draft { " draft" } else { "" };
 
-        // Everything but the title is fixed width, so the title absorbs the rest.
-        // The 4 is the glyph column plus the three single-space separators the
-        // spans below emit - keep the two in step if you add or drop a span.
-        let fixed = reference.chars().count() + age.chars().count() + draft.chars().count() + 4;
+        // What a row cannot do without: the check glyph, the age, the draft
+        // flag and the three separators between the spans below.
+        let essential = display_width(&check) + display_width(draft) + display_width(&age) + 3;
+
+        // The reference shrinks too, not just the title. A repository name may
+        // be wide and long, and a context pane is routinely narrow - the
+        // default layout gives this one 30% of the window, which is 24 columns
+        // on an 80-column terminal. Shrinking only the title left the row wider
+        // than the pane no matter how little title was left.
+        //
+        // The number is what identifies the pull request, so it survives and
+        // the name gives way around it.
+        let number = format!("#{}", pr.number);
+        let reference_budget = usize::from(width).saturating_sub(essential);
+        let name_budget = reference_budget.saturating_sub(display_width(&number));
+        let reference = format!("{}{}", truncate(pr.repo.name(), name_budget), number);
+
+        // Whatever the reference did not need goes to the title. Everything is
+        // measured in COLUMNS: the slug parser deliberately does not restrict a
+        // repository name's charset, so counting characters would hand the
+        // title a budget several columns too large and push the row past the
+        // pane. The glyph is measured rather than assumed to be one column, so
+        // a future two-column glyph cannot quietly break the arithmetic.
+        let fixed = essential + display_width(&reference);
         let title_budget = usize::from(width).saturating_sub(fixed);
         let title = truncate(&pr.title, title_budget);
 
@@ -254,6 +273,35 @@ mod tests {
     }
 
     #[test]
+    fn a_narrow_pane_keeps_the_number_and_gives_up_the_repository_name() {
+        // The number identifies the pull request; the name is context. When
+        // there is not room for both, the name is what goes.
+        let mut pane = PrsForReviewPane::new();
+        pane.apply(
+            Ok(vec![pr(
+                "acme/a-rather-long-repository-name",
+                1963,
+                false,
+                CheckState::Passing,
+            )]),
+            t(100),
+        );
+        let row = pane.rows().first().expect("one row").clone();
+        let built = pane.row(&row, false, 24, t(100));
+        let rendered: String = built.spans.iter().map(|s| s.content.as_ref()).collect();
+
+        assert!(
+            rendered.contains("#1963"),
+            "the number must survive: {rendered:?}"
+        );
+        assert!(
+            crate::fmt::display_width(&rendered) <= 24,
+            "{} columns: {rendered:?}",
+            crate::fmt::display_width(&rendered)
+        );
+    }
+
+    #[test]
     fn a_row_carries_repo_and_number_title_age_and_check_state() {
         let buffer = draw(&loaded(), t(100 + 3 * 86_400));
         let first = row(&buffer, 1);
@@ -375,6 +423,79 @@ mod tests {
         let mut pane = loaded();
         assert_eq!(pane.on_key(key(KeyCode::Char('r'))), PaneAction::Refresh);
         assert_eq!(pane.on_key(key(KeyCode::Char('q'))), PaneAction::Quit);
+    }
+
+    #[test]
+    fn a_repository_with_wide_characters_does_not_overflow_the_row() {
+        // The slug parser deliberately allows a non-ASCII repository name, so
+        // `repo#number` can be far wider than its character count suggests.
+        //
+        // Measured on the `Line` the pane BUILDS, not on a rendered buffer.
+        // ratatui stores a two-column glyph as one cell plus a continuation
+        // cell holding a space, so joining raw cell symbols reports `日本語` as
+        // eight columns rather than six. A test reading a buffer back that way
+        // fails whether the budget is right or wrong, which is worse than
+        // having no test: it looks like coverage and detects nothing. The row
+        // the pane builds is also the thing the budget actually controls.
+        let mut pane = PrsForReviewPane::new();
+        pane.apply(
+            Ok(vec![PullRequest {
+                repo: RepoSlug::parse("acme/日本語リポジトリ").unwrap(),
+                number: 1963,
+                title: "Export reports as CSV".to_owned(),
+                url: "https://example.invalid/1963".to_owned(),
+                is_draft: false,
+                created_at: t(100),
+                checks: CheckState::Passing,
+            }]),
+            t(100),
+        );
+        let pr = pane.rows().first().expect("one row").clone();
+
+        let columns = |line: &ratatui::text::Line<'_>| {
+            crate::fmt::display_width(
+                &line
+                    .spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>(),
+            )
+        };
+
+        // A row cannot shrink below its glyph, age, separators and the number,
+        // because the number is what identifies the pull request and is never
+        // truncated. Rather than write that floor down - it moves with the
+        // number's digits, and a floor chosen to suit one fixture says nothing
+        // about the next - ask the row itself for its smallest form.
+        let irreducible = columns(&pane.row(&pr, false, 0, t(100)));
+
+        // The invariant, at every width from nothing upward: a row fits its
+        // pane, or it is already as small as it goes. Below the floor the
+        // render layer clips, which the narrow-pane test covers.
+        for width in 0..=60u16 {
+            let built = pane.row(&pr, false, width, t(100));
+            assert!(
+                columns(&built) <= usize::from(width).max(irreducible),
+                "width {width} produced a {}-column row (irreducible is \
+                 {irreducible}): {:?}",
+                columns(&built),
+                built
+                    .spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            );
+        }
+
+        // And the floor really is the identifying part rather than something
+        // that happens to be short: at width zero the number survives.
+        let smallest: String = pane
+            .row(&pr, false, 0, t(100))
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert!(smallest.contains("#1963"), "got: {smallest:?}");
     }
 
     #[test]

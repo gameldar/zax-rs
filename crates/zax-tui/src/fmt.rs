@@ -25,6 +25,18 @@ pub fn format_age(age: Duration) -> String {
     }
 }
 
+/// `unicode-width` scores a control character one column when it measures a
+/// whole string but refuses to score it at all on its own, so a truncation loop
+/// that walks characters and a fast path that measures the string disagree
+/// about exactly those characters. Replacing them with spaces removes the
+/// disagreement at its source rather than teaching both sides the same
+/// workaround.
+pub fn one_line(text: &str) -> String {
+    text.chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect()
+}
+
 /// How many terminal columns this text occupies.
 ///
 /// Not the same as its character count, which is the distinction that matters
@@ -46,8 +58,11 @@ pub fn truncate(text: &str, width: usize) -> String {
     if width == 0 {
         return String::new();
     }
-    if display_width(text) <= width {
-        return text.to_owned();
+    // Before anything is measured, so the loop below and the check above cannot
+    // disagree about a character neither of them should be rendering.
+    let text = one_line(text);
+    if display_width(&text) <= width {
+        return text;
     }
 
     // One column goes to the ellipsis, which is itself one column wide.
@@ -105,6 +120,31 @@ mod tests {
     fn truncation_adds_an_ellipsis_within_the_budget() {
         assert_eq!(truncate("abcdefghij", 5), "abcd\u{2026}");
         assert_eq!(display_width(&truncate("abcdefghij", 5)), 5);
+    }
+
+    #[test]
+    fn a_control_character_cannot_push_a_row_past_its_budget() {
+        // `unicode-width` charges a control character one column inside a
+        // string and refuses to score it alone, so measuring the whole string
+        // and walking it character by character used to disagree. A status line
+        // carries raw stderr from `gh` or `kubectl`, which is often several
+        // lines, so this was an ordinary input rather than a hostile one.
+        let messy = "title\nwith-control-\n-chars-embedded";
+        for width in 1..=30 {
+            assert_eq!(
+                display_width(&truncate(messy, width)),
+                width,
+                "width {width} produced {:?}",
+                truncate(messy, width)
+            );
+        }
+    }
+
+    #[test]
+    fn control_characters_become_spaces_so_a_header_stays_one_line() {
+        assert_eq!(one_line("a\nb\tc\rd"), "a b c d");
+        assert_eq!(one_line("plain text"), "plain text");
+        assert!(!truncate("a\nb", 10).contains('\n'));
     }
 
     #[test]

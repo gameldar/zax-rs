@@ -78,9 +78,16 @@ mod tests {
         line.spans.iter().map(|s| s.content.as_ref()).collect()
     }
 
-    /// Terminal columns, which is what a header's width budget is measured in.
+    /// Terminal columns, measured through `unicode-width` DIRECTLY rather than
+    /// through this crate's own `display_width`.
+    ///
+    /// That indirection matters. An oracle that calls the function under test
+    /// agrees with it however wrong it becomes: with `display_width` reverted to
+    /// counting characters, this sweep still passed, because the layout and the
+    /// assertion were both wrong in the same direction. Measuring independently
+    /// is what gives the test any purchase at all.
     fn columns(line: &Line<'_>) -> usize {
-        crate::fmt::display_width(&text(line))
+        unicode_width::UnicodeWidthStr::width(text(line).as_str())
     }
 
     #[test]
@@ -99,6 +106,20 @@ mod tests {
     fn a_narrow_header_truncates_the_title_rather_than_overflowing() {
         let line = header_line("A very long pane title indeed", "3m", false, 16);
         assert_eq!(columns(&line), 16);
+    }
+
+    #[test]
+    fn a_header_carrying_a_multi_line_error_still_fits_its_columns() {
+        // `status` is built from a failed command's stderr, so this is what a
+        // real `gh` or `kubectl` failure looks like arriving at a one-line pane.
+        let stderr = "error: could not resolve host\n  retrying in 5s\n";
+        for width in 0..=40_u16 {
+            assert_eq!(
+                columns(&header_line("Deploys", stderr, false, width)),
+                width as usize,
+                "width {width}"
+            );
+        }
     }
 
     #[test]

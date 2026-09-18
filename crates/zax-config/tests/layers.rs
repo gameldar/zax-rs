@@ -79,6 +79,45 @@ fn a_name_key_redirects_which_override_directory_is_read() {
 }
 
 #[test]
+fn a_name_key_that_is_not_a_single_directory_name_is_rejected() {
+    // The layer that is supposed to lose picks the identity of the layer that
+    // beats it, so an unchecked `name` lets a checked-in `.zax.toml` read a
+    // file of its own choosing as your personal override, or point the lookup
+    // at a directory that will never exist and so suppress yours entirely.
+    for name in [
+        "../../../src/tools/their-repo/zax-override",
+        "..",
+        ".",
+        "/etc/zax",
+        "acme/omega",
+        "",
+    ] {
+        let tmp = TempDir::new().unwrap();
+        let config_home = tmp.path().join("config");
+        let repo_dir = tmp.path().join("src").join("acme");
+        let repo = RootRepoName::parse("acme").unwrap();
+        write(
+            &zax_config::repo_config_path(&repo_dir),
+            &format!("name = {}\n", toml_string(name)),
+        );
+
+        let err = zax_config::load(&config_home, &repo_dir, &repo, "/home/me")
+            .expect_err("`{name}` must be rejected");
+        let message = err.to_string();
+        assert!(message.contains("name"), "got: {message}");
+        assert!(
+            message.contains(".zax.toml"),
+            "the error must name the file it came from: {message}"
+        );
+    }
+}
+
+/// A TOML string literal, escaped independently of anything under test.
+fn toml_string(value: &str) -> String {
+    format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
+#[test]
 fn tuning_a_repo_you_do_not_own_never_touches_its_working_tree() {
     // The override lives entirely outside the repo directory.
     let tmp = TempDir::new().unwrap();

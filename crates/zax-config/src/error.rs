@@ -10,6 +10,12 @@ pub enum ConfigError {
     Parse { path: PathBuf, detail: String },
     #[error("invalid `{field}`: {detail}")]
     Invalid { field: &'static str, detail: String },
+    #[error("{path}: invalid `{field}`: {detail}")]
+    InvalidLayer {
+        path: PathBuf,
+        field: &'static str,
+        detail: String,
+    },
     #[error("`{0}` is not a pane kind; write builtin, exec or raw")]
     UnknownPaneKind(String),
     #[error("a `{kind}` pane needs a `{field}`")]

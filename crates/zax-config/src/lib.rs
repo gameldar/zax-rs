@@ -58,6 +58,34 @@ pub fn load(
     parse::from_raw(merge::merge(vec![global, repo_layer, personal]), home)
 }
 
+/// The override key names a directory under `~/.config/zax/repos/`, so it must
+/// be one directory name and nothing else.
+///
+/// This is the only value a repository's own checked-in config contributes to a
+/// decision about which file to read, and the file it decides on is the layer
+/// that is supposed to beat it. Unchecked, `name = "../../elsewhere"` reads a
+/// file the repo can ship itself, `name = "acme"` reads a different repo's
+/// personal override, and any name whose directory does not exist silently
+/// suppresses yours. A repo can suggest a layout; it can never impose one.
+fn validate_override_name(name: &str) -> Result<(), String> {
+    // Spelled out rather than run through `Path::components`, which normalises
+    // a trailing separator away and would accept `acme/` as one component. A
+    // backslash is not a separator here, but a checked-in config travels.
+    let acceptable = !name.is_empty()
+        && name != "."
+        && name != ".."
+        && !name.contains('/')
+        && !name.contains('\\')
+        && !name.contains('\0');
+    if acceptable {
+        return Ok(());
+    }
+    Err(format!(
+        "`{name}` is not a directory name; it must be a single component, \
+         with no separator, no `.` or `..`, and not an absolute path"
+    ))
+}
+
 fn read_layer(path: &Path) -> Result<RawConfig, ConfigError> {
     let text = match std::fs::read_to_string(path) {
         Ok(text) => text,
@@ -69,8 +97,50 @@ fn read_layer(path: &Path) -> Result<RawConfig, ConfigError> {
             })
         }
     };
-    toml::from_str(&text).map_err(|e| ConfigError::Parse {
+    let raw: RawConfig = toml::from_str(&text).map_err(|e| ConfigError::Parse {
         path: path.to_owned(),
         detail: e.to_string(),
-    })
+    })?;
+
+    if let Some(name) = &raw.name {
+        validate_override_name(name).map_err(|detail| ConfigError::InvalidLayer {
+            path: path.to_owned(),
+            field: "name",
+            detail,
+        })?;
+    }
+    Ok(raw)
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)]
+    use super::*;
+
+    #[test]
+    fn an_override_name_is_one_directory_name() {
+        for good in ["acme", "acme-backend", "omega.v2", "a b"] {
+            assert!(validate_override_name(good).is_ok(), "`{good}` is a name");
+        }
+    }
+
+    #[test]
+    fn an_override_name_may_not_leave_the_repos_directory() {
+        for bad in [
+            "",
+            ".",
+            "..",
+            "../acme",
+            "a/b",
+            "/etc/zax",
+            "acme/",
+            "./acme",
+            "back\\slash",
+        ] {
+            assert!(
+                validate_override_name(bad).is_err(),
+                "`{bad}` is not a directory name"
+            );
+        }
+    }
 }

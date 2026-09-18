@@ -1,0 +1,388 @@
+//! `prs-for-review`: the pull requests waiting on you, one compact row each.
+
+use std::time::SystemTime;
+
+use ratatui::crossterm::event::{KeyCode, KeyEvent};
+use ratatui::layout::Rect;
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Span, Text};
+use ratatui::widgets::Paragraph;
+use ratatui::Frame;
+use zax_domain::{CheckState, PullRequest};
+
+use crate::action::PaneAction;
+use crate::cache::Cached;
+use crate::chrome::{error_line, header_line, GLYPH_FAIL, GLYPH_NONE, GLYPH_PASS, GLYPH_PENDING};
+use crate::fmt::{format_age, truncate};
+
+const TITLE: &str = "Review requests";
+
+pub struct PrsForReviewPane {
+    cache: Cached<Vec<PullRequest>>,
+    selected: usize,
+    focused: bool,
+}
+
+impl Default for PrsForReviewPane {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl PrsForReviewPane {
+    pub fn new() -> Self {
+        Self {
+            cache: Cached::new(),
+            selected: 0,
+            focused: false,
+        }
+    }
+
+    pub fn set_focused(&mut self, focused: bool) {
+        self.focused = focused;
+    }
+
+    pub fn apply(&mut self, result: Result<Vec<PullRequest>, String>, at: SystemTime) {
+        match result {
+            Ok(prs) => {
+                // The queue can shrink under the cursor between refreshes.
+                self.selected = self.selected.min(prs.len().saturating_sub(1));
+                self.cache.record_ok(prs, at);
+            }
+            Err(message) => self.cache.record_err(message, at),
+        }
+    }
+
+    pub fn rows(&self) -> &[PullRequest] {
+        self.cache.value().map(Vec::as_slice).unwrap_or(&[])
+    }
+
+    pub fn selected(&self) -> Option<&PullRequest> {
+        self.rows().get(self.selected)
+    }
+
+    pub fn render(&self, frame: &mut Frame, area: Rect, now: SystemTime) {
+        if area.height == 0 || area.width == 0 {
+            return;
+        }
+
+        let title = match self.cache.value() {
+            Some(prs) => format!("{TITLE} ({})", prs.len()),
+            None => TITLE.to_owned(),
+        };
+        let mut lines = vec![header_line(
+            &title,
+            &self.cache.status(now),
+            self.focused,
+            area.width,
+        )];
+
+        match self.cache.value() {
+            None => {
+                if let Some(error) = self.cache.error() {
+                    lines.push(error_line(error));
+                }
+            }
+            Some(prs) if prs.is_empty() => {
+                lines.push(Line::styled(
+                    "Nothing waiting on you",
+                    Style::default().fg(Color::DarkGray),
+                ));
+            }
+            Some(prs) => {
+                let visible = usize::from(area.height).saturating_sub(1);
+                for (index, pr) in prs.iter().take(visible).enumerate() {
+                    lines.push(self.row(pr, index == self.selected, area.width, now));
+                }
+            }
+        }
+
+        frame.render_widget(Paragraph::new(Text::from(lines)), area);
+    }
+
+    fn row(&self, pr: &PullRequest, selected: bool, width: u16, now: SystemTime) -> Line<'static> {
+        let reference = pr.short_ref();
+        let age = format_age(pr.age(now));
+        let check = check_glyph(pr.checks).to_owned();
+        let draft = if pr.is_draft { " draft" } else { "" };
+
+        // Everything but the title is fixed width, so the title absorbs the rest.
+        // The 4 is the glyph column plus the three single-space separators the
+        // spans below emit - keep the two in step if you add or drop a span.
+        let fixed = reference.chars().count() + age.chars().count() + draft.chars().count() + 4;
+        let title_budget = usize::from(width).saturating_sub(fixed);
+        let title = truncate(&pr.title, title_budget);
+
+        let base = if selected && self.focused {
+            Style::default().add_modifier(Modifier::REVERSED)
+        } else {
+            Style::default()
+        };
+
+        Line::from(vec![
+            Span::styled(check, check_style(pr.checks).patch(base)),
+            Span::styled(" ", base),
+            Span::styled(reference, base.fg(Color::Cyan)),
+            Span::styled(" ", base),
+            Span::styled(title, base),
+            Span::styled(draft.to_owned(), base.fg(Color::DarkGray)),
+            Span::styled(" ", base),
+            Span::styled(age, base.fg(Color::DarkGray)),
+        ])
+    }
+
+    pub fn on_key(&mut self, key: KeyEvent) -> PaneAction {
+        let len = self.rows().len();
+        match key.code {
+            KeyCode::Char('r') => PaneAction::Refresh,
+            KeyCode::Char('q') | KeyCode::Esc => PaneAction::Quit,
+            KeyCode::Char('j') | KeyCode::Down => {
+                self.selected = (self.selected + 1).min(len.saturating_sub(1));
+                PaneAction::None
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.selected = self.selected.saturating_sub(1);
+                PaneAction::None
+            }
+            KeyCode::Enter => self
+                .selected()
+                .map(|pr| PaneAction::OpenUrl(pr.url.clone()))
+                .unwrap_or_default(),
+            KeyCode::Char('y') => self
+                .selected()
+                .map(|pr| PaneAction::CopyUrl(pr.url.clone()))
+                .unwrap_or_default(),
+            KeyCode::Char('w') => self
+                .selected()
+                .map(|pr| PaneAction::ReviewWorktree {
+                    repo: pr.repo.clone(),
+                    number: pr.number,
+                })
+                .unwrap_or_default(),
+            _ => PaneAction::None,
+        }
+    }
+}
+
+pub(crate) fn check_glyph(state: CheckState) -> &'static str {
+    match state {
+        CheckState::Passing => GLYPH_PASS,
+        CheckState::Failing => GLYPH_FAIL,
+        CheckState::Pending => GLYPH_PENDING,
+        CheckState::None => GLYPH_NONE,
+    }
+}
+
+pub(crate) fn check_style(state: CheckState) -> Style {
+    let colour = match state {
+        CheckState::Passing => Color::Green,
+        CheckState::Failing => Color::Red,
+        CheckState::Pending => Color::Yellow,
+        CheckState::None => Color::DarkGray,
+    };
+    Style::default().fg(colour)
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)]
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+    use ratatui::backend::TestBackend;
+    use ratatui::buffer::Buffer;
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use ratatui::Terminal;
+    use zax_domain::{CheckState, PullRequest, RepoSlug};
+
+    use super::*;
+    use crate::action::PaneAction;
+
+    fn t(secs: u64) -> SystemTime {
+        UNIX_EPOCH + Duration::from_secs(secs)
+    }
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    fn row(buffer: &Buffer, y: u16) -> String {
+        (0..buffer.area.width)
+            .map(|x| buffer[(x, y)].symbol())
+            .collect::<String>()
+            .trim_end()
+            .to_owned()
+    }
+
+    fn draw(pane: &PrsForReviewPane, now: SystemTime) -> Buffer {
+        let mut terminal = Terminal::new(TestBackend::new(48, 6)).unwrap();
+        terminal
+            .draw(|frame| pane.render(frame, frame.area(), now))
+            .unwrap();
+        terminal.backend().buffer().clone()
+    }
+
+    fn pr(repo: &str, number: u32, draft: bool, checks: CheckState) -> PullRequest {
+        PullRequest {
+            repo: RepoSlug::parse(repo).unwrap(),
+            number,
+            title: "Export reports as CSV".to_owned(),
+            url: format!("https://github.com/{repo}/pull/{number}"),
+            is_draft: draft,
+            created_at: t(100),
+            checks,
+        }
+    }
+
+    fn loaded() -> PrsForReviewPane {
+        let mut pane = PrsForReviewPane::new();
+        pane.apply(
+            Ok(vec![
+                pr("acme/omega", 1963, false, CheckState::Passing),
+                pr("acme/south", 42, true, CheckState::Failing),
+            ]),
+            t(100),
+        );
+        pane
+    }
+
+    #[test]
+    fn the_header_names_the_pane_and_counts_the_queue() {
+        let buffer = draw(&loaded(), t(100));
+        let header = row(&buffer, 0);
+        assert!(header.contains("Review requests"), "got: {header:?}");
+        assert!(header.contains('2'), "got: {header:?}");
+    }
+
+    #[test]
+    fn a_row_carries_repo_and_number_title_age_and_check_state() {
+        let buffer = draw(&loaded(), t(100 + 3 * 86_400));
+        let first = row(&buffer, 1);
+        assert!(first.contains("omega#1963"), "got: {first:?}");
+        assert!(first.contains("Stamp"), "got: {first:?}");
+        assert!(first.contains("3d"), "got: {first:?}");
+        assert!(first.contains(crate::chrome::GLYPH_PASS), "got: {first:?}");
+    }
+
+    #[test]
+    fn a_draft_is_flagged_and_its_failing_checks_shown() {
+        let buffer = draw(&loaded(), t(100));
+        let second = row(&buffer, 2);
+        assert!(second.contains("draft"), "got: {second:?}");
+        assert!(
+            second.contains(crate::chrome::GLYPH_FAIL),
+            "got: {second:?}"
+        );
+    }
+
+    #[test]
+    fn an_empty_queue_says_so_rather_than_showing_nothing() {
+        let mut pane = PrsForReviewPane::new();
+        pane.apply(Ok(vec![]), t(100));
+        assert!(
+            row(&draw(&pane, t(100)), 1).contains("Nothing"),
+            "got: {:?}",
+            row(&draw(&pane, t(100)), 1)
+        );
+    }
+
+    #[test]
+    fn a_failure_keeps_the_previous_queue_and_marks_the_header_stale() {
+        let mut pane = loaded();
+        pane.apply(Err("gh: HTTP 502".to_owned()), t(160));
+        let buffer = draw(&pane, t(160));
+        assert!(
+            row(&buffer, 0).contains("stale"),
+            "got: {:?}",
+            row(&buffer, 0)
+        );
+        assert!(
+            row(&buffer, 1).contains("omega#1963"),
+            "the queue must not blank"
+        );
+    }
+
+    #[test]
+    fn selection_starts_at_the_first_row_and_clamps_at_both_ends() {
+        let mut pane = loaded();
+        assert_eq!(pane.selected().map(|p| p.number), Some(1963));
+
+        pane.on_key(key(KeyCode::Char('k')));
+        assert_eq!(
+            pane.selected().map(|p| p.number),
+            Some(1963),
+            "clamped at the top"
+        );
+
+        pane.on_key(key(KeyCode::Char('j')));
+        assert_eq!(pane.selected().map(|p| p.number), Some(42));
+
+        pane.on_key(key(KeyCode::Char('j')));
+        assert_eq!(
+            pane.selected().map(|p| p.number),
+            Some(42),
+            "clamped at the bottom"
+        );
+    }
+
+    #[test]
+    fn enter_opens_the_selected_pull_request_and_y_copies_its_url() {
+        let mut pane = loaded();
+        assert_eq!(
+            pane.on_key(key(KeyCode::Enter)),
+            PaneAction::OpenUrl("https://github.com/acme/omega/pull/1963".to_owned())
+        );
+        assert_eq!(
+            pane.on_key(key(KeyCode::Char('y'))),
+            PaneAction::CopyUrl("https://github.com/acme/omega/pull/1963".to_owned())
+        );
+    }
+
+    #[test]
+    fn w_asks_for_a_review_worktree_for_the_selected_row() {
+        let mut pane = loaded();
+        pane.on_key(key(KeyCode::Char('j')));
+        assert_eq!(
+            pane.on_key(key(KeyCode::Char('w'))),
+            PaneAction::ReviewWorktree {
+                repo: RepoSlug::parse("acme/south").unwrap(),
+                number: 42,
+            }
+        );
+    }
+
+    #[test]
+    fn row_actions_do_nothing_when_the_queue_is_empty() {
+        let mut pane = PrsForReviewPane::new();
+        pane.apply(Ok(vec![]), t(100));
+        assert_eq!(pane.on_key(key(KeyCode::Enter)), PaneAction::None);
+        assert_eq!(pane.on_key(key(KeyCode::Char('w'))), PaneAction::None);
+        assert_eq!(pane.selected(), None);
+    }
+
+    #[test]
+    fn a_selection_beyond_a_shrunken_queue_is_pulled_back_into_range() {
+        let mut pane = loaded();
+        pane.on_key(key(KeyCode::Char('j')));
+        pane.apply(
+            Ok(vec![pr("acme/omega", 1963, false, CheckState::Passing)]),
+            t(200),
+        );
+        assert_eq!(pane.selected().map(|p| p.number), Some(1963));
+    }
+
+    #[test]
+    fn r_refreshes_and_q_quits() {
+        let mut pane = loaded();
+        assert_eq!(pane.on_key(key(KeyCode::Char('r'))), PaneAction::Refresh);
+        assert_eq!(pane.on_key(key(KeyCode::Char('q'))), PaneAction::Quit);
+    }
+
+    #[test]
+    fn a_very_narrow_pane_renders_without_panicking() {
+        let mut terminal = Terminal::new(TestBackend::new(6, 3)).unwrap();
+        let pane = loaded();
+        terminal
+            .draw(|frame| pane.render(frame, frame.area(), t(100)))
+            .unwrap();
+    }
+}

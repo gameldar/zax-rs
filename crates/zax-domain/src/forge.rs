@@ -15,14 +15,31 @@ pub struct RepoSlug {
 pub enum RepoSlugError {
     #[error("`{0}` is not a repository; write it as owner/name")]
     Malformed(String),
+    #[error("repository `{0}` contains a control character")]
+    ControlCharacter(String),
 }
 
 impl RepoSlug {
+    /// Beyond `owner/name` with both sides non-empty, the only characters
+    /// refused are control characters. The charset is deliberately not
+    /// restricted further: a slug normally arrives from `gh`, which has already
+    /// validated it, and hard-coding what a forge may call a repository would
+    /// reject legitimate names on GitHub Enterprise or after any future change
+    /// to GitHub's own rules. Being too strict here breaks real repositories;
+    /// being permissive only passes a bad name through to `gh`, which rejects
+    /// it with a better message than this crate could write.
+    ///
+    /// Control characters are the exception because a NUL cannot survive
+    /// `exec` at all: the spawn fails with a bare "invalid input parameter"
+    /// that names neither the repository nor the argument it came from.
     pub fn parse(raw: &str) -> Result<Self, RepoSlugError> {
         let malformed = || RepoSlugError::Malformed(raw.to_owned());
         let (owner, name) = raw.split_once('/').ok_or_else(malformed)?;
         if owner.is_empty() || name.is_empty() || name.contains('/') {
             return Err(malformed());
+        }
+        if raw.chars().any(char::is_control) {
+            return Err(RepoSlugError::ControlCharacter(raw.to_owned()));
         }
         Ok(Self {
             owner: owner.to_owned(),
@@ -117,11 +134,18 @@ pub enum PrRef {
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum PrRefError {
-    #[error("`{0}` is not a pull request; give a number like 1963 or a github.com pull URL")]
+    #[error("`{0}` is not a pull request; give a number like 1963 or an https pull URL")]
     Malformed(String),
 }
 
 impl PrRef {
+    /// The host is deliberately not checked. `gh` talks to GitHub Enterprise as
+    /// well as github.com, selected by `GH_HOST` or by how the repository is
+    /// configured, so deciding here which hosts are acceptable would reject
+    /// URLs that `gh` handles perfectly well. For the same reason a URL with no
+    /// number after `/pull/` is accepted: `gh` rejects it with a message about
+    /// the actual request, and reimplementing its URL parsing would only create
+    /// a second place to be wrong.
     pub fn parse(raw: &str) -> Result<Self, PrRefError> {
         let malformed = || PrRefError::Malformed(raw.to_owned());
         let trimmed = raw.strip_prefix('#').unwrap_or(raw);
@@ -220,6 +244,34 @@ mod tests {
                 "expected `{bad}` to be rejected"
             );
         }
+    }
+
+    #[test]
+    fn a_pull_url_on_another_host_is_accepted_for_github_enterprise() {
+        // `gh` serves GitHub Enterprise as well as github.com, so deciding here
+        // which hosts are legitimate would reject URLs that work.
+        assert!(PrRef::parse("https://git.example.com/o/r/pull/7").is_ok());
+    }
+
+    #[test]
+    fn a_repo_slug_rejects_control_characters() {
+        // A NUL cannot survive exec, and the spawn failure names neither the
+        // repository nor the argument, so catch it here instead.
+        assert!(matches!(
+            RepoSlug::parse("acme/no\0rth"),
+            Err(RepoSlugError::ControlCharacter(_))
+        ));
+        assert!(matches!(
+            RepoSlug::parse("acme/no\nrth"),
+            Err(RepoSlugError::ControlCharacter(_))
+        ));
+    }
+
+    #[test]
+    fn a_repo_slug_keeps_an_open_charset_otherwise() {
+        // Too strict here rejects real repositories; too loose only passes a
+        // bad name to gh, which reports it better than this crate could.
+        assert!(RepoSlug::parse("café/résumé").is_ok());
     }
 
     #[test]

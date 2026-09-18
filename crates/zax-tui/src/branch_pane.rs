@@ -13,6 +13,7 @@ use zax_domain::{BranchStatus, CheckState, Mergeable, ReviewState};
 use crate::action::PaneAction;
 use crate::cache::Cached;
 use crate::chrome::{error_line, header_line};
+use crate::fmt::{display_width, truncate};
 use crate::prs_pane::{check_glyph, check_style};
 
 const TITLE: &str = "This branch";
@@ -74,10 +75,18 @@ impl BranchStatusPane {
                 Style::default().fg(Color::DarkGray),
             )),
             (Some(_), Some(status)) => {
+                // Through `truncate`, like every other string this crate
+                // renders. It bounds the text to the pane and flattens control
+                // characters, and a pull request title is somebody else's text
+                // arriving from a forge. The field rows below are built from
+                // this crate's own constants and need no such care.
+                let reference = truncate(&status.pr.short_ref(), usize::from(area.width));
+                let title_budget =
+                    usize::from(area.width).saturating_sub(display_width(&reference) + 1);
                 lines.push(Line::from(vec![
-                    Span::styled(status.pr.short_ref(), Style::default().fg(Color::Cyan)),
+                    Span::styled(reference, Style::default().fg(Color::Cyan)),
                     Span::raw(" "),
-                    Span::raw(status.pr.title.clone()),
+                    Span::raw(truncate(&status.pr.title, title_budget)),
                 ]));
                 lines.push(field(
                     "Checks",
@@ -336,6 +345,36 @@ mod tests {
         let mut pane = loaded();
         assert_eq!(pane.on_key(key(KeyCode::Char('r'))), PaneAction::Refresh);
         assert_eq!(pane.on_key(key(KeyCode::Char('q'))), PaneAction::Quit);
+    }
+
+    #[test]
+    fn a_hostile_title_stays_inside_the_pane() {
+        // A title arrives from a forge, so it may be long and may carry control
+        // characters. The review pane has always bounded it; this one rendered
+        // it raw.
+        let mut pane = BranchStatusPane::new();
+        let mut broken = status();
+        broken.pr.title = format!("first\nsecond\tthird\r{}", "very long ".repeat(40));
+        pane.apply(Ok(Some(broken)), t(100));
+
+        for width in 1..=60u16 {
+            let mut terminal = Terminal::new(TestBackend::new(width, 8)).unwrap();
+            terminal
+                .draw(|frame| pane.render(frame, frame.area(), t(100)))
+                .unwrap();
+            let buffer: Buffer = terminal.backend().buffer().clone();
+            // Read cells rather than the line: this asserts nothing escaped
+            // onto the screen. Column arithmetic is the review pane's test.
+            for y in 0..buffer.area.height {
+                for x in 0..buffer.area.width {
+                    let symbol = buffer[(x, y)].symbol();
+                    assert!(
+                        !symbol.contains('\n') && !symbol.contains('\t') && !symbol.contains('\r'),
+                        "raw control character at {x},{y} for width {width}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]

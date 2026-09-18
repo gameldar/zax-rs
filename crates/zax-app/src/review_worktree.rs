@@ -71,6 +71,12 @@ pub enum CreateReviewWorktreeError {
         local_tip: String,
         incoming_head: String,
     },
+    #[error(
+        "the forge did not say which repository this pull request is in, so zax \
+         cannot tell whether it is this one; give the pull request's URL rather \
+         than its number"
+    )]
+    UnknownRepository,
     #[error("the pull request's head branch is unusable: {0}")]
     Branch(String),
     #[error("{0} already exists")]
@@ -213,11 +219,16 @@ where
         // fork the head repository is that same repository, which catches a
         // forge pointed somewhere other than `origin`. A fork's head says
         // nothing about where its pull request is, so it is not consulted.
-        let Some(pull_request_repo) = pr
-            .repository()
-            .or_else(|| (!head.is_cross_repository).then(|| head.head_repo.clone()))
-        else {
-            return Ok(());
+        let pull_request_repo = match pr.repository() {
+            Some(repo) => repo,
+            // A fork's head names the fork, not the pull request's repository,
+            // so it is no help; a URL is the only other source and there was
+            // none.
+            None if head.is_cross_repository => return Ok(()),
+            None => head
+                .head_repo
+                .clone()
+                .ok_or(CreateReviewWorktreeError::UnknownRepository)?,
         };
 
         let current_repo = self.forge.current_repo()?;
@@ -248,7 +259,7 @@ mod tests {
         let forge = FakeForge::with_head(PullRequestHead {
             number: 1963,
             head_ref: head_ref.to_owned(),
-            head_repo: RepoSlug::parse("acme/omega").unwrap(),
+            head_repo: Some(RepoSlug::parse("acme/omega").unwrap()),
             is_cross_repository: cross,
         })
         .in_repository("acme/omega");
@@ -417,7 +428,7 @@ mod tests {
         let forge = FakeForge::with_head(PullRequestHead {
             number: 1963,
             head_ref: "patch-1".to_owned(),
-            head_repo: RepoSlug::parse("contributor/omega").unwrap(),
+            head_repo: Some(RepoSlug::parse("contributor/omega").unwrap()),
             is_cross_repository: true,
         })
         .in_repository("acme/omega");
@@ -544,6 +555,54 @@ mod tests {
             *git.fetched.borrow(),
             vec![("origin".to_owned(), UPDATE.to_owned())]
         );
+    }
+
+    #[test]
+    fn a_pull_request_whose_fork_was_deleted_is_still_reviewable() {
+        // GitHub nulls the head repository once the fork is gone, and
+        // refs/pull/<n>/head outlives it, so the review works.
+        let git = FakeGitRepo::new("/Users/me/src/acme", "main");
+        let fs = FakeFs::default();
+        let runner = FakeRunner::default();
+        let (_, req) = request("patch-1", true);
+        let forge = FakeForge::with_head(PullRequestHead {
+            number: 1963,
+            head_ref: "patch-1".to_owned(),
+            head_repo: None,
+            is_cross_repository: true,
+        })
+        .in_repository("acme/omega");
+
+        CreateReviewWorktree::new(&git, &forge, &fs, &runner)
+            .run(req)
+            .unwrap();
+
+        assert_eq!(git.fetched.borrow().len(), 1);
+    }
+
+    #[test]
+    fn a_pull_request_with_no_repository_anywhere_is_an_error_not_a_guess() {
+        // Nothing says where this pull request is: no URL, and a head
+        // repository the forge would not name. Proceeding would fetch from
+        // whatever origin happens to be.
+        let git = FakeGitRepo::new("/Users/me/src/acme", "main");
+        let fs = FakeFs::default();
+        let runner = FakeRunner::default();
+        let (_, req) = request("patch-1", false);
+        let forge = FakeForge::with_head(PullRequestHead {
+            number: 1963,
+            head_ref: "patch-1".to_owned(),
+            head_repo: None,
+            is_cross_repository: false,
+        })
+        .in_repository("acme/omega");
+
+        let err = CreateReviewWorktree::new(&git, &forge, &fs, &runner)
+            .run(req)
+            .unwrap_err();
+
+        assert!(matches!(err, CreateReviewWorktreeError::UnknownRepository));
+        assert!(git.fetched.borrow().is_empty());
     }
 
     #[test]

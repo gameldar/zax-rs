@@ -109,7 +109,10 @@ pub trait GitRepo {
 pub struct PullRequestHead {
     pub number: u32,
     pub head_ref: String,
-    pub head_repo: RepoSlug,
+    /// `None` when the forge no longer has the head repository, which is what
+    /// GitHub reports once a fork has been deleted. `refs/pull/<n>/head`
+    /// outlives the fork, so this is not on its own a reason to give up.
+    pub head_repo: Option<RepoSlug>,
     pub is_cross_repository: bool,
 }
 

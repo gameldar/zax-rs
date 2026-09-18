@@ -54,8 +54,25 @@ fn a_pr_head_response_names_the_fork_it_came_from() {
 
     assert_eq!(head.number, 1963);
     assert_eq!(head.head_ref, "patch-1");
-    assert_eq!(head.head_repo.to_string(), "a-contributor/omega");
+    assert_eq!(
+        head.head_repo.map(|r| r.to_string()).as_deref(),
+        Some("a-contributor/omega")
+    );
     assert!(head.is_cross_repository);
+}
+
+#[test]
+fn a_pull_request_whose_fork_was_deleted_still_parses() {
+    // GitHub nulls both head repository fields once the fork is gone, which is
+    // routine for an old pull request. refs/pull/<n>/head survives the
+    // deletion, so the review this feeds would work; refusing to read the
+    // answer made the operation impossible over a field it did not need.
+    let json = include_str!("fixtures/pr_head_deleted_fork.json");
+    let head = dto::parse_pr_head_response(json).unwrap();
+
+    assert_eq!(head.number, 1963);
+    assert_eq!(head.head_ref, "patch-1");
+    assert_eq!(head.head_repo, None);
 }
 
 #[test]

@@ -211,15 +211,18 @@ pub fn parse_branch_status_response(json: &str) -> Result<Option<BranchStatus>, 
 
 pub fn parse_pr_head_response(json: &str) -> Result<PullRequestHead, String> {
     let parsed: PrHeadJson = serde_json::from_str(json).map_err(|e| format!("{e}"))?;
-    let owner = parsed
-        .head_repository_owner
-        .ok_or_else(|| "pull request has no head repository owner".to_owned())?
-        .login;
-    let name = parsed
-        .head_repository
-        .ok_or_else(|| "pull request has no head repository".to_owned())?
-        .name;
-    let head_repo = RepoSlug::parse(&format!("{owner}/{name}")).map_err(|e| e.to_string())?;
+    // GitHub nulls both fields once the head fork has been deleted, which is
+    // routine for an old pull request, and `refs/pull/<n>/head` survives the
+    // deletion. Making them required turned a reviewable pull request into a
+    // parse failure. Absent is a value here; whoever needs the head repository
+    // says so where it is needed.
+    let head_repo = match (parsed.head_repository_owner, parsed.head_repository) {
+        (Some(owner), Some(repo)) => Some(
+            RepoSlug::parse(&format!("{}/{}", owner.login, repo.name))
+                .map_err(|e| e.to_string())?,
+        ),
+        _ => None,
+    };
 
     Ok(PullRequestHead {
         number: parsed.number,

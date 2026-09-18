@@ -2,7 +2,7 @@
 //! case test asserts on intent rather than on a subprocess.
 
 use std::cell::RefCell;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -210,6 +210,10 @@ pub struct FakeGitRepo {
     main_worktree: PathBuf,
     branch: Option<String>,
     existing_branches: RefCell<HashSet<String>>,
+    /// Revision to commit, as `git rev-parse` would answer.
+    commits: RefCell<HashMap<String, String>>,
+    /// Pairs the fake will call an ancestry, ancestor first.
+    ancestries: RefCell<HashSet<(String, String)>>,
     pub worktrees: RefCell<Vec<WorktreeEntry>>,
     pub added: RefCell<Vec<AddedWorktreeCall>>,
     pub removed: RefCell<Vec<(PathBuf, bool)>>,
@@ -222,6 +226,8 @@ impl FakeGitRepo {
             main_worktree: PathBuf::from(main_worktree),
             branch: Some(branch.to_owned()),
             existing_branches: RefCell::new(HashSet::new()),
+            commits: RefCell::new(HashMap::new()),
+            ancestries: RefCell::new(HashSet::new()),
             worktrees: RefCell::new(Vec::new()),
             added: RefCell::new(Vec::new()),
             removed: RefCell::new(Vec::new()),
@@ -239,6 +245,22 @@ impl FakeGitRepo {
         self.existing_branches
             .borrow_mut()
             .insert(branch.to_owned());
+        self
+    }
+
+    /// What `resolve_commit` answers for one revision.
+    pub fn with_commit(self, rev: &str, commit: &str) -> Self {
+        self.commits
+            .borrow_mut()
+            .insert(rev.to_owned(), commit.to_owned());
+        self
+    }
+
+    /// Declare `ancestor` reachable from `descendant`.
+    pub fn with_ancestry(self, ancestor: &str, descendant: &str) -> Self {
+        self.ancestries
+            .borrow_mut()
+            .insert((ancestor.to_owned(), descendant.to_owned()));
         self
     }
 }
@@ -317,6 +339,26 @@ impl GitRepo for FakeGitRepo {
             .borrow_mut()
             .push((remote.to_owned(), refspec.to_owned()));
         Ok(())
+    }
+
+    fn resolve_commit(&self, rev: &str) -> Result<String, PortError> {
+        self.commits
+            .borrow()
+            .get(rev)
+            .cloned()
+            .ok_or_else(|| PortError::CommandFailed {
+                tool: "git",
+                status: 128,
+                stderr: format!("fatal: Needed a single revision: {rev}"),
+            })
+    }
+
+    fn is_ancestor(&self, ancestor: &str, descendant: &str) -> Result<bool, PortError> {
+        Ok(ancestor == descendant
+            || self
+                .ancestries
+                .borrow()
+                .contains(&(ancestor.to_owned(), descendant.to_owned())))
     }
 
     fn probe(&self) -> Result<String, PortError> {

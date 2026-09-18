@@ -18,7 +18,8 @@ pub use ports::{
 pub use provision::{ProvisionError, ProvisionReport, Provisioning};
 pub use queries::{DoctorCheck, RemoveWorktreeError};
 pub use review_worktree::{
-    CreateReviewWorktree, CreateReviewWorktreeError, CreateReviewWorktreeRequest,
+    CreateReviewWorktree, CreateReviewWorktreeError, CreateReviewWorktreeOutcome,
+    CreateReviewWorktreeRequest, ForcedBranchUpdate,
 };
 pub use start_session::{
     pane_command, StartSession, StartSessionError, StartSessionOutcome, StartSessionRequest,

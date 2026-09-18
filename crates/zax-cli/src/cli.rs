@@ -66,6 +66,10 @@ pub enum WorktreeCommand {
         pr: String,
         #[arg(long)]
         no_hooks: bool,
+        /// Move an existing local branch of that name onto the pull request
+        /// head even when that discards commits only the branch has.
+        #[arg(long)]
+        force: bool,
     },
     /// List the worktrees zax manages for this repository.
     List,
@@ -177,6 +181,25 @@ mod tests {
                 }
                 other => panic!("expected worktree review, got {other:?}"),
             }
+        }
+    }
+
+    #[test]
+    fn worktree_review_can_be_forced() {
+        let cli = Cli::try_parse_from(["zax", "worktree", "review", "1963", "--force"]).unwrap();
+        match cli.command {
+            Commands::Worktree {
+                command: WorktreeCommand::Review { force, .. },
+            } => assert!(force),
+            other => panic!("expected worktree review, got {other:?}"),
+        }
+        // Destructive by default would defeat the point.
+        let plain = Cli::try_parse_from(["zax", "worktree", "review", "1963"]).unwrap();
+        match plain.command {
+            Commands::Worktree {
+                command: WorktreeCommand::Review { force, .. },
+            } => assert!(!force),
+            other => panic!("expected worktree review, got {other:?}"),
         }
     }
 

@@ -116,3 +116,70 @@ fn a_directory_that_is_not_a_repository_fails_with_gits_own_message() {
         "expected git's own message, got: {err}"
     );
 }
+
+/// Reads a revision with the `git` binary rather than through the adapter, so
+/// the expectations below do not come from the code they are checking.
+fn rev(dir: &Path, revision: &str) -> String {
+    let out = Command::new("git")
+        .args(["rev-parse", revision])
+        .current_dir(dir)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "git rev-parse {revision} failed");
+    String::from_utf8(out.stdout).unwrap().trim().to_owned()
+}
+
+#[test]
+fn fetches_a_refspec_and_answers_ancestry_against_real_git() {
+    // The whole review guard rests on these three: a fetch with no destination
+    // writes FETCH_HEAD and nothing else, the two tips resolve, and git decides
+    // which way the ancestry runs.
+    let (tmp, upstream) = fixture();
+    let clone = tmp.path().join("src").join("clone");
+    let status = Command::new("git")
+        .args(["clone", "--quiet"])
+        .arg(&upstream)
+        .arg(&clone)
+        .status()
+        .unwrap();
+    assert!(status.success(), "clone failed");
+
+    // One more commit upstream, which the clone has not seen.
+    std::fs::write(upstream.join("NEW.md"), "newer\n").unwrap();
+    git(&upstream, &["add", "NEW.md"]);
+    git(&upstream, &["commit", "--quiet", "-m", "Add NEW"]);
+
+    let cli = GitCli::new(SystemExec, clone.clone());
+    let before = rev(&clone, "HEAD");
+    cli.fetch("origin", "refs/heads/main").unwrap();
+
+    let fetched = cli.resolve_commit("FETCH_HEAD").unwrap();
+    assert_eq!(fetched, rev(&upstream, "HEAD"));
+    assert_eq!(
+        rev(&clone, "HEAD"),
+        before,
+        "a refspec with no destination must move nothing local"
+    );
+
+    let local = cli.resolve_commit("refs/heads/main").unwrap();
+    assert_eq!(local, before);
+    assert!(cli.is_ancestor(&local, &fetched).unwrap());
+    assert!(!cli.is_ancestor(&fetched, &local).unwrap());
+
+    // A divergent tip: commit locally on top of the old base.
+    std::fs::write(clone.join("MINE.md"), "mine\n").unwrap();
+    git(&clone, &["add", "MINE.md"]);
+    git(&clone, &["commit", "--quiet", "-m", "Add MINE"]);
+    let mine = cli.resolve_commit("refs/heads/main").unwrap();
+    assert!(
+        !cli.is_ancestor(&mine, &fetched).unwrap(),
+        "a divergent local tip is what the review guard must refuse"
+    );
+}
+
+#[test]
+fn an_unknown_revision_is_an_error_not_an_echo() {
+    let (_tmp, repo) = fixture();
+    let cli = GitCli::new(SystemExec, repo);
+    assert!(cli.resolve_commit("refs/heads/nope").is_err());
+}

@@ -96,6 +96,11 @@ pub trait GitRepo {
     fn list_worktrees(&self) -> Result<Vec<WorktreeEntry>, PortError>;
     fn remove_worktree(&self, path: &Path, force: bool) -> Result<(), PortError>;
     fn fetch(&self, remote: &str, refspec: &str) -> Result<(), PortError>;
+    /// The commit a revision names, as a full object name.
+    fn resolve_commit(&self, rev: &str) -> Result<String, PortError>;
+    /// Is `ancestor` reachable from `descendant`? A branch update is a
+    /// fast-forward exactly when its current tip is.
+    fn is_ancestor(&self, ancestor: &str, descendant: &str) -> Result<bool, PortError>;
     fn probe(&self) -> Result<String, PortError>;
 }
 

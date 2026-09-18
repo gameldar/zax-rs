@@ -92,6 +92,24 @@ pub fn fetch(remote: &str, refspec: &str) -> Vec<String> {
     vec![s("fetch"), s(remote), s(refspec)]
 }
 
+/// `^{commit}` makes this fail on a tag or a tree rather than returning an
+/// object that cannot be compared with a branch tip. `--verify` turns an
+/// unknown revision into a non-zero exit instead of an echo of the input.
+pub fn resolve_commit(rev: &str) -> Vec<String> {
+    vec![s("rev-parse"), s("--verify"), format!("{rev}^{{commit}}")]
+}
+
+/// Exits 0 when `ancestor` is reachable from `descendant`, 1 when it is not,
+/// and something else when the question could not be answered.
+pub fn is_ancestor(ancestor: &str, descendant: &str) -> Vec<String> {
+    vec![
+        s("merge-base"),
+        s("--is-ancestor"),
+        s(ancestor),
+        s(descendant),
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)]
@@ -219,6 +237,22 @@ mod tests {
         assert_eq!(
             fetch("origin", "+refs/pull/1963/head:refs/heads/patch-1"),
             ["fetch", "origin", "+refs/pull/1963/head:refs/heads/patch-1"]
+        );
+    }
+
+    #[test]
+    fn resolving_a_revision_asks_for_a_commit_and_verifies_it() {
+        assert_eq!(
+            resolve_commit("refs/heads/patch-1"),
+            ["rev-parse", "--verify", "refs/heads/patch-1^{commit}"]
+        );
+    }
+
+    #[test]
+    fn an_ancestry_question_names_the_ancestor_first() {
+        assert_eq!(
+            is_ancestor("aaa", "bbb"),
+            ["merge-base", "--is-ancestor", "aaa", "bbb"]
         );
     }
 

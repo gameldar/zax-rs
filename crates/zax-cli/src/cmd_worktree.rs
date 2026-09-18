@@ -17,7 +17,11 @@ pub fn run(command: WorktreeCommand) -> Result<()> {
             from,
             no_hooks,
         } => new(branch, from, no_hooks),
-        WorktreeCommand::Review { pr, no_hooks } => review(pr, no_hooks),
+        WorktreeCommand::Review {
+            pr,
+            no_hooks,
+            force,
+        } => review(pr, no_hooks, force),
         WorktreeCommand::List => list(),
         WorktreeCommand::Rm { branch, force } => remove(branch, force),
     }
@@ -47,7 +51,7 @@ fn new(branch: String, from: Option<String>, no_hooks: bool) -> Result<()> {
     Ok(())
 }
 
-fn review(pr: String, no_hooks: bool) -> Result<()> {
+fn review(pr: String, no_hooks: bool, force: bool) -> Result<()> {
     let ctx = wiring::resolve()?;
     let pr = PrRef::parse(&pr)?;
 
@@ -56,10 +60,19 @@ fn review(pr: String, no_hooks: bool) -> Result<()> {
             pr,
             root: ctx.config.worktree.root.clone(),
             provisioning: provisioning(&ctx.config, !no_hooks),
+            force,
         },
     )?;
 
-    report(&outcome);
+    // Before the path, because it is the one line here that reports something
+    // lost rather than something made.
+    if let Some(forced) = &outcome.forced_update {
+        println!(
+            "moved branch {} off its own history: {} -> {}",
+            forced.branch, forced.previous_tip, forced.head
+        );
+    }
+    report(&outcome.worktree);
     Ok(())
 }
 

@@ -143,6 +143,30 @@ impl<E: Exec> GitRepo for GitCli<E> {
         self.run_ok(argv::fetch(remote, refspec)).map(|_| ())
     }
 
+    fn resolve_commit(&self, rev: &str) -> Result<String, PortError> {
+        Ok(self
+            .run_ok(argv::resolve_commit(rev))?
+            .trimmed_stdout()
+            .to_owned())
+    }
+
+    fn is_ancestor(&self, ancestor: &str, descendant: &str) -> Result<bool, PortError> {
+        let out = self.run(argv::is_ancestor(ancestor, descendant))?;
+        match out.status {
+            0 => Ok(true),
+            1 => Ok(false),
+            // Any other status means git could not answer, which must not be
+            // read as "no": the caller treats "no" as a divergence to refuse,
+            // and a refusal over a broken repository would name the wrong
+            // problem.
+            status => Err(PortError::CommandFailed {
+                tool: TOOL,
+                status,
+                stderr: out.stderr.trim().to_owned(),
+            }),
+        }
+    }
+
     fn probe(&self) -> Result<String, PortError> {
         Ok(self.run_ok(argv::version())?.trimmed_stdout().to_owned())
     }

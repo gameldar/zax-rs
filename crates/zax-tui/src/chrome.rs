@@ -3,7 +3,7 @@
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
-use crate::fmt::truncate;
+use crate::fmt::{display_width, truncate};
 
 pub const GLYPH_BAR: &str = "\u{258e}";
 pub const GLYPH_ERROR: &str = "\u{26a0}";
@@ -31,15 +31,17 @@ pub fn header_line(title: &str, status: &str, focused: bool, width: u16) -> Line
     // title and the status, with the status taking priority because a stale
     // marker matters more than the rest of a title.
     let prefix = format!("{GLYPH_BAR} ");
-    let prefix_width = prefix.chars().count().min(width);
+    let prefix_width = display_width(&prefix).min(width);
     let remaining = width.saturating_sub(prefix_width);
 
+    // Every measurement here is in terminal columns, not characters. Mixing the
+    // two is what lets a pane overflow on a title containing emoji or CJK.
     let status_text = truncate(status, remaining);
-    let status_width = status_text.chars().count();
+    let status_width = display_width(&status_text);
     let title_budget = remaining.saturating_sub(status_width + 1);
     let title_text = truncate(title, title_budget);
     let gap = remaining
-        .saturating_sub(title_text.chars().count())
+        .saturating_sub(display_width(&title_text))
         .saturating_sub(status_width);
 
     Line::from(vec![
@@ -76,6 +78,11 @@ mod tests {
         line.spans.iter().map(|s| s.content.as_ref()).collect()
     }
 
+    /// Terminal columns, which is what a header's width budget is measured in.
+    fn columns(line: &Line<'_>) -> usize {
+        crate::fmt::display_width(&text(line))
+    }
+
     #[test]
     fn a_header_shows_the_title_on_the_left_and_the_status_on_the_right() {
         let line = header_line("Deploys", "12s", false, 24);
@@ -85,20 +92,38 @@ mod tests {
             "got: {rendered:?}"
         );
         assert!(rendered.ends_with("12s"), "got: {rendered:?}");
-        assert_eq!(rendered.chars().count(), 24);
+        assert_eq!(columns(&line), 24);
     }
 
     #[test]
     fn a_narrow_header_truncates_the_title_rather_than_overflowing() {
         let line = header_line("A very long pane title indeed", "3m", false, 16);
-        assert_eq!(text(&line).chars().count(), 16);
+        assert_eq!(columns(&line), 16);
+    }
+
+    #[test]
+    fn a_header_with_wide_characters_still_fits_its_columns() {
+        // Counting characters here would draw a header up to twice as wide as
+        // the pane, which is how this reaches a user: a title with emoji.
+        for width in 0..=40_u16 {
+            assert_eq!(
+                columns(&header_line(
+                    "\u{1f600} 日本語のタイトル",
+                    "3m",
+                    false,
+                    width
+                )),
+                width as usize,
+                "width {width}"
+            );
+        }
     }
 
     #[test]
     fn a_header_too_narrow_for_anything_still_produces_a_line() {
         for width in [0_u16, 1, 2, 3] {
             let line = header_line("Deploys", "12s", false, width);
-            assert_eq!(text(&line).chars().count(), width as usize);
+            assert_eq!(columns(&line), width as usize);
         }
     }
 

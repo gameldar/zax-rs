@@ -103,6 +103,26 @@ mod tests {
     }
 
     #[test]
+    fn the_status_takes_its_columns_before_the_title_does() {
+        // A stale marker matters more than the rest of a title: a gh hiccup
+        // must never look like a healthy pane. In a 24-column pane with a long
+        // configured title, giving the title its budget first would leave the
+        // status truncated or gone, which is exactly the failure the refresh
+        // policy is meant to prevent.
+        let line = header_line("A very long configured pane title", "stale 3m", false, 24);
+        let rendered = text(&line);
+
+        assert!(rendered.ends_with("stale 3m"), "got: {rendered:?}");
+        assert_eq!(columns(&line), 24);
+        // And the title really was the one that gave way, so the assertion
+        // above is not satisfied by a header with room for both.
+        assert!(
+            !rendered.contains("configured pane title"),
+            "got: {rendered:?}"
+        );
+    }
+
+    #[test]
     fn a_narrow_header_truncates_the_title_rather_than_overflowing() {
         let line = header_line("A very long pane title indeed", "3m", false, 16);
         assert_eq!(columns(&line), 16);

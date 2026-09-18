@@ -567,22 +567,40 @@ mod tests {
         );
         let pr = pane.rows().first().expect("one row").clone();
 
+        // Terminal columns, measured through `unicode-width` DIRECTLY rather
+        // than through this crate's `display_width`, which is part of what the
+        // row's arithmetic is made of. An oracle sharing the measurement agrees
+        // with the code however wrong both become.
         let columns = |line: &ratatui::text::Line<'_>| {
-            crate::fmt::display_width(
-                &line
-                    .spans
+            unicode_width::UnicodeWidthStr::width(
+                line.spans
                     .iter()
                     .map(|s| s.content.as_ref())
-                    .collect::<String>(),
+                    .collect::<String>()
+                    .as_str(),
             )
         };
+        let w = |text: &str| unicode_width::UnicodeWidthStr::width(text);
 
-        // A row cannot shrink below its glyph, age, separators and the number,
-        // because the number is what identifies the pull request and is never
-        // truncated. Rather than write that floor down - it moves with the
-        // number's digits, and a floor chosen to suit one fixture says nothing
-        // about the next - ask the row itself for its smallest form.
-        let irreducible = columns(&pane.row(&pr, false, 0, t(100)));
+        // The floor a row cannot shrink below, computed from the fixture and
+        // the row's documented shape rather than by asking the row for it. An
+        // earlier version measured `row(.., width = 0)` here, which grows with
+        // any bug that widens the row, so the bound grew with it and the sweep
+        // below could not fail: with both width budgets replaced by
+        // `usize::MAX` the test still passed.
+        //
+        // The parts: the one-column check glyph, the three separators the row
+        // always carries, the three-column age of a pull request created at the
+        // fixture's own `now`, and `#1963`, which is never truncated because it
+        // is what identifies the pull request. The repository name and the
+        // title can both go to nothing.
+        let floor = w(crate::chrome::GLYPH_PASS) + 3 + w("now") + w("#1963");
+        assert_eq!(floor, 12, "the fixture's floor, spelled out");
+        assert_eq!(
+            columns(&pane.row(&pr, false, 0, t(100))),
+            floor,
+            "a row squeezed to nothing is exactly its irreducible parts"
+        );
 
         // The invariant, at every width from nothing upward: a row fits its
         // pane, or it is already as small as it goes. Below the floor the
@@ -590,9 +608,9 @@ mod tests {
         for width in 0..=60u16 {
             let built = pane.row(&pr, false, width, t(100));
             assert!(
-                columns(&built) <= usize::from(width).max(irreducible),
-                "width {width} produced a {}-column row (irreducible is \
-                 {irreducible}): {:?}",
+                columns(&built) <= usize::from(width).max(floor),
+                "width {width} produced a {}-column row (the floor is \
+                 {floor}): {:?}",
                 columns(&built),
                 built
                     .spans

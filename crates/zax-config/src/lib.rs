@@ -1,5 +1,15 @@
 //! The three-layer TOML chain: global defaults, what the repo ships, and your
 //! personal override for that repo. Your layer wins.
+//!
+//! Layer 2 is a trust boundary. It is a file checked into somebody else's
+//! repository, and zax runs what it says: pane commands are executed when a
+//! session starts and `[worktree] hooks` are executed through `sh -c` when a
+//! worktree is made. That is the intended design of a layer whose purpose is
+//! shipping a repo's own layout, but it means opening an untrusted repository
+//! with zax as the agent entry point runs that repository's configuration. The
+//! values that are not already "the repo can run commands" are parsed strictly
+//! here for that reason: the override `name`, the tmux prefix and the `copy`
+//! list.
 
 pub mod error;
 pub mod merge;

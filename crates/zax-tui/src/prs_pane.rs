@@ -90,14 +90,33 @@ impl PrsForReviewPane {
                 ));
             }
             Some(prs) => {
-                let visible = usize::from(area.height).saturating_sub(1);
-                for (index, pr) in prs.iter().take(visible).enumerate() {
+                let window = self.visible_rows(prs.len(), area.height);
+                for (index, pr) in prs.iter().enumerate().skip(window.start).take(window.len()) {
                     lines.push(self.row(pr, index == self.selected, area.width, now));
                 }
             }
         }
 
         frame.render_widget(Paragraph::new(Text::from(lines)), area);
+    }
+
+    /// Which rows a pane of this height shows.
+    ///
+    /// The window follows the selection rather than being stored and nudged:
+    /// derived from `selected` at every draw, it cannot fall out of step with
+    /// it, and there is no second place for `j` to forget to update. It scrolls
+    /// only as far as it must, so the selection becomes the last visible row
+    /// rather than jumping to the middle.
+    ///
+    /// Keeping the selection on screen is not cosmetic. `enter`, `y` and `w`
+    /// all act on it, and `w` builds a worktree, so a cursor the user cannot
+    /// see is a keystroke acting on a pull request they did not pick.
+    fn visible_rows(&self, len: usize, height: u16) -> std::ops::Range<usize> {
+        // One line of the pane is the header.
+        let visible = usize::from(height).saturating_sub(1);
+        let first = self.selected.saturating_sub(visible.saturating_sub(1));
+        let first = first.min(len);
+        first..(first + visible).min(len)
     }
 
     fn row(&self, pr: &PullRequest, selected: bool, width: u16, now: SystemTime) -> Line<'static> {
@@ -320,6 +339,76 @@ mod tests {
             second.contains(crate::chrome::GLYPH_FAIL),
             "got: {second:?}"
         );
+    }
+
+    #[test]
+    fn the_window_of_rows_follows_the_selection_down_the_queue() {
+        // Hand-computed: a 6-row pane spends one row on the header, so five
+        // rows of ten are visible, and the window scrolls only far enough to
+        // keep the selection as the last of them.
+        let mut pane = PrsForReviewPane::new();
+        pane.apply(
+            Ok((0..10)
+                .map(|n| pr("acme/omega", n, false, CheckState::Passing))
+                .collect()),
+            t(100),
+        );
+
+        assert_eq!(pane.visible_rows(10, 6), 0..5);
+        for expected in [0..5, 0..5, 0..5, 0..5, 1..6, 2..7, 3..8, 4..9, 5..10] {
+            pane.on_key(key(KeyCode::Char('j')));
+            assert_eq!(pane.visible_rows(10, 6), expected);
+        }
+
+        // A queue shorter than the pane fills what it has and no more.
+        let mut short = PrsForReviewPane::new();
+        short.apply(
+            Ok(vec![pr("acme/omega", 1, false, CheckState::Passing)]),
+            t(100),
+        );
+        assert_eq!(short.visible_rows(1, 6), 0..1);
+        // A pane with no room for rows at all shows none.
+        assert_eq!(short.visible_rows(1, 1), 0..0);
+        assert_eq!(short.visible_rows(1, 0), 0..0);
+    }
+
+    #[test]
+    fn a_selection_pushed_past_the_viewport_is_still_on_screen() {
+        // Nine `j` presses in a six-row pane. The pull request numbers are the
+        // fixture's own, so what must be on screen is known without asking the
+        // pane anything.
+        let mut pane = PrsForReviewPane::new();
+        pane.apply(
+            Ok((100..110)
+                .map(|n| pr("acme/omega", n, false, CheckState::Passing))
+                .collect()),
+            t(100),
+        );
+        pane.set_focused(true);
+        for _ in 0..9 {
+            pane.on_key(key(KeyCode::Char('j')));
+        }
+
+        let mut terminal = Terminal::new(TestBackend::new(48, 6)).unwrap();
+        terminal
+            .draw(|frame| pane.render(frame, frame.area(), t(100)))
+            .unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        let screen: String = (0..buffer.area.height)
+            .map(|y| row(&buffer, y))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(screen.contains("#109"), "got:\n{screen}");
+        assert!(!screen.contains("#100"), "got:\n{screen}");
+
+        // And the highlight is on it, not on a row that scrolled away.
+        let highlighted: Vec<String> = (0..buffer.area.height)
+            .filter(|y| buffer[(0, *y)].modifier.contains(Modifier::REVERSED))
+            .map(|y| row(&buffer, y))
+            .collect();
+        assert_eq!(highlighted.len(), 1, "got:\n{screen}");
+        assert!(highlighted[0].contains("#109"), "got: {:?}", highlighted[0]);
     }
 
     #[test]

@@ -31,8 +31,7 @@ impl TicketKey {
         let malformed = || TicketKeyError::Malformed(raw.to_owned());
         let (project, number) = raw.split_once('-').ok_or_else(malformed)?;
 
-        let project_ok =
-            !project.is_empty() && project.chars().all(|c| c.is_ascii_uppercase());
+        let project_ok = !project.is_empty() && project.chars().all(|c| c.is_ascii_uppercase());
         let number_ok = !number.is_empty() && number.chars().all(|c| c.is_ascii_digit());
 
         if project_ok && number_ok {

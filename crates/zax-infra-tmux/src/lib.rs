@@ -256,7 +256,9 @@ mod tests {
             "can't find session: zax-acme-topic-1234abcd",
         ] {
             assert!(
-                !cli(vec![failed(1, stderr)]).session_exists(&name()).unwrap(),
+                !cli(vec![failed(1, stderr)])
+                    .session_exists(&name())
+                    .unwrap(),
                 "{stderr} means the session is absent"
             );
         }

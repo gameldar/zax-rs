@@ -411,8 +411,7 @@ mod tests {
         let git = FakeGitRepo::new("/Users/me/src/acme", "OMEGA-1963-stamp");
         let name = session_name(&git);
         let live = zax_domain::SessionName::parse(&name).unwrap();
-        let mux =
-            FakeMultiplexer::with_sessions([live.clone()]).pretending_no_session_exists();
+        let mux = FakeMultiplexer::with_sessions([live.clone()]).pretending_no_session_exists();
 
         let error = StartSession::new(&mux, &git).run(request()).unwrap_err();
         assert!(

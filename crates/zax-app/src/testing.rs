@@ -402,9 +402,8 @@ impl FakeForge {
 
     /// Which repository the forge thinks the current directory is in.
     pub fn in_repository(mut self, slug: &str) -> Self {
-        self.current_repo = Some(
-            RepoSlug::parse(slug).unwrap_or_else(|_| panic!("`{slug}` is not a repository")),
-        );
+        self.current_repo =
+            Some(RepoSlug::parse(slug).unwrap_or_else(|_| panic!("`{slug}` is not a repository")));
         self
     }
 

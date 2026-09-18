@@ -126,9 +126,17 @@ macro_rules! pane_loop {
                     Event::Key(key) if key.kind == KeyEventKind::Press => match pane.on_key(key) {
                         PaneAction::Quit => break,
                         PaneAction::Refresh => due = Instant::now(),
-                        // Refreshing on focus is what the spec asks for.
-                        other => $on_action(other)?,
+                        other => {
+                            // A side effect that failed is reported through the
+                            // pane's own error channel, which marks it stale
+                            // and shows the line. The pane owns the screen, so
+                            // there is nowhere else for it to go.
+                            if let Some(message) = $on_action(other)? {
+                                pane.apply(Err(message), SystemTime::now());
+                            }
+                        }
                     },
+                    // Refreshing on focus is what the spec asks for.
                     Event::FocusGained => due = Instant::now(),
                     _ => {}
                 }
@@ -190,17 +198,28 @@ fn run_exec_pane(title: String, every: Duration, command: Command) -> Result<()>
     )
 }
 
-/// Turn a row action into a side effect. Never fatal: a pane must survive a
-/// missing `open` or clipboard tool.
-fn perform(action: PaneAction) -> Result<()> {
+/// Turn a row action into a side effect, and return the one line the pane
+/// should show if it went wrong. Never fatal: a pane must survive a missing
+/// `open` or clipboard tool.
+///
+/// Opening a URL and copying to the clipboard stay silent by design - there is
+/// nothing to report but a missing helper program, and the user can see that
+/// nothing opened. Building a review worktree is different: it mutates the
+/// repository, it can refuse for reasons the user needs to read, and a pane
+/// that swallowed the answer would leave a `w` press looking like a no-op.
+fn perform(action: PaneAction) -> Result<Option<String>> {
+    perform_with(&SystemExec, action)
+}
+
+fn perform_with<E: Exec>(exec: &E, action: PaneAction) -> Result<Option<String>> {
     match action {
         PaneAction::OpenUrl(url) => {
-            let _ = SystemExec.exec(open_program(), &[url], None, &[]);
+            let _ = exec.exec(open_program(), &[url], None, &[]);
         }
         PaneAction::CopyUrl(url) => copy_to_clipboard(&url),
         PaneAction::ReviewWorktree { repo, number } => {
             let zax = wiring::zax_bin()?.to_string_lossy().into_owned();
-            let _ = SystemExec.exec(
+            let result = exec.exec(
                 &zax,
                 &[
                     "worktree".to_owned(),
@@ -210,10 +229,36 @@ fn perform(action: PaneAction) -> Result<()> {
                 None,
                 &[],
             );
+            return Ok(review_message(result));
         }
         PaneAction::None | PaneAction::Refresh | PaneAction::Quit => {}
     }
-    Ok(())
+    Ok(None)
+}
+
+/// What a finished `zax worktree review` should tell the pane.
+///
+/// zax prints its whole error chain as the last line of stderr, so that line is
+/// the message. Anything else (a tool that wrote nothing, a status with no
+/// explanation) still produces a line, because the point is that a failed `w`
+/// is never silent.
+fn review_message(result: Result<zax_exec::Output, zax_exec::ExecError>) -> Option<String> {
+    let detail = match result {
+        Ok(out) if out.ok() => return None,
+        Ok(out) => out
+            .stderr
+            .lines()
+            .rev()
+            .map(str::trim)
+            // zax prefixes its own errors; the pane header says which command
+            // this came from already.
+            .map(|line| line.strip_prefix("zax: ").unwrap_or(line))
+            .find(|line| !line.is_empty())
+            .map(str::to_owned)
+            .unwrap_or_else(|| format!("exited with status {}", out.status)),
+        Err(error) => error.to_string(),
+    };
+    Some(format!("worktree review: {detail}"))
 }
 
 fn open_program() -> &'static str {
@@ -253,4 +298,97 @@ fn pipe_into(program: &str, args: &[String], text: &str) -> std::io::Result<()> 
     }
     child.wait()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)]
+    use zax_exec::{ExecError, Output, RecordingExec};
+    use zax_tui::PaneAction;
+
+    use super::{perform_with, review_message};
+
+    fn out(status: i32, stderr: &str) -> Result<Output, ExecError> {
+        Ok(Output {
+            status,
+            stdout: String::new(),
+            stderr: stderr.to_owned(),
+        })
+    }
+
+    #[test]
+    fn a_review_that_worked_says_nothing() {
+        assert_eq!(review_message(out(0, "")), None);
+    }
+
+    #[test]
+    fn a_refused_review_reaches_the_pane_instead_of_vanishing() {
+        // The two refusals a `w` press can actually meet, spelled the way zax
+        // prints them.
+        let refusal = "zax: pull request #42 belongs to acme/omega, but this \
+                       is someone/zed-ai-extensions";
+        let message = review_message(out(1, refusal)).unwrap();
+        assert!(message.contains("acme/omega"), "got: {message}");
+        assert!(message.contains("someone/zed-ai-extensions"), "got: {message}");
+    }
+
+    #[test]
+    fn only_the_final_line_of_the_error_chain_is_shown() {
+        // A pane row is one line, and zax puts its whole chain on the last one.
+        let message = review_message(out(1, "warning: noise\nzax: the real problem\n")).unwrap();
+        assert!(message.ends_with("the real problem"), "got: {message}");
+        assert!(!message.contains("noise"), "got: {message}");
+    }
+
+    #[test]
+    fn a_failure_with_nothing_to_say_still_says_something() {
+        let message = review_message(out(2, "   \n")).unwrap();
+        assert!(message.contains('2'), "got: {message}");
+    }
+
+    #[test]
+    fn a_failed_review_row_action_hands_the_pane_a_line_to_show() {
+        // The `w` press mutates the repository and can refuse; discarding its
+        // result leaves the keystroke looking like a no-op.
+        let exec = RecordingExec::with_responses(vec![Output {
+            status: 1,
+            stdout: String::new(),
+            stderr: "zax: branch `patch-1` is at aaaaaaa\n".to_owned(),
+        }]);
+        let action = PaneAction::ReviewWorktree {
+            repo: zax_domain::RepoSlug::parse("acme/omega").unwrap(),
+            number: 42,
+        };
+
+        let message = perform_with(&exec, action).unwrap().unwrap();
+
+        assert!(message.contains("patch-1"), "got: {message}");
+        assert_eq!(
+            exec.args(0),
+            [
+                "worktree",
+                "review",
+                "https://github.com/acme/omega/pull/42"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_review_row_action_that_worked_leaves_the_pane_alone() {
+        let exec = RecordingExec::returning("");
+        let action = PaneAction::ReviewWorktree {
+            repo: zax_domain::RepoSlug::parse("acme/omega").unwrap(),
+            number: 42,
+        };
+        assert_eq!(perform_with(&exec, action).unwrap(), None);
+    }
+
+    #[test]
+    fn a_review_that_could_not_be_started_is_reported_too() {
+        let message = review_message(Err(ExecError::NotFound {
+            program: "zax".to_owned(),
+        }))
+        .unwrap();
+        assert!(message.contains("zax"), "got: {message}");
+    }
 }

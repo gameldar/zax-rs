@@ -1,0 +1,13 @@
+[package]
+name = "zax-app"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+zax-domain.workspace = true
+
+[lints]
+workspace = true

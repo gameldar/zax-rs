@@ -28,6 +28,11 @@ impl<E: Exec> GitCli<E> {
         &self.exec
     }
 
+    /// `GitRepo::root_repo_name` without needing the trait in scope.
+    pub fn repo_name(&self) -> Result<zax_domain::RootRepoName, PortError> {
+        <Self as GitRepo>::root_repo_name(self)
+    }
+
     /// Run and accept any exit status.
     fn run(&self, args: Vec<String>) -> Result<Output, PortError> {
         self.exec

@@ -4,7 +4,12 @@
 //! conventions are type constructors, not advisory documentation.
 
 pub mod branch;
+pub mod repo;
 pub mod ticket;
 
 pub use branch::{BranchName, BranchNameError, BranchOrigin};
+pub use repo::{
+    RootRepoName, RootRepoNameError, WorktreePath, WorktreePathError, WorktreeRoot,
+    WorktreeRootError,
+};
 pub use ticket::{TicketKey, TicketKeyError};

@@ -147,10 +147,23 @@ impl WorktreePath {
     /// component, because its ref-syntax validation rejects any `..` in the raw
     /// name. See the note in `branch.rs`.
     ///
-    /// None of this can see through a symbolic link: a root that is a symlink
-    /// resolving into the repository would still be accepted. Resolving that
-    /// needs the filesystem, and this crate performs no I/O, so the adapter
-    /// that actually creates the worktree is where such a check belongs.
+    /// Two spellings still get through, and both need the filesystem to
+    /// detect, which this crate deliberately does not touch:
+    ///
+    /// - A symbolic link. A root that is a symlink resolving into the
+    ///   repository is accepted, because only the link's own path is compared.
+    /// - Case folding. On a case-insensitive volume, which is the macOS
+    ///   default, `/A/REPO` and `/a/repo` are one directory but two different
+    ///   sequences of components, so a repository given in a different case
+    ///   than the root is accepted.
+    ///
+    /// Both are the same shape as the bugs this function does catch: a path
+    /// that resolves into the repository while sharing no literal component
+    /// prefix with it. The difference is that resolving them requires asking
+    /// the filesystem, so the adapter that actually creates the worktree is
+    /// where those checks belong. Do not add a case-folding comparison here
+    /// instead: whether a volume folds case is a property of the volume, not
+    /// of the string, and guessing it would break case-sensitive volumes.
     pub fn new(
         root: &WorktreeRoot,
         repo: &RootRepoName,

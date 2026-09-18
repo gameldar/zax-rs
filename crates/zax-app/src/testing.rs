@@ -46,6 +46,8 @@ pub enum MuxCall {
 pub struct FakeMultiplexer {
     calls: RefCell<Vec<MuxCall>>,
     sessions: RefCell<HashSet<String>>,
+    /// `session_exists` answers "no" whatever the session set says.
+    blind: bool,
     fail_at: Option<usize>,
     failure: String,
 }
@@ -69,8 +71,26 @@ impl FakeMultiplexer {
         }
     }
 
+    /// Report every session as absent while still holding them. This is the
+    /// race the real adapter cannot rule out: `has-session` answered before a
+    /// concurrent `new-session` landed, or answered wrongly because tmux
+    /// failed. The session set stays populated, so `create_session` still
+    /// collides the way tmux does.
+    pub fn pretending_no_session_exists(mut self) -> Self {
+        self.blind = true;
+        self
+    }
+
     pub fn calls(&self) -> Vec<MuxCall> {
         self.calls.borrow().clone()
+    }
+
+    /// The sessions the fake is actually holding, regardless of what
+    /// `session_exists` is willing to admit to.
+    pub fn live_sessions(&self) -> Vec<String> {
+        let mut names: Vec<_> = self.sessions.borrow().iter().cloned().collect();
+        names.sort();
+        names
     }
 
     /// Call after recording. Borrows and drops in one statement, so it cannot
@@ -95,6 +115,9 @@ impl FakeMultiplexer {
 
 impl Multiplexer for FakeMultiplexer {
     fn session_exists(&self, name: &SessionName) -> Result<bool, PortError> {
+        if self.blind {
+            return Ok(false);
+        }
         Ok(self.sessions.borrow().contains(name.as_str()))
     }
 
@@ -113,12 +136,25 @@ impl Multiplexer for FakeMultiplexer {
         cwd: &Path,
         command: &Command,
     ) -> Result<(), PortError> {
-        self.sessions.borrow_mut().insert(name.as_str().to_owned());
-        self.record(MuxCall::CreateSession {
+        let call = MuxCall::CreateSession {
             name: name.as_str().to_owned(),
             cwd: cwd.to_owned(),
             argv: command.argv().to_vec(),
-        })
+        };
+        // tmux refuses a duplicate session name rather than replacing the
+        // session that is already there, and the difference matters: a caller
+        // that cleans up after a failed create would be destroying somebody
+        // else's live session. The attempt is still recorded.
+        if self.sessions.borrow().contains(name.as_str()) {
+            self.calls.borrow_mut().push(call);
+            return Err(PortError::CommandFailed {
+                tool: "tmux",
+                status: 1,
+                stderr: format!("duplicate session: {}", name.as_str()),
+            });
+        }
+        self.sessions.borrow_mut().insert(name.as_str().to_owned());
+        self.record(call)
     }
 
     fn split_pane(

@@ -91,7 +91,30 @@ fn map_exec_error(error: ExecError) -> PortError {
 
 impl<E: Exec, H: Handover> Multiplexer for TmuxCli<E, H> {
     fn session_exists(&self, name: &SessionName) -> Result<bool, PortError> {
-        Ok(self.run(argv::has_session(self.base(), name))?.ok())
+        let out = self.run(argv::has_session(self.base(), name))?;
+        if out.ok() {
+            return Ok(true);
+        }
+        // tmux answers "not there" with a non-zero exit and a message, and it
+        // has no distinct exit code for it, so the message is all there is to
+        // go on. The matching is therefore best effort, and deliberately
+        // narrow: anything unrecognised becomes an error rather than a "no".
+        // A tmux that failed for some other reason must not read as an empty
+        // name for the caller to build over.
+        let stderr = out.stderr.to_ascii_lowercase();
+        let absent = stderr.contains("can't find session")
+            // No socket file at all: nothing has ever started this server.
+            || stderr.contains("no such file or directory")
+            // A socket file whose server has gone.
+            || stderr.contains("no server running");
+        if absent {
+            return Ok(false);
+        }
+        Err(PortError::CommandFailed {
+            tool: TOOL,
+            status: out.status,
+            stderr: out.stderr.trim().to_owned(),
+        })
     }
 
     fn list_sessions(&self) -> Result<Vec<SessionName>, PortError> {
@@ -220,6 +243,37 @@ mod tests {
         assert!(!cli(vec![failed(1, "can't find session")])
             .session_exists(&name())
             .unwrap());
+    }
+
+    #[test]
+    fn the_spellings_of_a_genuinely_absent_session_are_all_a_plain_no() {
+        // Exactly what tmux 3.7 writes, in the three states that mean "not
+        // there": no socket file, a dead server behind one, and a live server
+        // without that session.
+        for stderr in [
+            "error connecting to /private/tmp/tmux-501/zax (No such file or directory)",
+            "no server running on /private/tmp/tmux-501/zax",
+            "can't find session: zax-acme-topic-1234abcd",
+        ] {
+            assert!(
+                !cli(vec![failed(1, stderr)]).session_exists(&name()).unwrap(),
+                "{stderr} means the session is absent"
+            );
+        }
+    }
+
+    #[test]
+    fn a_tmux_that_failed_for_another_reason_is_not_an_empty_slot() {
+        // Reading every non-zero exit as "no session" turns a broken tmux into
+        // a free name, and the caller then builds over whatever is there.
+        let err = cli(vec![failed(1, "lost server")])
+            .session_exists(&name())
+            .unwrap_err();
+        assert!(
+            matches!(err, PortError::CommandFailed { tool: "tmux", .. }),
+            "got: {err:?}"
+        );
+        assert!(err.to_string().contains("lost server"), "got: {err}");
     }
 
     #[test]

@@ -75,11 +75,21 @@ impl<'a, M: Multiplexer, G: GitRepo> StartSession<'a, M, G> {
             return Ok(StartSessionOutcome::Attached(name));
         }
 
+        // The creation is deliberately outside the teardown below. The check
+        // above is not a lock: two `zax session start` for one worktree, which
+        // Zed produces by opening two agent terminals, can both be told the
+        // session is absent and the loser's `create_session` then collides
+        // with the winner's live agent. Killing the name on that failure would
+        // destroy a running session and its scrollback. Nothing is torn down
+        // unless this call is the one that created it.
+        self.mux
+            .create_session(&name, &req.cwd, req.layout.agent())?;
+
         // A session that is only half built must not survive. It would satisfy
         // `session_exists` on the next start, so every later invocation would
         // take the attach branch above and silently hand the user a session
         // missing its panes, with no error and no way to finish it.
-        if let Err(error) = self.build_layout(&name, &req) {
+        if let Err(error) = self.build_panes(&name, &req) {
             // Best effort, and its own failure is deliberately discarded: the
             // session was created moments ago in this same call and holds
             // nothing the user can have touched, so reporting a teardown
@@ -98,15 +108,12 @@ impl<'a, M: Multiplexer, G: GitRepo> StartSession<'a, M, G> {
         Ok(StartSessionOutcome::Created(name))
     }
 
-    /// Create the session and everything around the agent pane.
-    fn build_layout(
+    /// Everything around the agent pane, in a session that already exists.
+    fn build_panes(
         &self,
         name: &SessionName,
         req: &StartSessionRequest,
     ) -> Result<(), StartSessionError> {
-        self.mux
-            .create_session(name, &req.cwd, req.layout.agent())?;
-
         for (index, pane) in req.layout.panes().iter().enumerate() {
             let command = pane_command(&req.zax_bin, &pane.kind)?;
             // Pane 0 is the agent. The first context pane splits it
@@ -391,6 +398,39 @@ mod tests {
             !mux.session_exists(&zax_domain::SessionName::parse(&name).unwrap())
                 .unwrap(),
             "a surviving half-built session would be attached to forever after"
+        );
+    }
+
+    #[test]
+    fn a_session_this_call_did_not_create_is_never_torn_down() {
+        // The race Zed can produce: two `zax session start` for one worktree.
+        // Both ask whether the session exists before either has created it, so
+        // both are told no, and the loser's `create_session` collides with the
+        // winner's live agent session. Tearing down after that failure destroys
+        // a running agent and its scrollback.
+        let git = FakeGitRepo::new("/Users/me/src/acme", "OMEGA-1963-stamp");
+        let name = session_name(&git);
+        let live = zax_domain::SessionName::parse(&name).unwrap();
+        let mux =
+            FakeMultiplexer::with_sessions([live.clone()]).pretending_no_session_exists();
+
+        let error = StartSession::new(&mux, &git).run(request()).unwrap_err();
+        assert!(
+            error.to_string().contains("duplicate session"),
+            "the collision itself is what the user must be told: {error:?}"
+        );
+
+        assert!(
+            !mux.calls()
+                .iter()
+                .any(|c| matches!(c, MuxCall::KillSession { .. })),
+            "nothing was created here, so nothing may be destroyed: {:?}",
+            mux.calls()
+        );
+        assert_eq!(
+            mux.live_sessions(),
+            vec![name],
+            "the session that was already running must survive"
         );
     }
 

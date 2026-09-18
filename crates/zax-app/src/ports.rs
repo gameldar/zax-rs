@@ -110,6 +110,11 @@ pub struct PullRequestHead {
 
 pub trait Forge {
     fn review_requests(&self) -> Result<Vec<PullRequest>, PortError>;
+    /// The repository the current directory belongs to, as the forge resolves
+    /// it. This is the repository a bare pull request number is read against
+    /// and the one `origin` points at, so it is what a pull request from
+    /// somewhere else has to be compared with.
+    fn current_repo(&self) -> Result<RepoSlug, PortError>;
     /// `None` when the branch has no open pull request.
     fn branch_status(&self, branch: &BranchName) -> Result<Option<BranchStatus>, PortError>;
     fn pull_request_head(&self, pr: &PrRef) -> Result<PullRequestHead, PortError>;

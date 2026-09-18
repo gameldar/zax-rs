@@ -102,6 +102,10 @@ impl<E: Exec> Forge for GhCli<E> {
         dto::parse_search_response(&out.stdout).map_err(unparseable)
     }
 
+    fn current_repo(&self) -> Result<RepoSlug, PortError> {
+        self.repo_slug()
+    }
+
     fn branch_status(&self, branch: &BranchName) -> Result<Option<BranchStatus>, PortError> {
         let slug = self.repo_slug()?;
         let out = self.run_ok(argv::graphql_query(

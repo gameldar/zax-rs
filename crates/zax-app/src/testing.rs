@@ -7,7 +7,8 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use zax_domain::{
-    BranchName, BranchStatus, Command, PaneSize, PrRef, PullRequest, RootRepoName, SessionName,
+    BranchName, BranchStatus, Command, PaneSize, PrRef, PullRequest, RepoSlug, RootRepoName,
+    SessionName,
 };
 
 use crate::ports::{
@@ -328,6 +329,7 @@ pub struct FakeForge {
     pub review_requests: Vec<PullRequest>,
     pub branch_status: Option<BranchStatus>,
     pub head: Option<PullRequestHead>,
+    pub current_repo: Option<RepoSlug>,
     pub fail_with: Option<PortError>,
 }
 
@@ -344,6 +346,18 @@ impl Forge for FakeForge {
             Some(e) => Err(e.clone()),
             None => Ok(self.branch_status.clone()),
         }
+    }
+
+    fn current_repo(&self) -> Result<RepoSlug, PortError> {
+        if let Some(e) = &self.fail_with {
+            return Err(e.clone());
+        }
+        self.current_repo
+            .clone()
+            .ok_or_else(|| PortError::Unparseable {
+                tool: "gh",
+                detail: "no current repository fixture".to_owned(),
+            })
     }
 
     fn pull_request_head(&self, pr: &PrRef) -> Result<PullRequestHead, PortError> {
@@ -384,6 +398,14 @@ impl FakeForge {
             head: Some(head),
             ..Self::default()
         }
+    }
+
+    /// Which repository the forge thinks the current directory is in.
+    pub fn in_repository(mut self, slug: &str) -> Self {
+        self.current_repo = Some(
+            RepoSlug::parse(slug).unwrap_or_else(|_| panic!("`{slug}` is not a repository")),
+        );
+        self
     }
 
     pub fn failing(error: PortError) -> Self {

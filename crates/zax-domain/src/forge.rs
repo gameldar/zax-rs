@@ -159,6 +159,26 @@ impl PrRef {
         Err(malformed())
     }
 
+    /// The repository the pull request lives in, when the reference names one.
+    ///
+    /// A URL states it: `https://<host>/<owner>/<name>/pull/<n>`. A bare number
+    /// does not - the forge resolves it against the current directory - so that
+    /// case is `None` rather than a guess. `None` is also the answer for a URL
+    /// whose shape is not recognised, because a reference this cannot read must
+    /// not be reported as belonging to some other repository.
+    pub fn repository(&self) -> Option<RepoSlug> {
+        let Self::Url(url) = self else { return None };
+        let rest = url.strip_prefix("https://")?;
+        let mut segments = rest.split('/');
+        let _host = segments.next()?;
+        let owner = segments.next()?;
+        let name = segments.next()?;
+        if segments.next()? != "pull" {
+            return None;
+        }
+        RepoSlug::parse(&format!("{owner}/{name}")).ok()
+    }
+
     /// How to hand this to `gh pr view`.
     pub fn as_gh_arg(&self) -> String {
         match self {
@@ -234,6 +254,43 @@ mod tests {
         let url = "https://github.com/acme/omega/pull/1963";
         assert_eq!(PrRef::parse(url).unwrap(), PrRef::Url(url.to_owned()));
         assert_eq!(PrRef::Url(url.to_owned()).as_gh_arg(), url);
+    }
+
+    #[test]
+    fn a_pull_url_says_which_repository_the_pull_request_is_in() {
+        // The expected slug is written out here, not derived from the URL by
+        // the same splitting the method does.
+        let pr = PrRef::parse("https://github.com/acme/omega/pull/1963").unwrap();
+        let repo = pr.repository().unwrap();
+        assert_eq!(repo.owner(), "acme");
+        assert_eq!(repo.name(), "omega");
+
+        // Enterprise hosts and deeper paths read the same way.
+        assert_eq!(
+            PrRef::parse("https://git.example.com/acme/widgets/pull/7/files")
+                .unwrap()
+                .repository()
+                .unwrap()
+                .to_string(),
+            "acme/widgets"
+        );
+    }
+
+    #[test]
+    fn a_reference_that_names_no_repository_says_so_rather_than_guessing() {
+        // A bare number is resolved against the current directory, and a URL
+        // this cannot read must not be reported as some other repository.
+        assert_eq!(PrRef::Number(1963).repository(), None);
+        for odd in [
+            "https://github.com/acme/pull/1963",
+            "https://github.com/pull/1963",
+        ] {
+            assert_eq!(
+                PrRef::Url(odd.to_owned()).repository(),
+                None,
+                "`{odd}` names no repository"
+            );
+        }
     }
 
     #[test]

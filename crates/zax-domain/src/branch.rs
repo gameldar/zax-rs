@@ -165,6 +165,12 @@ fn is_short_description(s: &str) -> bool {
 }
 
 /// The subset of `git check-ref-format --branch` that matters here.
+///
+/// The `..` rejection below is load-bearing beyond ref syntax: `WorktreePath`
+/// joins a branch's components onto a path and compares the result lexically
+/// against the repository's own path. A branch able to contribute a `..`
+/// component would defeat that comparison. Do not relax it without reading the
+/// containment note on `WorktreePath::new`.
 fn validate_ref_syntax(raw: &str) -> Result<(), BranchNameError> {
     let bad = || BranchNameError::NotARef(raw.to_owned());
 

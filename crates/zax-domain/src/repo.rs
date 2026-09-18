@@ -124,17 +124,30 @@ pub enum WorktreePathError {
     InsideRepo { path: PathBuf, repo: PathBuf },
     #[error("repository path {0} must be absolute before containment can be checked")]
     RepoNotAbsolute(PathBuf),
+    #[error(
+        "repository path {0} contains a `..` component; give the path it \
+         resolves to, because containment is checked without touching the disk"
+    )]
+    RepoTraversal(PathBuf),
 }
 
 impl WorktreePath {
     /// # Containment
     ///
-    /// The "not inside the repository" rule is enforced lexically, on whole path
-    /// components. That is exact for the inputs this type accepts, because
-    /// [`WorktreeRoot`] refuses `.` and `..` and this function refuses a
-    /// relative `main_worktree`.
+    /// The "not inside the repository" rule is enforced lexically, on whole
+    /// path components. A lexical comparison is only sound when BOTH sides are
+    /// already normalised, so both are checked here: [`WorktreeRoot`] refuses a
+    /// `..` component, and this function refuses a `main_worktree` that is
+    /// relative or contains one. Guarding only one side is not enough - a
+    /// `main_worktree` of `/a/other/../repo` resolves to `/a/repo` while
+    /// sharing no literal component prefix with it, so the check would pass a
+    /// worktree straight into the repository.
     ///
-    /// It cannot see through a symbolic link: a root that is a symlink
+    /// The third input needs no check: [`BranchName`] cannot contribute a `..`
+    /// component, because its ref-syntax validation rejects any `..` in the raw
+    /// name. See the note in `branch.rs`.
+    ///
+    /// None of this can see through a symbolic link: a root that is a symlink
     /// resolving into the repository would still be accepted. Resolving that
     /// needs the filesystem, and this crate performs no I/O, so the adapter
     /// that actually creates the worktree is where such a check belongs.
@@ -148,6 +161,11 @@ impl WorktreePath {
         // absolute candidate, so the check below would silently never fire.
         if !main_worktree.is_absolute() {
             return Err(WorktreePathError::RepoNotAbsolute(main_worktree.to_owned()));
+        }
+        // And a `..` on this side defeats the comparison just as surely as one
+        // on the root's side does.
+        if has_parent_traversal(main_worktree) {
+            return Err(WorktreePathError::RepoTraversal(main_worktree.to_owned()));
         }
 
         let mut path = root.as_path().join(repo.as_str());
@@ -295,6 +313,25 @@ mod tests {
             Path::new("/Users/me/./src/worktrees"),
             "the path is kept verbatim; only the containment comparison normalises"
         );
+    }
+
+    #[test]
+    fn containment_cannot_be_checked_against_a_traversing_repository_path() {
+        // `/a/other/../repo` resolves to `/a/repo`, so a worktree at
+        // `/a/repo/topic` is inside it - but the two share no literal component
+        // prefix, so a lexical check would wave it through. Guarding only the
+        // worktree root is not enough; both sides have to be normalised.
+        let root = WorktreeRoot::new(PathBuf::from("/a")).unwrap();
+        let branch = BranchName::parse_local("topic").unwrap();
+        assert!(matches!(
+            WorktreePath::new(
+                &root,
+                &RootRepoName::parse("repo").unwrap(),
+                &branch,
+                Path::new("/a/other/../repo"),
+            ),
+            Err(WorktreePathError::RepoTraversal(_))
+        ));
     }
 
     #[test]

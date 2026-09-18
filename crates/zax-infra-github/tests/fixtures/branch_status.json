@@ -1,0 +1,32 @@
+{
+  "data": {
+    "repository": {
+      "pullRequests": {
+        "nodes": [
+          {
+            "number": 1963,
+            "title": "Export reports as CSV",
+            "url": "https://github.com/acme/omega/pull/1963",
+            "isDraft": false,
+            "createdAt": "2026-09-15T09:12:33Z",
+            "mergeable": "CONFLICTING",
+            "reviewDecision": "CHANGES_REQUESTED",
+            "repository": { "nameWithOwner": "acme/omega" },
+            "commits": {
+              "nodes": [
+                { "commit": { "statusCheckRollup": { "state": "PENDING" } } }
+              ]
+            },
+            "reviewThreads": {
+              "nodes": [
+                { "isResolved": false },
+                { "isResolved": true },
+                { "isResolved": false }
+              ]
+            }
+          }
+        ]
+      }
+    }
+  }
+}

@@ -1,0 +1,44 @@
+{
+  "data": {
+    "search": {
+      "nodes": [
+        {
+          "number": 1963,
+          "title": "Export reports as CSV",
+          "url": "https://github.com/acme/omega/pull/1963",
+          "isDraft": false,
+          "createdAt": "2026-09-15T09:12:33Z",
+          "repository": { "nameWithOwner": "acme/omega" },
+          "commits": {
+            "nodes": [
+              { "commit": { "statusCheckRollup": { "state": "SUCCESS" } } }
+            ]
+          }
+        },
+        {
+          "number": 42,
+          "title": "Draft: try the new sampler",
+          "url": "https://github.com/acme/south/pull/42",
+          "isDraft": true,
+          "createdAt": "2026-09-17T22:01:00Z",
+          "repository": { "nameWithOwner": "acme/south" },
+          "commits": {
+            "nodes": [
+              { "commit": { "statusCheckRollup": { "state": "FAILURE" } } }
+            ]
+          }
+        },
+        {},
+        {
+          "number": 7,
+          "title": "No checks configured here",
+          "url": "https://github.com/acme/east/pull/7",
+          "isDraft": false,
+          "createdAt": "2026-08-01T00:00:00Z",
+          "repository": { "nameWithOwner": "acme/east" },
+          "commits": { "nodes": [ { "commit": { "statusCheckRollup": null } } ] }
+        }
+      ]
+    }
+  }
+}

@@ -22,6 +22,22 @@ pub enum PortError {
         status: i32,
         stderr: String,
     },
+    /// A tool command failed and the adapter has more to say than the bare
+    /// stderr does: which operation was running, and the environment it ran
+    /// in. Adapters prefer this to `CommandFailed` wherever the stderr alone
+    /// would leave the reader reconstructing the context by hand.
+    ///
+    /// `context` is already-rendered lines. The adapter owns the structure
+    /// because only the adapter knows which facts about its own tool matter;
+    /// the port carries the message.
+    #[error("{tool} {operation} failed with status {status}: {stderr}\n{context}")]
+    CommandFailedInContext {
+        tool: &'static str,
+        operation: &'static str,
+        status: i32,
+        stderr: String,
+        context: String,
+    },
     #[error("could not understand {tool} output: {detail}")]
     Unparseable { tool: &'static str, detail: String },
     #[error("{operation} failed on {path}: {detail}")]

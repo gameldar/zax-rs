@@ -2,10 +2,12 @@
 
 pub mod argv;
 pub mod conf;
+pub mod diagnostics;
 pub mod quote;
 
 use std::path::{Path, PathBuf};
 
+use crate::diagnostics::{hint_for, resolve_on_path, Diagnostics};
 use zax_app::{Multiplexer, PortError};
 use zax_domain::{Command, PaneSize, SessionName};
 use zax_exec::{Exec, ExecError, Handover, Output};
@@ -68,18 +70,90 @@ impl<E: Exec, H: Handover> TmuxCli<E, H> {
             .map_err(map_exec_error)
     }
 
-    fn run_ok(&self, args: Vec<String>) -> Result<Output, PortError> {
-        let out = self.run(args)?;
+    fn run_ok(&self, operation: &'static str, args: Vec<String>) -> Result<Output, PortError> {
+        let out = self.run(args.clone())?;
         if out.ok() {
             Ok(out)
         } else {
-            Err(PortError::CommandFailed {
-                tool: TOOL,
-                status: out.status,
-                stderr: out.stderr.trim().to_owned(),
-            })
+            Err(self.failure(operation, &args, &out))
         }
     }
+
+    /// Turn a non-zero tmux exit into an error that names its own context.
+    /// tmux is driven through a socket that outlives any one zax invocation,
+    /// so the environment is as likely to be the cause as the command is.
+    fn failure(&self, operation: &'static str, argv: &[String], out: &Output) -> PortError {
+        let stderr = out.stderr.trim().to_owned();
+        let diagnostics = Diagnostics {
+            argv: argv.to_vec(),
+            socket: self.socket.clone(),
+            conf: self.conf.clone(),
+            binary: self.resolved_binary(),
+            // Asking a tmux that just failed for its version can fail too, and
+            // a failure while reporting a failure helps nobody. The version is
+            // read from the binary, not the server, so it is safe to ask.
+            version: self.version_of_binary(),
+            hint: hint_for(&stderr, &self.socket),
+        };
+        PortError::CommandFailedInContext {
+            tool: TOOL,
+            operation,
+            status: out.status,
+            stderr,
+            context: diagnostics.render(),
+        }
+    }
+
+    /// Where the tmux zax runs actually lives. Resolved rather than assumed,
+    /// because "which tmux" is the question a version mismatch turns on.
+    fn resolved_binary(&self) -> Option<PathBuf> {
+        let path_var = std::env::var("PATH").ok()?;
+        resolve_on_path(&self.program, &path_var, &is_executable)
+    }
+
+    /// How the socket answers right now. A tmux that runs but cannot reach
+    /// the server already on its socket is not a working tmux for zax's
+    /// purposes, so that case is an error rather than a footnote on a line
+    /// that otherwise reads as success.
+    ///
+    /// Having no server yet is not a fault: it is the ordinary state before
+    /// the first session of the day.
+    fn socket_health(&self) -> Result<&'static str, PortError> {
+        let args = argv::list_sessions(self.base());
+        let out = self.run(args.clone())?;
+        if out.ok() {
+            return Ok("reachable");
+        }
+        let stderr = out.stderr.trim().to_ascii_lowercase();
+        if stderr.contains("no server running") || stderr.contains("no such file or directory") {
+            return Ok("no server yet, which is normal before the first session");
+        }
+        Err(self.failure("list-sessions", &args, &out))
+    }
+
+    /// The version of the binary on PATH, which is the client's version. It
+    /// need not match the server already running on the socket, and that
+    /// mismatch is exactly what this is here to expose.
+    fn version_of_binary(&self) -> Option<String> {
+        let out = self
+            .exec
+            .exec(&self.program, &["-V".to_owned()], None, &[])
+            .ok()?;
+        out.ok().then(|| out.trimmed_stdout().to_owned())
+    }
+}
+
+#[cfg(unix)]
+fn is_executable(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path)
+        .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+        .unwrap_or(false)
+}
+
+#[cfg(not(unix))]
+fn is_executable(path: &Path) -> bool {
+    path.is_file()
 }
 
 fn map_exec_error(error: ExecError) -> PortError {
@@ -91,7 +165,8 @@ fn map_exec_error(error: ExecError) -> PortError {
 
 impl<E: Exec, H: Handover> Multiplexer for TmuxCli<E, H> {
     fn session_exists(&self, name: &SessionName) -> Result<bool, PortError> {
-        let out = self.run(argv::has_session(self.base(), name))?;
+        let args = argv::has_session(self.base(), name);
+        let out = self.run(args.clone())?;
         if out.ok() {
             return Ok(true);
         }
@@ -110,25 +185,18 @@ impl<E: Exec, H: Handover> Multiplexer for TmuxCli<E, H> {
         if absent {
             return Ok(false);
         }
-        Err(PortError::CommandFailed {
-            tool: TOOL,
-            status: out.status,
-            stderr: out.stderr.trim().to_owned(),
-        })
+        Err(self.failure("has-session", &args, &out))
     }
 
     fn list_sessions(&self) -> Result<Vec<SessionName>, PortError> {
-        let out = self.run(argv::list_sessions(self.base()))?;
+        let args = argv::list_sessions(self.base());
+        let out = self.run(args.clone())?;
         if !out.ok() {
             // "no server running" means no sessions, not a failure.
             if out.stderr.contains("no server running") {
                 return Ok(Vec::new());
             }
-            return Err(PortError::CommandFailed {
-                tool: TOOL,
-                status: out.status,
-                stderr: out.stderr.trim().to_owned(),
-            });
+            return Err(self.failure("list-sessions", &args, &out));
         }
         // Someone else's session on this socket is not ours to report.
         Ok(out
@@ -144,8 +212,11 @@ impl<E: Exec, H: Handover> Multiplexer for TmuxCli<E, H> {
         cwd: &Path,
         command: &Command,
     ) -> Result<(), PortError> {
-        self.run_ok(argv::new_session(self.base(), name, cwd, command))
-            .map(|_| ())
+        self.run_ok(
+            "new-session",
+            argv::new_session(self.base(), name, cwd, command),
+        )
+        .map(|_| ())
     }
 
     fn split_pane(
@@ -157,20 +228,23 @@ impl<E: Exec, H: Handover> Multiplexer for TmuxCli<E, H> {
         cwd: &Path,
         command: &Command,
     ) -> Result<(), PortError> {
-        self.run_ok(argv::split_window(
-            self.base(),
-            name,
-            target_pane,
-            horizontal,
-            size,
-            cwd,
-            command,
-        ))
+        self.run_ok(
+            "split-window",
+            argv::split_window(
+                self.base(),
+                name,
+                target_pane,
+                horizontal,
+                size,
+                cwd,
+                command,
+            ),
+        )
         .map(|_| ())
     }
 
     fn select_pane(&self, name: &SessionName, index: u32) -> Result<(), PortError> {
-        self.run_ok(argv::select_pane(self.base(), name, index))
+        self.run_ok("select-pane", argv::select_pane(self.base(), name, index))
             .map(|_| ())
     }
 
@@ -182,15 +256,27 @@ impl<E: Exec, H: Handover> Multiplexer for TmuxCli<E, H> {
     }
 
     fn kill_session(&self, name: &SessionName) -> Result<(), PortError> {
-        self.run_ok(argv::kill_session(self.base(), name))
+        self.run_ok("kill-session", argv::kill_session(self.base(), name))
             .map(|_| ())
     }
 
+    /// `zax doctor`'s tmux line. It reports the client binary AND whether the
+    /// socket can be reached, because a perfectly good tmux that cannot talk
+    /// to the server already on the socket is the failure this answers.
     fn probe(&self) -> Result<String, PortError> {
-        Ok(self
-            .run_ok(argv::version(self.base()))?
+        let version = self
+            .run_ok("-V", argv::version(self.base()))?
             .trimmed_stdout()
-            .to_owned())
+            .to_owned();
+        let where_found = match self.resolved_binary() {
+            Some(path) => format!(" at {}", path.display()),
+            None => String::new(),
+        };
+        Ok(format!(
+            "{version}{where_found}; socket \"{}\": {}",
+            self.socket,
+            self.socket_health()?
+        ))
     }
 }
 
@@ -272,7 +358,14 @@ mod tests {
             .session_exists(&name())
             .unwrap_err();
         assert!(
-            matches!(err, PortError::CommandFailed { tool: "tmux", .. }),
+            matches!(
+                err,
+                PortError::CommandFailedInContext {
+                    tool: "tmux",
+                    operation: "has-session",
+                    ..
+                }
+            ),
             "got: {err:?}"
         );
         assert!(err.to_string().contains("lost server"), "got: {err}");
@@ -302,14 +395,56 @@ mod tests {
     #[test]
     fn a_real_tmux_failure_is_still_an_error() {
         let tmux = cli(vec![failed(1, "unknown command: nonsense")]);
-        assert!(matches!(
-            tmux.create_session(
+        let err = tmux
+            .create_session(
                 &name(),
                 Path::new("/w"),
-                &Command::new(vec!["claude".to_owned()]).unwrap()
+                &Command::new(vec!["claude".to_owned()]).unwrap(),
+            )
+            .unwrap_err();
+        assert!(
+            matches!(
+                err,
+                PortError::CommandFailedInContext {
+                    tool: "tmux",
+                    operation: "new-session",
+                    ..
+                }
             ),
-            Err(PortError::CommandFailed { tool: "tmux", .. })
-        ));
+            "got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn a_failure_names_the_operation_socket_and_config_not_just_the_stderr() {
+        // The bare stderr is what sent a real user hunting; the context block
+        // is the fix. Assert on the rendered message a person actually reads.
+        let tmux = cli(vec![failed(1, "server exited unexpectedly")]);
+        let err = tmux.kill_session(&name()).unwrap_err().to_string();
+        assert!(err.contains("tmux kill-session failed"), "got:\n{err}");
+        assert!(err.contains("server exited unexpectedly"), "got:\n{err}");
+        assert!(err.contains("while running: tmux -L zax"), "got:\n{err}");
+        assert!(err.contains("socket:        zax"), "got:\n{err}");
+        assert!(err.contains("/run/zax/tmux.conf"), "got:\n{err}");
+    }
+
+    #[test]
+    fn a_version_mismatch_is_explained_rather_than_merely_reported() {
+        // "server exited unexpectedly" is what tmux says when a client of one
+        // build meets a server of another. Nothing in those three words tells
+        // the user that, so zax has to.
+        let tmux = cli(vec![failed(1, "server exited unexpectedly")]);
+        let err = tmux.kill_session(&name()).unwrap_err().to_string();
+        assert!(err.contains("different tmux build"), "got:\n{err}");
+        assert!(err.contains("pgrep"), "got:\n{err}");
+    }
+
+    #[test]
+    fn an_ordinary_failure_is_not_dressed_up_with_a_mismatch_hint() {
+        let tmux = cli(vec![failed(1, "duplicate session: zax-a-b")]);
+        let err = tmux.kill_session(&name()).unwrap_err().to_string();
+        assert!(!err.contains("different tmux build"), "got:\n{err}");
+        assert!(err.contains("duplicate session"), "got:\n{err}");
     }
 
     #[test]

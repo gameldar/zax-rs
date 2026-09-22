@@ -5,9 +5,10 @@ pub mod dto;
 pub mod graphql;
 
 use std::path::PathBuf;
+use std::time::SystemTime;
 
 use zax_app::{Forge, PortError, PullRequestHead};
-use zax_domain::{BranchName, BranchStatus, PrRef, PullRequest, RepoSlug};
+use zax_domain::{BranchName, BranchStatus, PrFilter, PrRef, PullRequest, RepoSlug};
 use zax_exec::{Exec, ExecError, Output};
 
 const TOOL: &str = "gh";
@@ -92,9 +93,9 @@ fn unparseable(detail: String) -> PortError {
 }
 
 impl<E: Exec> Forge for GhCli<E> {
-    fn review_requests(&self) -> Result<Vec<PullRequest>, PortError> {
+    fn review_requests(&self, filter: &PrFilter) -> Result<Vec<PullRequest>, PortError> {
         let login = self.login()?;
-        let query = graphql::review_requested_query(&login);
+        let query = graphql::review_requested_query(&login, filter, SystemTime::now());
         let out = self.run_ok(argv::graphql_query(
             graphql::SEARCH_REVIEW_REQUESTS,
             &[("q", &query)],
@@ -152,7 +153,7 @@ mod tests {
     use std::path::PathBuf;
 
     use zax_app::{Forge, PortError};
-    use zax_domain::{BranchName, PrRef};
+    use zax_domain::{BranchName, PrFilter, PrRef};
     use zax_exec::{Output, RecordingExec};
 
     use super::*;
@@ -179,7 +180,7 @@ mod tests {
             ok(include_str!("../tests/fixtures/search_prs.json")),
         ]);
 
-        let prs = gh.review_requests().unwrap();
+        let prs = gh.review_requests(&PrFilter::default()).unwrap();
         assert_eq!(prs.len(), 3);
 
         let calls = gh.exec_ref().calls();
@@ -192,6 +193,32 @@ mod tests {
                 .iter()
                 .any(|a| a.contains("review-requested:octocat")),
             "the resolved login must reach the search query: {:?}",
+            calls[1].args
+        );
+    }
+
+    #[test]
+    fn the_filter_narrows_the_search_gh_is_asked_to_run() {
+        // The search is capped at 50 results, so an excluded repository that
+        // only the pane filtered out would still crowd the queue.
+        let gh = cli(vec![
+            ok("octocat\n"),
+            ok(include_str!("../tests/fixtures/search_prs.json")),
+        ]);
+        let filter = PrFilter {
+            exclude: vec![zax_domain::RepoPattern::parse("acme/legacy-api").unwrap()],
+            ..PrFilter::default()
+        };
+
+        gh.review_requests(&filter).unwrap();
+
+        let calls = gh.exec_ref().calls();
+        assert!(
+            calls[1]
+                .args
+                .iter()
+                .any(|a| a.contains("-repo:acme/legacy-api")),
+            "the filter must reach the search: {:?}",
             calls[1].args
         );
     }
@@ -237,7 +264,7 @@ mod tests {
             stdout: String::new(),
             stderr: "gh: To get started with GitHub CLI, please run: gh auth login".to_owned(),
         }]);
-        let err = gh.review_requests().unwrap_err();
+        let err = gh.review_requests(&PrFilter::default()).unwrap_err();
         assert!(
             matches!(err, PortError::NotAuthenticated { tool: "gh", .. }),
             "got: {err:?}"
@@ -251,7 +278,7 @@ mod tests {
             stdout: String::new(),
             stderr: "HTTP 502".to_owned(),
         }]);
-        let err = gh.review_requests().unwrap_err();
+        let err = gh.review_requests(&PrFilter::default()).unwrap_err();
         assert!(err.to_string().contains("502"), "got: {err}");
     }
 

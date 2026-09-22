@@ -177,3 +177,47 @@ fn a_broken_toml_file_names_the_file_it_came_from() {
     let err = zax_config::load(&config_home, &repo_dir, &repo, "/home/me").unwrap_err();
     assert!(err.to_string().contains("config.toml"), "got: {err}");
 }
+
+#[test]
+fn your_layer_can_narrow_the_review_queue_a_repo_did_not_ask_about() {
+    // The `[prs]` filter is about your review queue across every repository,
+    // so the layer that should usually win it is your own.
+    let tmp = TempDir::new().unwrap();
+    let config_home = tmp.path().join("config");
+    let repo_dir = tmp.path().join("src").join("acme");
+    let repo = RootRepoName::parse("acme").unwrap();
+
+    write(
+        &zax_config::global_config_path(&config_home),
+        "[prs]\ninclude = [\"acme/*\"]\nmax_age = \"30d\"\n",
+    );
+    write(
+        &zax_config::override_config_path(&config_home, "acme"),
+        "[prs]\nexclude = [\"acme/legacy-api\"]\n",
+    );
+
+    let config = zax_config::load(&config_home, &repo_dir, &repo, "/home/me").unwrap();
+
+    assert_eq!(
+        config
+            .prs
+            .include
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>(),
+        ["acme/*"]
+    );
+    assert_eq!(
+        config
+            .prs
+            .exclude
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>(),
+        ["acme/legacy-api"]
+    );
+    assert_eq!(
+        config.prs.max_age,
+        Some(std::time::Duration::from_secs(30 * 86_400))
+    );
+}

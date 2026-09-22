@@ -7,8 +7,8 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use zax_domain::{
-    BranchName, BranchStatus, Command, PaneSize, PrRef, PullRequest, RepoSlug, RootRepoName,
-    SessionName,
+    BranchName, BranchStatus, Command, PaneSize, PrFilter, PrRef, PullRequest, RepoSlug,
+    RootRepoName, SessionName,
 };
 
 use crate::ports::{
@@ -373,10 +373,14 @@ pub struct FakeForge {
     pub head: Option<PullRequestHead>,
     pub current_repo: Option<RepoSlug>,
     pub fail_with: Option<PortError>,
+    /// Every filter `review_requests` was called with, so a test can prove the
+    /// hint reaches the forge rather than being dropped on the way.
+    pub asked_with: RefCell<Vec<PrFilter>>,
 }
 
 impl Forge for FakeForge {
-    fn review_requests(&self) -> Result<Vec<PullRequest>, PortError> {
+    fn review_requests(&self, filter: &PrFilter) -> Result<Vec<PullRequest>, PortError> {
+        self.asked_with.borrow_mut().push(filter.clone());
         match &self.fail_with {
             Some(e) => Err(e.clone()),
             None => Ok(self.review_requests.clone()),

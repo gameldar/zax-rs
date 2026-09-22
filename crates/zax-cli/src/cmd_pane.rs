@@ -156,9 +156,13 @@ macro_rules! pane_loop {
 
 fn run_prs_pane() -> Result<()> {
     let cwd = std::env::current_dir()?;
+    // The pane reads the same three-layer config the session was started from,
+    // for the `[prs]` filter. A config this pane cannot read is worth failing
+    // over: the alternative is a pane quietly showing the unfiltered queue.
+    let filter = wiring::resolve()?.config.prs;
     let (request, results) = spawn_fetcher(move || {
         let gh = zax_infra_github::GhCli::new(SystemExec, cwd.clone());
-        queries::list_review_requests(&gh).map_err(|e| e.to_string())
+        queries::list_review_requests(&gh, &filter, SystemTime::now()).map_err(|e| e.to_string())
     });
     pane_loop!(
         PrsForReviewPane::new(),

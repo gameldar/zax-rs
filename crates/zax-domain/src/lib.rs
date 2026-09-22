@@ -6,6 +6,7 @@
 pub mod branch;
 pub mod forge;
 pub mod layout;
+pub mod prs_filter;
 pub mod repo;
 pub mod session;
 pub mod ticket;
@@ -19,6 +20,7 @@ pub use layout::{
     format_duration, parse_duration, BuiltinPane, BuiltinPaneError, Command, CommandError,
     DurationError, LayoutError, LayoutSpec, PaneKind, PaneSize, PaneSizeError, PaneSpec,
 };
+pub use prs_filter::{PrFilter, RepoPattern, RepoPatternError};
 pub use repo::{
     RootRepoName, RootRepoNameError, WorktreePath, WorktreePathError, WorktreeRoot,
     WorktreeRootError,

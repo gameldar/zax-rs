@@ -161,7 +161,7 @@ impl LayoutSpec {
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum DurationError {
-    #[error("`{0}` is not a duration; write it as 30s, 5m or 2h")]
+    #[error("`{0}` is not a duration; write it as 30s, 5m, 2h or 14d")]
     Malformed(String),
     #[error("duration must be greater than zero")]
     Zero,
@@ -175,6 +175,7 @@ pub fn parse_duration(raw: &str) -> Result<Duration, DurationError> {
         Some(b's') => (raw.get(..raw.len() - 1).ok_or_else(malformed)?, 1u64),
         Some(b'm') => (raw.get(..raw.len() - 1).ok_or_else(malformed)?, 60),
         Some(b'h') => (raw.get(..raw.len() - 1).ok_or_else(malformed)?, 3600),
+        Some(b'd') => (raw.get(..raw.len() - 1).ok_or_else(malformed)?, 86_400),
         Some(b'0'..=b'9') => (raw, 1),
         _ => return Err(malformed()),
     };
@@ -290,13 +291,22 @@ mod tests {
     }
 
     #[test]
+    fn durations_parse_the_day_suffix_a_pr_age_threshold_is_written_in() {
+        assert_eq!(parse_duration("1d").unwrap(), Duration::from_secs(86_400));
+        assert_eq!(
+            parse_duration("14d").unwrap(),
+            Duration::from_secs(1_209_600)
+        );
+    }
+
+    #[test]
     fn durations_reject_nonsense_and_zero() {
         assert!(parse_duration("").is_err());
         assert!(parse_duration("s").is_err());
         assert!(parse_duration("0s").is_err());
         assert!(parse_duration("-5s").is_err());
         assert!(parse_duration("5 s").is_err());
-        assert!(parse_duration("5d").is_err());
+        assert!(parse_duration("5w").is_err());
     }
 
     #[test]

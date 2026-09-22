@@ -1,6 +1,6 @@
 //! Layer merging. Your layer wins; arrays replace.
 
-use crate::raw::{RawAgent, RawConfig, RawLayout, RawTmux, RawWorktree};
+use crate::raw::{RawAgent, RawConfig, RawLayout, RawPrs, RawTmux, RawWorktree};
 
 /// Fold the layers in order, lowest precedence first.
 pub fn merge(layers: Vec<RawConfig>) -> RawConfig {
@@ -13,6 +13,7 @@ fn fold_one(mut base: RawConfig, over: RawConfig) -> RawConfig {
     base.layout = merge_layout(base.layout, over.layout);
     base.worktree = merge_worktree(base.worktree, over.worktree);
     base.tmux = merge_tmux(base.tmux, over.tmux);
+    base.prs = merge_prs(base.prs, over.prs);
     base
 }
 
@@ -58,6 +59,19 @@ fn merge_tmux(base: Option<RawTmux>, over: Option<RawTmux>) -> Option<RawTmux> {
         (None, o) => o,
         (Some(mut b), Some(o)) => {
             b.prefix = o.prefix.or(b.prefix);
+            Some(b)
+        }
+    }
+}
+
+fn merge_prs(base: Option<RawPrs>, over: Option<RawPrs>) -> Option<RawPrs> {
+    match (base, over) {
+        (b, None) => b,
+        (None, o) => o,
+        (Some(mut b), Some(o)) => {
+            b.include = o.include.or(b.include);
+            b.exclude = o.exclude.or(b.exclude);
+            b.max_age = o.max_age.or(b.max_age);
             Some(b)
         }
     }
@@ -134,6 +148,27 @@ mod tests {
             merged.worktree.unwrap().hooks.unwrap(),
             Vec::<String>::new()
         );
+    }
+
+    #[test]
+    fn prs_filter_lists_replace_and_scalars_win() {
+        let merged = merge(vec![
+            parse("[prs]\ninclude = [\"acme/*\"]\nmax_age = \"30d\""),
+            parse("[prs]\ninclude = [\"gameldar/zax\"]"),
+        ]);
+        let prs = merged.prs.unwrap();
+        assert_eq!(prs.include.unwrap(), vec!["gameldar/zax"]);
+        // max_age was absent from the later layer, so the earlier one survives.
+        assert_eq!(prs.max_age.unwrap(), "30d");
+    }
+
+    #[test]
+    fn an_empty_prs_list_clears_an_inherited_one() {
+        let merged = merge(vec![
+            parse("[prs]\nexclude = [\"acme/legacy-api\"]"),
+            parse("[prs]\nexclude = []"),
+        ]);
+        assert_eq!(merged.prs.unwrap().exclude.unwrap(), Vec::<String>::new());
     }
 
     #[test]

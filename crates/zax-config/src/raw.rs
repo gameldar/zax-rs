@@ -12,6 +12,7 @@ pub struct RawConfig {
     pub layout: Option<RawLayout>,
     pub worktree: Option<RawWorktree>,
     pub tmux: Option<RawTmux>,
+    pub prs: Option<RawPrs>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
@@ -61,4 +62,13 @@ pub struct RawWorktree {
 #[serde(deny_unknown_fields)]
 pub struct RawTmux {
     pub prefix: Option<String>,
+}
+
+/// The `[prs]` table: which pull requests the review-requests pane shows.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RawPrs {
+    pub include: Option<Vec<String>>,
+    pub exclude: Option<Vec<String>>,
+    pub max_age: Option<String>,
 }

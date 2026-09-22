@@ -1,18 +1,28 @@
 //! The read-only use cases, plus worktree removal and `zax doctor`.
 
 use std::path::PathBuf;
+use std::time::SystemTime;
 
 use thiserror::Error;
 use zax_domain::{
-    BranchName, BranchStatus, PullRequest, RootRepoName, WorktreePath, WorktreePathError,
+    BranchName, BranchStatus, PrFilter, PullRequest, RootRepoName, WorktreePath, WorktreePathError,
     WorktreeRoot,
 };
 
 use crate::ports::{FileSystem, Forge, GitRepo, Multiplexer, PortError, WorktreeEntry};
 
 /// The `prs-for-review` pane's data source.
-pub fn list_review_requests<Fg: Forge>(forge: &Fg) -> Result<Vec<PullRequest>, PortError> {
-    forge.review_requests()
+///
+/// The filter is applied here even though the forge was given it too. A forge
+/// can only narrow what it is able to express, and its search is capped, so
+/// asking it to narrow is worth doing - but this is the only place that decides
+/// what the pane shows.
+pub fn list_review_requests<Fg: Forge>(
+    forge: &Fg,
+    filter: &PrFilter,
+    now: SystemTime,
+) -> Result<Vec<PullRequest>, PortError> {
+    Ok(filter.apply(forge.review_requests(filter)?, now))
 }
 
 /// The `branch-status` pane's data source. A detached HEAD has no branch and so
@@ -116,8 +126,8 @@ mod tests {
     use std::time::{Duration, UNIX_EPOCH};
 
     use zax_domain::{
-        BranchName, BranchStatus, CheckState, Mergeable, PullRequest, RepoSlug, ReviewState,
-        RootRepoName, WorktreeRoot,
+        BranchName, BranchStatus, CheckState, Mergeable, PrFilter, PullRequest, RepoPattern,
+        RepoSlug, ReviewState, RootRepoName, WorktreeRoot,
     };
 
     use super::*;
@@ -139,14 +149,53 @@ mod tests {
     #[test]
     fn review_requests_pass_through_from_the_forge() {
         let forge = FakeForge::with_review_requests(vec![pr(1), pr(2)]);
-        assert_eq!(list_review_requests(&forge).unwrap().len(), 2);
+        let now = UNIX_EPOCH + Duration::from_secs(1_700_000_100);
+        assert_eq!(
+            list_review_requests(&forge, &PrFilter::default(), now)
+                .unwrap()
+                .len(),
+            2
+        );
+    }
+
+    #[test]
+    fn review_requests_drop_the_rows_the_filter_refuses() {
+        let mut stale = pr(3);
+        stale.created_at = UNIX_EPOCH + Duration::from_secs(1_600_000_000);
+        let forge = FakeForge::with_review_requests(vec![pr(1), stale]);
+        let filter = PrFilter {
+            max_age: Some(Duration::from_secs(14 * 86_400)),
+            ..PrFilter::default()
+        };
+        let now = UNIX_EPOCH + Duration::from_secs(1_700_000_100);
+
+        let listed = list_review_requests(&forge, &filter, now).unwrap();
+
+        assert_eq!(listed.iter().map(|p| p.number).collect::<Vec<_>>(), vec![1]);
+    }
+
+    #[test]
+    fn the_filter_reaches_the_forge_so_it_can_narrow_its_own_search() {
+        // The forge's search is capped, so a filter that only ran afterwards
+        // would still let an excluded repository crowd the queue out.
+        let forge = FakeForge::with_review_requests(vec![pr(1)]);
+        let filter = PrFilter {
+            exclude: vec![RepoPattern::parse("acme/legacy-api").unwrap()],
+            ..PrFilter::default()
+        };
+        let now = UNIX_EPOCH + Duration::from_secs(1_700_000_100);
+
+        list_review_requests(&forge, &filter, now).unwrap();
+
+        assert_eq!(*forge.asked_with.borrow(), vec![filter]);
     }
 
     #[test]
     fn a_forge_failure_is_surfaced_rather_than_swallowed_into_an_empty_list() {
         // An empty review queue and a broken gh must never look the same.
         let forge = FakeForge::failing(PortError::MissingTool { tool: "gh" });
-        assert!(list_review_requests(&forge).is_err());
+        let now = UNIX_EPOCH + Duration::from_secs(1_700_000_100);
+        assert!(list_review_requests(&forge, &PrFilter::default(), now).is_err());
     }
 
     #[test]

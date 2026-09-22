@@ -2,6 +2,11 @@
 //! the fields the spec's panes require: `gh search prs --json` has no check
 //! state, and `gh pr view --json` has no unresolved-review-thread count.
 
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use time::OffsetDateTime;
+use zax_domain::{PrFilter, RepoPattern};
+
 /// Variables: `q` (the GitHub search query string).
 pub const SEARCH_REVIEW_REQUESTS: &str = r#"
 query($q: String!) {
@@ -54,6 +59,149 @@ query($owner: String!, $name: String!, $branch: String!) {
 /// The search string the spec's `gh search prs --review-requested=@me
 /// --state=open` stands for. GitHub's search API does not understand `@me`, so
 /// the login is resolved first.
-pub fn review_requested_query(login: &str) -> String {
-    format!("is:pr is:open archived:false review-requested:{login}")
+///
+/// The filter is folded in as search qualifiers so that the 50-result cap
+/// applies to a queue that has already been narrowed. Only what translates
+/// exactly is sent, and only where sending it cannot hide a pull request the
+/// filter itself admits - `PrFilter` remains the authority over what the pane
+/// shows, and this never has to agree with it, only to be no stricter.
+pub fn review_requested_query(login: &str, filter: &PrFilter, now: SystemTime) -> String {
+    let mut query = format!("is:pr is:open archived:false review-requested:{login}");
+
+    // An `owner/*` entry has no qualifier: GitHub spells an organisation
+    // `org:` and a person `user:`, and which an owner is cannot be known here.
+    // One such entry therefore drops the whole include list, because sending
+    // the rest would ask for less than the filter admits.
+    let exact: Option<Vec<String>> = filter.include.iter().map(RepoPattern::exact_slug).collect();
+    for slug in exact.unwrap_or_default() {
+        query.push_str(&format!(" repo:{slug}"));
+    }
+
+    // An exclusion only ever widens what is left out, so dropping a wildcard
+    // one loses nothing the local filter will not catch.
+    for slug in filter.exclude.iter().filter_map(RepoPattern::exact_slug) {
+        query.push_str(&format!(" -repo:{slug}"));
+    }
+
+    if let Some(date) = created_since(now, filter.max_age) {
+        query.push_str(&format!(" created:>={date}"));
+    }
+    query
+}
+
+/// The `created:>=` date for an age threshold, rounded down to the whole day.
+///
+/// `created:>=2023-10-31` admits everything from that midnight on, which is
+/// earlier than the threshold itself. Rounding the other way would exclude
+/// pull requests the filter admits, and the search is only ever allowed to be
+/// looser than the filter.
+fn created_since(now: SystemTime, max_age: Option<Duration>) -> Option<String> {
+    let at = now.checked_sub(max_age?)?;
+    let secs = i64::try_from(at.duration_since(UNIX_EPOCH).ok()?.as_secs()).ok()?;
+    let date = OffsetDateTime::from_unix_timestamp(secs).ok()?.date();
+    Some(format!(
+        "{:04}-{:02}-{:02}",
+        date.year(),
+        u8::from(date.month()),
+        date.day()
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)]
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+    use zax_domain::{PrFilter, RepoPattern};
+
+    use super::*;
+
+    /// 2023-11-14T22:13:20Z.
+    fn now() -> SystemTime {
+        UNIX_EPOCH + Duration::from_secs(1_700_000_000)
+    }
+
+    fn patterns(raw: &[&str]) -> Vec<RepoPattern> {
+        raw.iter().map(|p| RepoPattern::parse(p).unwrap()).collect()
+    }
+
+    #[test]
+    fn an_unfiltered_search_asks_for_the_whole_review_queue() {
+        let q = review_requested_query("octocat", &PrFilter::default(), now());
+        assert_eq!(
+            q,
+            "is:pr is:open archived:false review-requested:octocat"
+        );
+    }
+
+    #[test]
+    fn exact_includes_become_repo_qualifiers() {
+        let filter = PrFilter {
+            include: patterns(&["acme/omega", "gameldar/zax"]),
+            ..PrFilter::default()
+        };
+        let q = review_requested_query("octocat", &filter, now());
+        assert!(q.contains("repo:acme/omega"), "got: {q}");
+        assert!(q.contains("repo:gameldar/zax"), "got: {q}");
+    }
+
+    #[test]
+    fn one_wildcard_include_suppresses_every_include_qualifier() {
+        // GitHub splits `org:` from `user:` and we cannot tell which an owner
+        // is, so `acme/*` has no qualifier. Sending the other entries alone
+        // would narrow the search to less than the filter admits, which would
+        // silently hide pull requests the pane is supposed to show.
+        let filter = PrFilter {
+            include: patterns(&["acme/*", "gameldar/zax"]),
+            ..PrFilter::default()
+        };
+        let q = review_requested_query("octocat", &filter, now());
+        assert!(!q.contains("repo:"), "got: {q}");
+    }
+
+    #[test]
+    fn exact_excludes_become_negated_repo_qualifiers() {
+        let filter = PrFilter {
+            exclude: patterns(&["acme/legacy-api"]),
+            ..PrFilter::default()
+        };
+        let q = review_requested_query("octocat", &filter, now());
+        assert!(q.contains("-repo:acme/legacy-api"), "got: {q}");
+    }
+
+    #[test]
+    fn a_wildcard_exclude_is_left_to_the_local_filter() {
+        // Dropping one exclusion only widens the search, so the others can
+        // still be sent; the pane's own filter removes what is left.
+        let filter = PrFilter {
+            exclude: patterns(&["acme/*", "gameldar/other"]),
+            ..PrFilter::default()
+        };
+        let q = review_requested_query("octocat", &filter, now());
+        assert!(!q.contains("acme"), "got: {q}");
+        assert!(q.contains("-repo:gameldar/other"), "got: {q}");
+    }
+
+    #[test]
+    fn max_age_becomes_a_created_qualifier_on_the_day_the_threshold_falls_in() {
+        let filter = PrFilter {
+            max_age: Some(Duration::from_secs(14 * 86_400)),
+            ..PrFilter::default()
+        };
+        let q = review_requested_query("octocat", &filter, now());
+        // 1_700_000_000 - 14 days is 2023-10-31T22:13:20Z, and the qualifier
+        // rounds down to that whole day so it can never exclude a pull request
+        // the filter itself would admit.
+        assert!(q.contains("created:>=2023-10-31"), "got: {q}");
+    }
+
+    #[test]
+    fn a_threshold_older_than_the_epoch_asks_for_no_date_at_all() {
+        let filter = PrFilter {
+            max_age: Some(Duration::from_secs(365 * 86_400)),
+            ..PrFilter::default()
+        };
+        let q = review_requested_query("octocat", &filter, UNIX_EPOCH);
+        assert!(!q.contains("created:"), "got: {q}");
+    }
 }

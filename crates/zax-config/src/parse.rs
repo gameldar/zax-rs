@@ -4,17 +4,19 @@
 use std::path::PathBuf;
 
 use zax_domain::{
-    parse_duration, BuiltinPane, Command, LayoutSpec, PaneKind, PaneSize, PaneSpec, WorktreeRoot,
+    parse_duration, BuiltinPane, Command, LayoutSpec, PaneKind, PaneSize, PaneSpec, PrFilter,
+    RepoPattern, WorktreeRoot,
 };
 
 use crate::error::ConfigError;
-use crate::raw::{RawConfig, RawPane};
+use crate::raw::{RawConfig, RawPane, RawPrs};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
     pub layout: LayoutSpec,
     pub worktree: WorktreeConfig,
     pub tmux: TmuxConfig,
+    pub prs: PrFilter,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -105,10 +107,43 @@ pub fn from_raw(raw: RawConfig, home: &str) -> Result<Config, ConfigError> {
         detail,
     })?;
 
+    let prs = prs_filter_from_raw(raw.prs.unwrap_or_default())?;
+
     Ok(Config {
         layout,
         worktree: WorktreeConfig { root, copy, hooks },
         tmux: TmuxConfig { prefix },
+        prs,
+    })
+}
+
+fn prs_filter_from_raw(raw: RawPrs) -> Result<PrFilter, ConfigError> {
+    let patterns = |list: Option<Vec<String>>, field: &'static str| {
+        list.unwrap_or_default()
+            .iter()
+            .map(|entry| {
+                RepoPattern::parse(entry).map_err(|e| ConfigError::Invalid {
+                    field,
+                    detail: e.to_string(),
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()
+    };
+
+    let max_age = raw
+        .max_age
+        .map(|text| {
+            parse_duration(&text).map_err(|e| ConfigError::Invalid {
+                field: "prs.max_age",
+                detail: e.to_string(),
+            })
+        })
+        .transpose()?;
+
+    Ok(PrFilter {
+        include: patterns(raw.include, "prs.include")?,
+        exclude: patterns(raw.exclude, "prs.exclude")?,
+        max_age,
     })
 }
 
@@ -312,6 +347,61 @@ mod tests {
         assert!(config.worktree.copy.is_empty());
         assert!(config.worktree.hooks.is_empty());
         assert_eq!(config.tmux.prefix, "C-Space");
+    }
+
+    #[test]
+    fn an_absent_prs_table_filters_nothing() {
+        assert_eq!(config_from("").prs, zax_domain::PrFilter::default());
+    }
+
+    #[test]
+    fn the_prs_table_parses_into_a_filter() {
+        let config = config_from(
+            r#"
+[prs]
+include = ["acme/*", "gameldar/zax"]
+exclude = ["acme/legacy-api"]
+max_age = "14d"
+"#,
+        );
+        assert_eq!(
+            config
+                .prs
+                .include
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>(),
+            ["acme/*", "gameldar/zax"]
+        );
+        assert_eq!(
+            config
+                .prs
+                .exclude
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>(),
+            ["acme/legacy-api"]
+        );
+        assert_eq!(config.prs.max_age, Some(Duration::from_secs(14 * 86_400)));
+    }
+
+    #[test]
+    fn a_malformed_repository_filter_names_the_list_it_came_from() {
+        let raw: RawConfig = toml::from_str("[prs]\ninclude = [\"omega\"]").unwrap();
+        let err = from_raw(raw, "/home/me").unwrap_err();
+        assert!(err.to_string().contains("prs.include"), "got: {err}");
+        assert!(err.to_string().contains("omega"), "got: {err}");
+
+        let raw: RawConfig = toml::from_str("[prs]\nexclude = [\"a/b*\"]").unwrap();
+        let err = from_raw(raw, "/home/me").unwrap_err();
+        assert!(err.to_string().contains("prs.exclude"), "got: {err}");
+    }
+
+    #[test]
+    fn a_malformed_max_age_names_its_field() {
+        let raw: RawConfig = toml::from_str("[prs]\nmax_age = \"a fortnight\"").unwrap();
+        let err = from_raw(raw, "/home/me").unwrap_err();
+        assert!(err.to_string().contains("prs.max_age"), "got: {err}");
     }
 
     #[test]

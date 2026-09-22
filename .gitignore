@@ -8,3 +8,4 @@
 # Claude Code's agent isolation puts worktrees here. A worktree must never
 # live inside the repository it checks out, so it must never be committed.
 .claude/worktrees/
+.envrc

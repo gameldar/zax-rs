@@ -52,6 +52,30 @@ mod tests {
     }
 
     #[test]
+    fn the_agent_pane_title_is_forwarded_to_the_outer_terminal() {
+        // Zed names a terminal thread from the OSC 0/2 title its pty receives,
+        // falling back to the foreground process. tmux swallows that sequence
+        // unless `set-titles` is on, so Zed sees `tmux` and Claude Code's
+        // session name never arrives.
+        let rendered = render("C-Space");
+        assert!(rendered.contains("set -g set-titles on"));
+    }
+
+    #[test]
+    fn the_forwarded_title_is_pinned_to_the_agent_pane_not_the_focused_one() {
+        // `#{pane_title}` resolves against whichever pane is active, so moving
+        // focus to a context pane renamed the Zed thread after it. Looping the
+        // window's panes and emitting only pane 0's title keeps the thread
+        // named by Claude no matter where focus sits. tmux's default string is
+        // no good either: it prefixes session, window and index, reaching Zed
+        // as `zax-repo-branch:0:zsh - "..."`.
+        let rendered = render("C-Space");
+        assert!(rendered.contains(
+            r##"set -g set-titles-string "#{P:#{?#{==:#{pane_index},0},#{pane_title},}}""##
+        ));
+    }
+
+    #[test]
     fn the_default_prefix_binding_is_unbound() {
         assert!(render("C-Space").contains("unbind C-b"));
     }

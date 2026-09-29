@@ -5,8 +5,8 @@ use std::time::SystemTime;
 
 use thiserror::Error;
 use zax_domain::{
-    BranchName, BranchStatus, Command, PaneSize, PrFilter, PrRef, PullRequest, RepoSlug,
-    RootRepoName, SessionName,
+    BranchName, BranchStatus, Command, LiveSession, PaneSize, PrFilter, PrRef, PullRequest,
+    RepoSlug, RootRepoName, SessionName,
 };
 
 /// Every way the outside world can fail, in terms a pane can render.
@@ -38,6 +38,11 @@ pub enum PortError {
         stderr: String,
         context: String,
     },
+    /// The tool runs, but not in a combination that can work. The adapter
+    /// renders `detail`, because only it knows what the combination is and
+    /// how to get out of it.
+    #[error("{tool} cannot be used as it is: {detail}")]
+    Incompatible { tool: &'static str, detail: String },
     #[error("could not understand {tool} output: {detail}")]
     Unparseable { tool: &'static str, detail: String },
     #[error("{operation} failed on {path}: {detail}")]
@@ -51,7 +56,8 @@ pub enum PortError {
 /// The terminal multiplexer that hosts a session.
 pub trait Multiplexer {
     fn session_exists(&self, name: &SessionName) -> Result<bool, PortError>;
-    fn list_sessions(&self) -> Result<Vec<SessionName>, PortError>;
+    /// Every zax session on the socket, with whether anyone is attached.
+    fn list_sessions(&self) -> Result<Vec<LiveSession>, PortError>;
     fn create_session(
         &self,
         name: &SessionName,

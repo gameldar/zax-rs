@@ -36,6 +36,14 @@ pub fn version(base: Base<'_>) -> Vec<String> {
     argv
 }
 
+/// The version of the server on the socket, which need not be the version
+/// of the binary asking.
+pub fn server_version(base: Base<'_>) -> Vec<String> {
+    let mut argv = start(base);
+    argv.extend([s("display-message"), s("-p"), s("#{version}")]);
+    argv
+}
+
 pub fn has_session(base: Base<'_>, name: &SessionName) -> Vec<String> {
     let mut argv = start(base);
     argv.extend([s("has-session"), s("-t"), exact(name)]);
@@ -44,7 +52,13 @@ pub fn has_session(base: Base<'_>, name: &SessionName) -> Vec<String> {
 
 pub fn list_sessions(base: Base<'_>) -> Vec<String> {
     let mut argv = start(base);
-    argv.extend([s("list-sessions"), s("-F"), s("#{session_name}")]);
+    // The client count comes last: zax names cannot contain a space, but
+    // somebody else's session on the socket can.
+    argv.extend([
+        s("list-sessions"),
+        s("-F"),
+        s("#{session_name} #{session_attached}"),
+    ]);
     argv
 }
 
@@ -54,6 +68,13 @@ pub fn new_session(
     cwd: &Path,
     command: &Command,
 ) -> Vec<String> {
+    // The session's first pane is the agent. tmux exports `TMUX` into every
+    // pane, and Claude Code, seeing it, pins its title to a static glyph
+    // instead of the busy spinner - the spinner is how Zed shows a thread's
+    // progress, and `set-titles` would otherwise forward it. The agent runs
+    // as it would straight in Zed's terminal. `TMUX_PANE` is left alone, which
+    // is what still lets `zax session start` notice it is nested.
+    let agent = format!("env -u TMUX {}", shell_quote(command.argv()));
     let mut argv = start(base);
     argv.extend([
         s("new-session"),
@@ -62,7 +83,7 @@ pub fn new_session(
         s(name.as_str()),
         s("-c"),
         cwd.to_string_lossy().into_owned(),
-        shell_quote(command.argv()),
+        agent,
     ]);
     argv
 }
@@ -173,9 +194,20 @@ mod tests {
                 n(),
                 "-c".to_owned(),
                 "/w".to_owned(),
-                "claude".to_owned(),
+                "env -u TMUX claude".to_owned(),
             ]
         );
+    }
+
+    #[test]
+    fn the_agent_is_started_without_tmux_in_its_environment() {
+        // Claude Code freezes its title glyph when `$TMUX` is set (the
+        // `tengu_static_title_under_mux` flag), so the busy spinner Zed shows
+        // as a thread's progress indicator never reaches it. tmux exports
+        // `TMUX` into every pane itself, so it has to be removed at exec.
+        let cmd = Command::new(vec!["claude".to_owned(), "--resume".to_owned()]).unwrap();
+        let args = new_session(base(), &name(), std::path::Path::new("/w"), &cmd);
+        assert_eq!(args.last().unwrap(), "env -u TMUX claude --resume");
     }
 
     #[test]
@@ -261,8 +293,12 @@ mod tests {
             ]
         );
         assert_eq!(
+            server_version(base())[4..],
+            ["display-message", "-p", "#{version}"]
+        );
+        assert_eq!(
             list_sessions(base())[4..],
-            ["list-sessions", "-F", "#{session_name}"]
+            ["list-sessions", "-F", "#{session_name} #{session_attached}"]
         );
     }
 }

@@ -1,11 +1,14 @@
-//! Zed's `agent.terminal_init_command`. Resolve context from the cwd, derive a
-//! session name, attach if it is already there, otherwise build it detached and
-//! then attach.
+//! Zed's `agent.terminal_init_command`. Resolve context from the cwd, pick one
+//! of the worktree's sessions, attach if it is already there, otherwise build
+//! it detached and then attach.
 
 use std::path::{Path, PathBuf};
 
 use thiserror::Error;
-use zax_domain::{format_duration, Command, CommandError, LayoutSpec, PaneKind, SessionName};
+use zax_domain::{
+    choose_session, format_duration, Command, CommandError, LayoutSpec, PaneKind, SessionChoice,
+    SessionName, SessionSlot,
+};
 
 use crate::ports::{GitRepo, Multiplexer, PortError};
 
@@ -41,6 +44,12 @@ pub enum StartSessionError {
     InsideMultiplexer,
     #[error("HEAD is detached; check out a branch before starting a zax session")]
     DetachedHead,
+    #[error(
+        "all {} zax sessions for this worktree are attached; close one, or free \
+         one with `zax session kill <name>`",
+        SessionSlot::MAX
+    )]
+    AllSlotsInUse,
     #[error("{0}")]
     Domain(String),
     #[error(transparent)]
@@ -68,26 +77,31 @@ impl<'a, M: Multiplexer, G: GitRepo> StartSession<'a, M, G> {
             .git
             .current_branch()?
             .ok_or(StartSessionError::DetachedHead)?;
-        let name = SessionName::derive(&repo, &branch);
+        // A detached session is an agent someone left and wants back. An
+        // attached one belongs to another agent thread in this worktree, which
+        // wants its own agent rather than a mirror of that one.
+        let name = match choose_session(&repo, &branch, &self.mux.list_sessions()?) {
+            SessionChoice::Reattach(name) => {
+                self.mux.attach(&name)?;
+                return Ok(StartSessionOutcome::Attached(name));
+            }
+            SessionChoice::Create(name) => name,
+            SessionChoice::Full => return Err(StartSessionError::AllSlotsInUse),
+        };
 
-        if self.mux.session_exists(&name)? {
-            self.mux.attach(&name)?;
-            return Ok(StartSessionOutcome::Attached(name));
-        }
-
-        // The creation is deliberately outside the teardown below. The check
+        // The creation is deliberately outside the teardown below. The choice
         // above is not a lock: two `zax session start` for one worktree, which
-        // Zed produces by opening two agent terminals, can both be told the
-        // session is absent and the loser's `create_session` then collides
-        // with the winner's live agent. Killing the name on that failure would
+        // Zed produces by opening two agent terminals, can both pick the same
+        // free slot and the loser's `create_session` then collides with the
+        // winner's live agent. Killing the name on that failure would
         // destroy a running session and its scrollback. Nothing is torn down
         // unless this call is the one that created it.
         self.mux
             .create_session(&name, &req.cwd, req.layout.agent())?;
 
-        // A session that is only half built must not survive. It would satisfy
-        // `session_exists` on the next start, so every later invocation would
-        // take the attach branch above and silently hand the user a session
+        // A session that is only half built must not survive. It would be
+        // listed, detached, on the next start, so a later invocation would
+        // take the reattach branch above and silently hand the user a session
         // missing its panes, with no error and no way to finish it.
         if let Err(error) = self.build_panes(&name, &req) {
             // Best effort, and its own failure is deliberately discarded: the
@@ -263,6 +277,57 @@ mod tests {
                 name: name.as_str().to_owned()
             }]
         );
+    }
+
+    #[test]
+    fn a_second_agent_thread_in_the_worktree_gets_its_own_session() {
+        // Attaching to a session somebody is already looking at would mirror
+        // their agent rather than start a new one.
+        let git = FakeGitRepo::new("/Users/me/src/acme", "OMEGA-1963-stamp");
+        let repo = git.root_repo_name().unwrap();
+        let branch = git.current_branch().unwrap().unwrap();
+        let first = zax_domain::SessionName::derive(&repo, &branch);
+        let second = zax_domain::SessionName::derive_slot(
+            &repo,
+            &branch,
+            zax_domain::SessionSlot::new(2).unwrap(),
+        );
+        let mux = FakeMultiplexer::with_attached_sessions([first]);
+
+        let outcome = StartSession::new(&mux, &git).run(request()).unwrap();
+
+        assert_eq!(outcome, StartSessionOutcome::Created(second.clone()));
+        assert!(
+            matches!(
+                mux.calls().first(),
+                Some(MuxCall::CreateSession { name, .. }) if name == second.as_str()
+            ),
+            "got: {:?}",
+            mux.calls()
+        );
+        assert_eq!(
+            mux.calls().last(),
+            Some(&MuxCall::Attach {
+                name: second.as_str().to_owned()
+            })
+        );
+    }
+
+    #[test]
+    fn a_worktree_with_every_slot_in_use_is_refused() {
+        let git = FakeGitRepo::new("/Users/me/src/acme", "OMEGA-1963-stamp");
+        let repo = git.root_repo_name().unwrap();
+        let branch = git.current_branch().unwrap().unwrap();
+        let mux = FakeMultiplexer::with_attached_sessions(
+            zax_domain::SessionSlot::all()
+                .map(|slot| zax_domain::SessionName::derive_slot(&repo, &branch, slot)),
+        );
+
+        assert_eq!(
+            StartSession::new(&mux, &git).run(request()),
+            Err(StartSessionError::AllSlotsInUse)
+        );
+        assert!(mux.calls().is_empty(), "nothing should have been attempted");
     }
 
     #[test]

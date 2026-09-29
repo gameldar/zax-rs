@@ -25,5 +25,8 @@ pub use repo::{
     RootRepoName, RootRepoNameError, WorktreePath, WorktreePathError, WorktreeRoot,
     WorktreeRootError,
 };
-pub use session::{SessionName, SessionNameError};
+pub use session::{
+    choose_session, worktree_sessions, LiveSession, SessionChoice, SessionName, SessionNameError,
+    SessionSlot,
+};
 pub use ticket::{TicketKey, TicketKeyError};

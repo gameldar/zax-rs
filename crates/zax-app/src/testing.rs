@@ -7,8 +7,8 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use zax_domain::{
-    BranchName, BranchStatus, Command, PaneSize, PrFilter, PrRef, PullRequest, RepoSlug,
-    RootRepoName, SessionName,
+    BranchName, BranchStatus, Command, LiveSession, PaneSize, PrFilter, PrRef, PullRequest,
+    RepoSlug, RootRepoName, SessionName,
 };
 
 use crate::ports::{
@@ -47,7 +47,9 @@ pub enum MuxCall {
 pub struct FakeMultiplexer {
     calls: RefCell<Vec<MuxCall>>,
     sessions: RefCell<HashSet<String>>,
-    /// `session_exists` answers "no" whatever the session set says.
+    /// The subset of `sessions` that a client is attached to.
+    attached: HashSet<String>,
+    /// `session_exists` and `list_sessions` answers "no" whatever the session set says.
     blind: bool,
     fail_at: Option<usize>,
     failure: String,
@@ -57,6 +59,16 @@ impl FakeMultiplexer {
     pub fn with_sessions(names: impl IntoIterator<Item = SessionName>) -> Self {
         Self {
             sessions: RefCell::new(names.into_iter().map(|n| n.as_str().to_owned()).collect()),
+            ..Self::default()
+        }
+    }
+
+    /// Sessions that somebody is already looking at.
+    pub fn with_attached_sessions(names: impl IntoIterator<Item = SessionName>) -> Self {
+        let names: HashSet<String> = names.into_iter().map(|n| n.as_str().to_owned()).collect();
+        Self {
+            sessions: RefCell::new(names.clone()),
+            attached: names,
             ..Self::default()
         }
     }
@@ -73,7 +85,7 @@ impl FakeMultiplexer {
     }
 
     /// Report every session as absent while still holding them. This is the
-    /// race the real adapter cannot rule out: `has-session` answered before a
+    /// race the real adapter cannot rule out: `list-sessions` answered before a
     /// concurrent `new-session` landed, or answered wrongly because tmux
     /// failed. The session set stays populated, so `create_session` still
     /// collides the way tmux does.
@@ -122,12 +134,20 @@ impl Multiplexer for FakeMultiplexer {
         Ok(self.sessions.borrow().contains(name.as_str()))
     }
 
-    fn list_sessions(&self) -> Result<Vec<SessionName>, PortError> {
+    fn list_sessions(&self) -> Result<Vec<LiveSession>, PortError> {
+        if self.blind {
+            return Ok(Vec::new());
+        }
         let mut names: Vec<_> = self.sessions.borrow().iter().cloned().collect();
         names.sort();
         Ok(names
             .iter()
-            .filter_map(|n| SessionName::parse(n).ok())
+            .filter_map(|n| {
+                SessionName::parse(n).ok().map(|name| LiveSession {
+                    name,
+                    attached: self.attached.contains(n),
+                })
+            })
             .collect())
     }
 

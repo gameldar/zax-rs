@@ -284,3 +284,68 @@ fn the_server_runs_on_our_socket_and_not_the_default_one() {
         "zax must not create sessions on the default socket: {listed}"
     );
 }
+
+#[test]
+fn a_start_while_the_session_is_attached_builds_a_second_one() {
+    if !tmux_available() {
+        eprintln!("skipping: tmux is not on PATH (run inside `nix develop`)");
+        return;
+    }
+
+    let tmp = TempDir::new().unwrap();
+    let socket = socket_name("sibling");
+    let _guard = TmuxServerGuard::new(&socket);
+    let repo = git_fixture(tmp.path());
+    let tmux = tmux_cli(&socket, &tmp.path().join("conf"));
+    let git = GitCli::new(SystemExec, repo.clone());
+
+    let sleep = ZaxCommand::new(vec!["sleep".to_owned(), "30".to_owned()]).unwrap();
+    let request = || StartSessionRequest {
+        cwd: repo.clone(),
+        zax_bin: std::path::PathBuf::from("/bin/true"),
+        layout: LayoutSpec::new(sleep.clone(), vec![]).unwrap(),
+        inside_multiplexer: false,
+    };
+
+    let first = expected_session_name();
+    StartSession::new(&tmux, &git).run(request()).unwrap();
+
+    // A control-mode client is a real attached client without needing a pty.
+    // It stays attached for as long as its stdin is open.
+    let mut client = Command::new("tmux")
+        .args(["-L", &socket, "-C", "attach-session", "-t"])
+        .arg(format!("={}", first.as_str()))
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !tmux
+        .list_sessions()
+        .unwrap()
+        .iter()
+        .any(|s| s.name == first && s.attached)
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the control client never attached"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+
+    let second = StartSession::new(&tmux, &git).run(request()).unwrap();
+    let _ = client.kill();
+    let _ = client.wait();
+
+    let expected = SessionName::derive_slot(
+        &RootRepoName::parse("acme").unwrap(),
+        &BranchName::parse_local("OMEGA-1963-stamp").unwrap(),
+        zax_domain::SessionSlot::new(2).unwrap(),
+    );
+    assert_eq!(second, StartSessionOutcome::Created(expected.clone()));
+    assert!(
+        tmux.session_exists(&first).unwrap(),
+        "the first agent survives"
+    );
+    assert!(tmux.session_exists(&expected).unwrap());
+}

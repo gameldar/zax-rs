@@ -44,7 +44,13 @@ pub fn has_session(base: Base<'_>, name: &SessionName) -> Vec<String> {
 
 pub fn list_sessions(base: Base<'_>) -> Vec<String> {
     let mut argv = start(base);
-    argv.extend([s("list-sessions"), s("-F"), s("#{session_name}")]);
+    // The client count comes last: zax names cannot contain a space, but
+    // somebody else's session on the socket can.
+    argv.extend([
+        s("list-sessions"),
+        s("-F"),
+        s("#{session_name} #{session_attached}"),
+    ]);
     argv
 }
 
@@ -262,7 +268,7 @@ mod tests {
         );
         assert_eq!(
             list_sessions(base())[4..],
-            ["list-sessions", "-F", "#{session_name}"]
+            ["list-sessions", "-F", "#{session_name} #{session_attached}"]
         );
     }
 }

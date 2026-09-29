@@ -52,8 +52,8 @@ Point Zed's agent terminal at zax. In Zed's `settings.json`:
 ```
 
 Open the agent panel in any git repository or worktree. zax derives the
-session from the repository and branch, builds the layout if it is not
-already running, and attaches. Run it from a terminal too, if you like:
+session from the repository and branch, reattaches to one nobody is looking
+at or builds a new layout, and attaches. Run it from a terminal too, if you like:
 
 ```sh
 cd ~/src/acme
@@ -67,9 +67,9 @@ says so and exits rather than nesting tmux inside tmux.
 
 | Command | Purpose |
 | --- | --- |
-| `zax session start` | Attach to this worktree's session, building it first if needed |
+| `zax session start` | Reattach to a detached session in this worktree, or build a new one |
 | `zax session list` | The zax sessions on the dedicated socket |
-| `zax session kill [name]` | Kill a session. Defaults to this worktree's own |
+| `zax session kill [name]` | Kill a session. Defaults to this worktree's own, when it has only one |
 | `zax worktree new <branch> [--from <base>] [--no-hooks]` | Branch plus worktree at the canonical path, then copy and hooks |
 | `zax worktree review <pr\|url> [--force] [--no-hooks]` | A pull request's head branch in a worktree, then copy and hooks |
 | `zax worktree list` | The worktrees zax manages for this repository |
@@ -292,19 +292,24 @@ direnv.
 ## Sessions
 
 Sessions are named `zax-<repo>-<branch>-<fingerprint>` and live on the
-dedicated `-L zax` socket. One worktree maps to one session; the fingerprint
-is what keeps two worktrees whose names sanitise alike from sharing one, so
-`zax session kill` can never tear down the wrong agent.
+dedicated `-L zax` socket. The fingerprint is what keeps two worktrees whose
+names sanitise alike from sharing one, so `zax session kill` can never tear
+down the wrong agent.
+
+A worktree can run several agents side by side. `zax session start` reattaches
+to the lowest-numbered session in the worktree that nobody is attached to, and
+only when every one is attached does it build another, suffixed `-2`, `-3` and
+so on (up to 99). A second agent thread in Zed therefore gets its own agent,
+while closing an agent terminal or restarting Zed still reattaches to the live
+agent you left.
 
 ```sh
-zax session list
-zax session kill                       # this worktree's own
-zax session kill zax-acme-topic-1a2b3c4d
+zax session list                       # attached sessions are marked
+zax session kill                       # this worktree's own, if it has one
+zax session kill zax-acme-topic-1a2b3c4d-2
 ```
 
-The server outlives Zed, so closing the agent terminal or restarting Zed
-reattaches to a live agent. Killing one session does not tear down the server
-other worktrees are using.
+Killing one session does not tear down the server other worktrees are using.
 
 ## Layout of the repository
 

@@ -36,11 +36,12 @@ pub enum Commands {
 
 #[derive(Debug, Subcommand)]
 pub enum SessionCommand {
-    /// Attach to this worktree's session, building it first if it is not there.
+    /// Reattach to a detached session in this worktree, or build a new one
+    /// when every session is already attached.
     Start,
     /// List the zax sessions on the dedicated socket.
     List,
-    /// Kill a session. Defaults to this worktree's own.
+    /// Kill a session. Defaults to this worktree's own, when it has only one.
     Kill {
         /// The session name, as `zax session list` prints it.
         name: Option<String>,

@@ -2,7 +2,7 @@
 
 use anyhow::{bail, Result};
 use zax_app::{Multiplexer, StartSession, StartSessionOutcome, StartSessionRequest};
-use zax_domain::{BranchName, SessionName};
+use zax_domain::{worktree_sessions, BranchName, SessionName};
 
 use crate::cli::SessionCommand;
 use crate::guard::inside_multiplexer_now;
@@ -42,8 +42,12 @@ fn list() -> Result<()> {
     if sessions.is_empty() {
         println!("no zax sessions");
     }
-    for name in sessions {
-        println!("{name}");
+    for session in sessions {
+        if session.attached {
+            println!("{} (attached)", session.name);
+        } else {
+            println!("{}", session.name);
+        }
     }
     Ok(())
 }
@@ -59,7 +63,11 @@ fn kill(name: Option<String>) -> Result<()> {
             let branch: BranchName = ctx.git.current_branch()?.ok_or_else(|| {
                 anyhow::anyhow!("HEAD is detached, so there is no session name to derive")
             })?;
-            SessionName::derive(&ctx.repo, &branch)
+            only_session(worktree_sessions(
+                &ctx.repo,
+                &branch,
+                &tmux.list_sessions()?,
+            ))?
         }
     };
 
@@ -69,4 +77,54 @@ fn kill(name: Option<String>) -> Result<()> {
     tmux.kill_session(&session)?;
     println!("killed {session}");
     Ok(())
+}
+
+/// `zax session kill` with no name. A worktree running several agents has no
+/// single session to default to, and guessing would end the wrong agent.
+fn only_session(mut sessions: Vec<SessionName>) -> Result<SessionName> {
+    match sessions.len() {
+        0 => bail!("this worktree has no zax session"),
+        1 => Ok(sessions.remove(0)),
+        _ => {
+            let names: Vec<_> = sessions.iter().map(SessionName::as_str).collect();
+            bail!(
+                "this worktree has {} zax sessions; name the one to kill:\n  {}",
+                names.len(),
+                names.join("\n  ")
+            )
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)]
+    use super::*;
+
+    fn name(raw: &str) -> SessionName {
+        SessionName::parse(raw).unwrap()
+    }
+
+    #[test]
+    fn a_worktree_with_one_session_defaults_to_it() {
+        assert_eq!(only_session(vec![name("zax-a")]).unwrap(), name("zax-a"));
+    }
+
+    #[test]
+    fn a_worktree_with_no_session_has_nothing_to_kill() {
+        let err = only_session(vec![]).unwrap_err().to_string();
+        assert!(err.contains("no zax session"), "got: {err}");
+    }
+
+    #[test]
+    fn a_worktree_with_several_sessions_makes_the_user_choose() {
+        let err = only_session(vec![name("zax-a"), name("zax-a-2")])
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("2 zax sessions"), "got: {err}");
+        assert!(
+            err.contains("zax-a\n") && err.contains("zax-a-2"),
+            "got: {err}"
+        );
+    }
 }

@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 use crate::diagnostics::{hint_for, resolve_on_path, Diagnostics};
 use zax_app::{Multiplexer, PortError};
-use zax_domain::{Command, PaneSize, SessionName};
+use zax_domain::{Command, LiveSession, PaneSize, SessionName};
 use zax_exec::{Exec, ExecError, Handover, Output};
 
 const TOOL: &str = "tmux";
@@ -124,8 +124,7 @@ impl<E: Exec, H: Handover> TmuxCli<E, H> {
         if out.ok() {
             return Ok("reachable");
         }
-        let stderr = out.stderr.trim().to_ascii_lowercase();
-        if stderr.contains("no server running") || stderr.contains("no such file or directory") {
+        if no_server(&out.stderr) {
             return Ok("no server yet, which is normal before the first session");
         }
         Err(self.failure("list-sessions", &args, &out))
@@ -156,6 +155,34 @@ fn is_executable(path: &Path) -> bool {
     path.is_file()
 }
 
+/// tmux's spellings of "there is no server on this socket": no socket file at
+/// all, because nothing has ever started it, or a socket file whose server has
+/// gone. Both are the ordinary state before the first session of the day.
+fn no_server(stderr: &str) -> bool {
+    let stderr = stderr.to_ascii_lowercase();
+    stderr.contains("no such file or directory") || stderr.contains("no server running")
+}
+
+/// One `list-sessions` line. Someone else's session on this socket is not ours
+/// to report, so it is skipped rather than parsed.
+fn parse_listed_session(line: &str) -> Option<Result<LiveSession, PortError>> {
+    let line = line.trim();
+    let (raw_name, clients) = line.rsplit_once(' ').unwrap_or((line, ""));
+    let name = SessionName::parse(raw_name).ok()?;
+    Some(
+        clients
+            .parse::<u32>()
+            .map(|clients| LiveSession {
+                name,
+                attached: clients > 0,
+            })
+            .map_err(|_| PortError::Unparseable {
+                tool: TOOL,
+                detail: format!("list-sessions line without a client count: `{line}`"),
+            }),
+    )
+}
+
 fn map_exec_error(error: ExecError) -> PortError {
     match error {
         ExecError::NotFound { .. } => PortError::MissingTool { tool: TOOL },
@@ -176,34 +203,32 @@ impl<E: Exec, H: Handover> Multiplexer for TmuxCli<E, H> {
         // narrow: anything unrecognised becomes an error rather than a "no".
         // A tmux that failed for some other reason must not read as an empty
         // name for the caller to build over.
-        let stderr = out.stderr.to_ascii_lowercase();
-        let absent = stderr.contains("can't find session")
-            // No socket file at all: nothing has ever started this server.
-            || stderr.contains("no such file or directory")
-            // A socket file whose server has gone.
-            || stderr.contains("no server running");
+        let absent = out
+            .stderr
+            .to_ascii_lowercase()
+            .contains("can't find session")
+            || no_server(&out.stderr);
         if absent {
             return Ok(false);
         }
         Err(self.failure("has-session", &args, &out))
     }
 
-    fn list_sessions(&self) -> Result<Vec<SessionName>, PortError> {
+    fn list_sessions(&self) -> Result<Vec<LiveSession>, PortError> {
         let args = argv::list_sessions(self.base());
         let out = self.run(args.clone())?;
         if !out.ok() {
-            // "no server running" means no sessions, not a failure.
-            if out.stderr.contains("no server running") {
+            // No server, or no socket file at all, means no sessions rather
+            // than a failure.
+            if no_server(&out.stderr) {
                 return Ok(Vec::new());
             }
             return Err(self.failure("list-sessions", &args, &out));
         }
-        // Someone else's session on this socket is not ours to report.
-        Ok(out
-            .stdout
+        out.stdout
             .lines()
-            .filter_map(|l| SessionName::parse(l.trim()).ok())
-            .collect())
+            .filter_map(parse_listed_session)
+            .collect()
     }
 
     fn create_session(
@@ -379,17 +404,59 @@ mod tests {
     }
 
     #[test]
+    fn listing_sessions_before_the_socket_exists_is_an_empty_list() {
+        // `session start` lists before it creates, so the very first session
+        // on a machine meets a socket file that is not there yet.
+        let tmux = cli(vec![failed(
+            1,
+            "error connecting to /private/tmp/tmux-501/zax (No such file or directory)",
+        )]);
+        assert_eq!(tmux.list_sessions().unwrap(), vec![]);
+    }
+
+    #[test]
     fn listing_sessions_keeps_only_names_that_are_zax_sessions() {
         let tmux = cli(vec![ok(
-            "zax-acme-topic\npersonal\nzax-omega-OMEGA-1-a\n",
+            "zax-acme-topic 0\npersonal 1\nzax-omega-OMEGA-1-a 2\n",
         )]);
         let names: Vec<_> = tmux
             .list_sessions()
             .unwrap()
             .into_iter()
-            .map(|n| n.as_str().to_owned())
+            .map(|s| s.name.as_str().to_owned())
             .collect();
         assert_eq!(names, ["zax-acme-topic", "zax-omega-OMEGA-1-a"]);
+    }
+
+    #[test]
+    fn a_session_with_any_client_is_attached_and_one_with_none_is_not() {
+        // `#{session_attached}` is a client count, not a flag.
+        let tmux = cli(vec![ok("zax-a 0\nzax-b 1\nzax-c 2\n")]);
+        let attached: Vec<_> = tmux
+            .list_sessions()
+            .unwrap()
+            .into_iter()
+            .map(|s| (s.name.as_str().to_owned(), s.attached))
+            .collect();
+        assert_eq!(
+            attached,
+            [
+                ("zax-a".to_owned(), false),
+                ("zax-b".to_owned(), true),
+                ("zax-c".to_owned(), true)
+            ]
+        );
+    }
+
+    #[test]
+    fn a_listing_line_zax_cannot_read_is_an_error_not_a_detached_session() {
+        // Reading garbage as "nobody attached" would hand this agent to a
+        // second Zed thread as if it were free.
+        let err = cli(vec![ok("zax-a lots\n")]).list_sessions().unwrap_err();
+        assert!(
+            matches!(err, PortError::Unparseable { tool: "tmux", .. }),
+            "got: {err:?}"
+        );
     }
 
     #[test]

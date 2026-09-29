@@ -118,16 +118,67 @@ impl<E: Exec, H: Handover> TmuxCli<E, H> {
     ///
     /// Having no server yet is not a fault: it is the ordinary state before
     /// the first session of the day.
-    fn socket_health(&self) -> Result<&'static str, PortError> {
+    fn socket_health(&self) -> Result<SocketHealth, PortError> {
         let args = argv::list_sessions(self.base());
         let out = self.run(args.clone())?;
         if out.ok() {
-            return Ok("reachable");
+            return Ok(SocketHealth::Reachable);
         }
         if no_server(&out.stderr) {
-            return Ok("no server yet, which is normal before the first session");
+            return Ok(SocketHealth::NoServer);
         }
         Err(self.failure("list-sessions", &args, &out))
+    }
+
+    /// Only a reachable socket has a server to ask.
+    fn server_version_if(&self, health: SocketHealth) -> Option<String> {
+        (health == SocketHealth::Reachable)
+            .then(|| self.server_version())
+            .flatten()
+    }
+
+    /// The version the server on the socket was built from, if there is a
+    /// server and it answers.
+    fn server_version(&self) -> Option<String> {
+        let out = self.run(argv::server_version(self.base())).ok()?;
+        out.ok().then(|| out.trimmed_stdout().to_owned())
+    }
+
+    /// A client of one tmux version and a server of another can still run
+    /// one-shot commands against each other, which is why sessions still get
+    /// built, but attaching fails with "open terminal failed: not a terminal".
+    /// Because the server outlives every zax invocation, a `PATH` that differs
+    /// between two shells - a direnv or nix shell in one repository - is
+    /// enough to produce it.
+    ///
+    /// Best effort: `None` whenever either version cannot be read, because a
+    /// check that could not run is no reason to refuse.
+    fn version_mismatch(&self) -> Option<PortError> {
+        let client = self.version_of_binary()?;
+        let server = self.server_version()?;
+        self.mismatch_between(&client, &server)
+    }
+
+    /// `client` as `tmux -V` prints it, `server` as `#{version}` does.
+    fn mismatch_between(&self, client: &str, server: &str) -> Option<PortError> {
+        let client = client.strip_prefix("tmux ").unwrap_or(client);
+        if client == server {
+            return None;
+        }
+        let at = self
+            .resolved_binary()
+            .map(|p| format!(" at {}", p.display()))
+            .unwrap_or_default();
+        Some(PortError::Incompatible {
+            tool: TOOL,
+            detail: format!(
+                "this is tmux {client}{at}, but the zax server on socket \"{socket}\" \
+is tmux {server}. Attaching across versions fails with \"open terminal failed: \
+not a terminal\". Put tmux {server} first on PATH here, or restart the server \
+with `tmux -L {socket} kill-server`, which ends every zax session.",
+                socket = self.socket,
+            ),
+        })
     }
 
     /// The version of the binary on PATH, which is the client's version. It
@@ -139,6 +190,22 @@ impl<E: Exec, H: Handover> TmuxCli<E, H> {
             .exec(&self.program, &["-V".to_owned()], None, &[])
             .ok()?;
         out.ok().then(|| out.trimmed_stdout().to_owned())
+    }
+}
+
+/// What `list-sessions` says about the socket.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SocketHealth {
+    Reachable,
+    NoServer,
+}
+
+impl SocketHealth {
+    fn describe(self) -> &'static str {
+        match self {
+            Self::Reachable => "reachable",
+            Self::NoServer => "no server yet, which is normal before the first session",
+        }
     }
 }
 
@@ -274,6 +341,12 @@ impl<E: Exec, H: Handover> Multiplexer for TmuxCli<E, H> {
     }
 
     fn attach(&self, name: &SessionName) -> Result<(), PortError> {
+        // Once the terminal is handed over, tmux's own error is all the user
+        // sees, and across versions that error is "not a terminal". So the
+        // mismatch is looked for first, while zax can still explain it.
+        if let Some(mismatch) = self.version_mismatch() {
+            return Err(mismatch);
+        }
         let args = argv::attach_session(self.base(), name);
         self.handover
             .handover(&self.program, &args)
@@ -297,10 +370,20 @@ impl<E: Exec, H: Handover> Multiplexer for TmuxCli<E, H> {
             Some(path) => format!(" at {}", path.display()),
             None => String::new(),
         };
+        let health = self.socket_health()?;
+        let server = match self.server_version_if(health) {
+            Some(server) => {
+                if let Some(mismatch) = self.mismatch_between(&version, &server) {
+                    return Err(mismatch);
+                }
+                format!(", server tmux {server}")
+            }
+            None => String::new(),
+        };
         Ok(format!(
-            "{version}{where_found}; socket \"{}\": {}",
+            "{version}{where_found}; socket \"{}\": {}{server}",
             self.socket,
-            self.socket_health()?
+            health.describe()
         ))
     }
 }
@@ -543,10 +626,16 @@ mod tests {
 
     #[test]
     fn attaching_hands_the_terminal_over_rather_than_capturing_output() {
+        // No responses at all: the version check before attaching fails, and
+        // a check that could not run is no reason to refuse the attach.
         let tmux = cli(vec![]);
         tmux.attach(&name()).unwrap();
         assert!(
-            tmux.exec_ref().calls().is_empty(),
+            !tmux
+                .exec_ref()
+                .calls()
+                .iter()
+                .any(|c| c.args.contains(&"attach-session".to_owned())),
             "attach must not be captured"
         );
         let handed = tmux.handover_ref().calls();
@@ -564,6 +653,62 @@ mod tests {
                 format!("={}", name().as_str()),
             ]
         );
+    }
+
+    #[test]
+    fn attaching_across_tmux_versions_is_refused_with_an_explanation() {
+        // A 3.7c client attaching to a 3.5a server gets "open terminal failed:
+        // not a terminal", which says nothing about versions. After the
+        // handover zax can no longer explain it, so it has to refuse first.
+        let tmux = cli(vec![ok("tmux 3.7c\n"), ok("3.5a\n")]);
+        let err = tmux.attach(&name()).unwrap_err();
+        assert!(
+            matches!(err, PortError::Incompatible { tool: "tmux", .. }),
+            "got: {err:?}"
+        );
+        let err = err.to_string();
+        assert!(err.contains("3.7c") && err.contains("3.5a"), "got: {err}");
+        assert!(err.contains("not a terminal"), "got: {err}");
+        assert!(err.contains("-L zax kill-server"), "got: {err}");
+        assert!(
+            tmux.handover_ref().calls().is_empty(),
+            "a refused attach must not hand over"
+        );
+    }
+
+    #[test]
+    fn attaching_with_matching_versions_hands_over() {
+        let tmux = cli(vec![ok("tmux 3.5a\n"), ok("3.5a\n")]);
+        tmux.attach(&name()).unwrap();
+        assert_eq!(tmux.handover_ref().calls().len(), 1);
+    }
+
+    #[test]
+    fn doctor_fails_when_the_server_runs_another_tmux_version() {
+        let tmux = cli(vec![ok("tmux 3.7c\n"), ok(""), ok("3.5a\n")]);
+        let err = tmux.probe().unwrap_err();
+        assert!(
+            matches!(err, PortError::Incompatible { tool: "tmux", .. }),
+            "got: {err:?}"
+        );
+        assert!(err.to_string().contains("3.5a"), "got: {err}");
+    }
+
+    #[test]
+    fn doctor_passes_when_client_and_server_agree() {
+        let tmux = cli(vec![ok("tmux 3.5a\n"), ok(""), ok("3.5a\n")]);
+        let report = tmux.probe().unwrap();
+        assert!(report.contains("server tmux 3.5a"), "got: {report}");
+    }
+
+    #[test]
+    fn doctor_with_no_server_yet_has_no_version_to_compare() {
+        let tmux = cli(vec![
+            ok("tmux 3.7c\n"),
+            failed(1, "no server running on /tmp/tmux-501/zax"),
+        ]);
+        tmux.probe().unwrap();
+        assert_eq!(tmux.exec_ref().calls().len(), 2, "nothing to ask");
     }
 
     #[test]

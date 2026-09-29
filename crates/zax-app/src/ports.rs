@@ -38,6 +38,11 @@ pub enum PortError {
         stderr: String,
         context: String,
     },
+    /// The tool runs, but not in a combination that can work. The adapter
+    /// renders `detail`, because only it knows what the combination is and
+    /// how to get out of it.
+    #[error("{tool} cannot be used as it is: {detail}")]
+    Incompatible { tool: &'static str, detail: String },
     #[error("could not understand {tool} output: {detail}")]
     Unparseable { tool: &'static str, detail: String },
     #[error("{operation} failed on {path}: {detail}")]

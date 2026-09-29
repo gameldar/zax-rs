@@ -36,6 +36,14 @@ pub fn version(base: Base<'_>) -> Vec<String> {
     argv
 }
 
+/// The version of the server on the socket, which need not be the version
+/// of the binary asking.
+pub fn server_version(base: Base<'_>) -> Vec<String> {
+    let mut argv = start(base);
+    argv.extend([s("display-message"), s("-p"), s("#{version}")]);
+    argv
+}
+
 pub fn has_session(base: Base<'_>, name: &SessionName) -> Vec<String> {
     let mut argv = start(base);
     argv.extend([s("has-session"), s("-t"), exact(name)]);
@@ -265,6 +273,10 @@ mod tests {
                 "-t".to_owned(),
                 format!("={}", n())
             ]
+        );
+        assert_eq!(
+            server_version(base())[4..],
+            ["display-message", "-p", "#{version}"]
         );
         assert_eq!(
             list_sessions(base())[4..],

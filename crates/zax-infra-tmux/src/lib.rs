@@ -619,7 +619,7 @@ mod tests {
                 name().as_str().to_owned(),
                 "-c".to_owned(),
                 "/w".to_owned(),
-                "claude".to_owned(),
+                "env -u TMUX claude".to_owned(),
             ]
         );
     }

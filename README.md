@@ -60,8 +60,13 @@ cd ~/src/acme
 zax session start
 ```
 
-`zax` refuses to start inside an existing multiplexer: if `$TMUX` is set it
-says so and exits rather than nesting tmux inside tmux.
+`zax` refuses to start inside an existing multiplexer: if `$TMUX` or
+`$TMUX_PANE` is set it says so and exits rather than nesting tmux inside tmux.
+
+The agent pane runs with `$TMUX` removed from its environment. Claude Code
+stops animating its terminal title when it sees `$TMUX`, and that animated
+title is what drives Zed's in-progress indicator for a thread. tmux's own
+`$TMUX_PANE` stays set, which is why the check above looks at both.
 
 ## Commands
 

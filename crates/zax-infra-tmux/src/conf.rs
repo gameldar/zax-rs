@@ -156,6 +156,14 @@ mod tests {
     }
 
     #[test]
+    fn new_window_is_unbound_so_the_prefix_cannot_hide_the_session() {
+        // With the status bar off a new window fills the terminal and looks
+        // like the session has vanished.
+        let rendered = render("C-Space", Path::new("/bin/zax"));
+        assert!(rendered.contains("unbind c"), "got:\n{rendered}");
+    }
+
+    #[test]
     fn writing_the_conf_yields_a_readable_file() {
         let tmp = tempfile::TempDir::new().unwrap();
         let path = write_to(tmp.path(), "C-q", Path::new("/bin/zax")).unwrap();

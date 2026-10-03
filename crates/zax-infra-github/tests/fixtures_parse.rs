@@ -117,3 +117,44 @@ fn a_graphql_errors_payload_is_reported_rather_than_parsed_as_empty() {
 fn malformed_json_is_reported_rather_than_panicking() {
     assert!(dto::parse_search_response("not json").is_err());
 }
+
+#[test]
+fn the_authored_search_parses_every_state_the_pane_renders() {
+    let json = include_str!("fixtures/authored_prs.json");
+    let parsed = dto::parse_authored_search_response(json).unwrap();
+
+    // Four pull requests and one `{}`, which is a node that is not a pull
+    // request and is skipped.
+    assert_eq!(parsed.len(), 4);
+
+    assert_eq!(parsed[0].pr.number, 12);
+    assert_eq!(parsed[0].review, ReviewState::ChangesRequested);
+    assert_eq!(parsed[0].mergeable, Mergeable::Conflicting);
+    assert_eq!(parsed[0].unresolved_threads, 1);
+    assert_eq!(parsed[0].pr.checks, CheckState::Failing);
+
+    assert_eq!(parsed[1].review, ReviewState::Approved);
+    assert_eq!(parsed[1].unresolved_threads, 0);
+    assert_eq!(parsed[1].pr.checks, CheckState::Passing);
+
+    assert!(parsed[2].pr.is_draft);
+    assert_eq!(parsed[2].mergeable, Mergeable::Unknown);
+    assert_eq!(parsed[2].pr.checks, CheckState::None);
+
+    assert_eq!(parsed[3].unresolved_threads, 3);
+}
+
+#[test]
+fn an_authored_pull_request_missing_its_repository_is_an_error() {
+    // A dropped row would take a pull request out of the queue with nothing
+    // to say it had gone. `{}` is skipped; a half-built pull request is not.
+    let json = r#"{"data":{"search":{"nodes":[{"number":1}]}}}"#;
+    assert!(dto::parse_authored_search_response(json).is_err());
+}
+
+#[test]
+fn graphql_errors_on_the_authored_search_are_not_an_empty_queue() {
+    let json = r#"{"errors":[{"message":"rate limited"}]}"#;
+    let err = dto::parse_authored_search_response(json).unwrap_err();
+    assert!(err.contains("rate limited"), "got: {err}");
+}

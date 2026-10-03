@@ -103,6 +103,19 @@ impl<E: Exec> Forge for GhCli<E> {
         dto::parse_search_response(&out.stdout).map_err(unparseable)
     }
 
+    fn authored_pull_requests(
+        &self,
+        filter: &PrFilter,
+    ) -> Result<Vec<PullRequestStatus>, PortError> {
+        let login = self.login()?;
+        let query = graphql::authored_query(&login, filter);
+        let out = self.run_ok(argv::graphql_query(
+            graphql::SEARCH_AUTHORED,
+            &[("q", &query)],
+        ))?;
+        dto::parse_authored_search_response(&out.stdout).map_err(unparseable)
+    }
+
     fn current_repo(&self) -> Result<RepoSlug, PortError> {
         self.repo_slug()
     }
@@ -193,6 +206,28 @@ mod tests {
                 .iter()
                 .any(|a| a.contains("review-requested:octocat")),
             "the resolved login must reach the search query: {:?}",
+            calls[1].args
+        );
+    }
+
+    #[test]
+    fn authored_pull_requests_resolve_the_login_before_searching() {
+        let gh = cli(vec![
+            ok("octocat\n"),
+            ok(include_str!("../tests/fixtures/authored_prs.json")),
+        ]);
+
+        let mine = gh.authored_pull_requests(&PrFilter::default()).unwrap();
+        assert_eq!(mine.len(), 4);
+
+        let calls = gh.exec_ref().calls();
+        assert_eq!(calls[0].args, ["api", "user", "-q", ".login"]);
+        assert!(
+            calls[1]
+                .args
+                .iter()
+                .any(|a| a.contains("author:octocat")),
+            "the resolved login must reach the search: {:?}",
             calls[1].args
         );
     }

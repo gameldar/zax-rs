@@ -1,0 +1,57 @@
+{
+  "data": {
+    "search": {
+      "nodes": [
+        {
+          "number": 12,
+          "title": "Add the my-prs pane",
+          "url": "https://github.com/gameldar/zax/pull/12",
+          "isDraft": false,
+          "createdAt": "2023-11-14T10:00:00Z",
+          "mergeable": "CONFLICTING",
+          "reviewDecision": "CHANGES_REQUESTED",
+          "repository": { "nameWithOwner": "gameldar/zax" },
+          "commits": { "nodes": [ { "commit": { "statusCheckRollup": { "state": "FAILURE" } } } ] },
+          "reviewThreads": { "nodes": [ { "isResolved": false }, { "isResolved": true } ] }
+        },
+        {
+          "number": 8,
+          "title": "Retune the ingest path",
+          "url": "https://github.com/acme/omega/pull/8",
+          "isDraft": false,
+          "createdAt": "2023-11-13T10:00:00Z",
+          "mergeable": "MERGEABLE",
+          "reviewDecision": "APPROVED",
+          "repository": { "nameWithOwner": "acme/omega" },
+          "commits": { "nodes": [ { "commit": { "statusCheckRollup": { "state": "SUCCESS" } } } ] },
+          "reviewThreads": { "nodes": [] }
+        },
+        {
+          "number": 14,
+          "title": "Draft idea",
+          "url": "https://github.com/gameldar/zax/pull/14",
+          "isDraft": true,
+          "createdAt": "2023-11-10T10:00:00Z",
+          "mergeable": "UNKNOWN",
+          "reviewDecision": null,
+          "repository": { "nameWithOwner": "gameldar/zax" },
+          "commits": { "nodes": [] },
+          "reviewThreads": { "nodes": [] }
+        },
+        {
+          "number": 21,
+          "title": "Answer the review",
+          "url": "https://github.com/acme/south/pull/21",
+          "isDraft": false,
+          "createdAt": "2023-11-12T10:00:00Z",
+          "mergeable": "MERGEABLE",
+          "reviewDecision": "REVIEW_REQUIRED",
+          "repository": { "nameWithOwner": "acme/south" },
+          "commits": { "nodes": [ { "commit": { "statusCheckRollup": { "state": "PENDING" } } } ] },
+          "reviewThreads": { "nodes": [ { "isResolved": false }, { "isResolved": false }, { "isResolved": false } ] }
+        },
+        {}
+      ]
+    }
+  }
+}

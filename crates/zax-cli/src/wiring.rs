@@ -84,7 +84,7 @@ pub fn resolve() -> Result<Resolved> {
 /// prefix only takes effect if this is the session that starts the server.
 /// The prefix is global to the zax server by design; see `conf::write_to`.
 pub fn tmux(config: &Config) -> Result<Tmux> {
-    let conf_path = conf::write_to(&runtime_dir()?, &config.tmux.prefix)
+    let conf_path = conf::write_to(&runtime_dir()?, &config.tmux.prefix, &zax_bin()?)
         .context("could not write zax's tmux configuration")?;
     Ok(TmuxCli::new(
         SystemExec,

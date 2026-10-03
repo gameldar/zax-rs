@@ -81,6 +81,8 @@ title is what drives Zed's in-progress indicator for a thread. tmux's own
 | `zax worktree rm <branch> [--force]` | Remove one |
 | `zax pane prs-for-review \| branch-status` | Built-in pane processes, normally launched by `session start` |
 | `zax pane exec --title <t> --every <dur> -- <cmd>` | Wrap any command's stdout in a header and refresh loop |
+| `zax config` | View and edit the three config layers, in a popup over the session |
+| `zax config show` | The same view, printed: every setting, its effective value and its origin |
 | `zax doctor` | Verify tmux, git and gh are present and authenticated |
 
 ## Configuration
@@ -118,6 +120,20 @@ directory name, `tmux.prefix` may not contain a control character, and `copy`
 entries may not be absolute or contain `..`.
 
 Unknown keys are errors, not silent defaults.
+
+**All three layers are editable from inside a session.** `prefix C` opens the
+config editor over the session - or `zax config` in any pane, which is also the
+way in when a config is broken enough that nothing will start. It shows every
+setting with its effective value and the layer that supplied it, and writes to
+whichever layer you point it at, your own included. Your layer still wins: the
+editor changes which file a value lives in, never the precedence between them.
+
+Edits are staged until `s` saves them, and a save validates the whole chain
+through the same code a session start uses - an invalid config writes no file at
+all. Writes keep the comments and key order of a file you wrote by hand, and a
+layer that changed on disk underneath the editor is refused by name rather than
+overwritten. What a running session cannot pick up - the prefix, the layout, the
+agent command - is reported after the save rather than applied behind your back.
 
 ### A full example
 
@@ -243,9 +259,17 @@ Inside a focused built-in pane:
 | `j` / `k`, arrows | Move the selection (`prs-for-review`) |
 | `w` | `zax worktree review` for the selected row (`prs-for-review`) |
 
-There is no modal UI and there are no forms. A row action that fails says so
-on the pane's own error line rather than looking like a keystroke that did
-nothing.
+The context panes stay read-only and action-oriented: a keystroke opens, copies
+or starts something, and a row action that fails says so on the pane's own error
+line rather than looking like a keystroke that did nothing. The one modal in zax
+is the config editor, summoned deliberately with `prefix C`:
+
+| Key | Action |
+| --- | --- |
+| `prefix C` | Open the config editor in a popup over the session |
+
+It needs tmux 3.3 or newer for `display-popup`; on an older tmux `zax doctor`
+says so, and `zax config` still works run directly in a pane.
 
 zax renders its own tmux configuration to `~/.cache/zax/tmux.conf`
 (`$XDG_CACHE_HOME` replaces `~/.cache` when set) on every `session start`.

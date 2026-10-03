@@ -11,6 +11,7 @@
 //! here for that reason: the override `name`, the tmux prefix and the `copy`
 //! list.
 
+pub mod draft;
 pub mod error;
 pub mod merge;
 pub mod parse;
@@ -18,6 +19,7 @@ pub mod raw;
 
 use std::path::{Path, PathBuf};
 
+pub use draft::{Draft, SaveError};
 pub use error::ConfigError;
 pub use parse::{Config, TmuxConfig, WorktreeConfig};
 use raw::RawConfig;
@@ -77,7 +79,7 @@ pub fn load(
 /// file the repo can ship itself, `name = "acme"` reads a different repo's
 /// personal override, and any name whose directory does not exist silently
 /// suppresses yours. A repo can suggest a layout; it can never impose one.
-fn validate_override_name(name: &str) -> Result<(), String> {
+pub(crate) fn validate_override_name(name: &str) -> Result<(), String> {
     // Spelled out rather than run through `Path::components`, which normalises
     // a trailing separator away and would accept `acme/` as one component. A
     // backslash is not a separator here, but a checked-in config travels.
@@ -107,7 +109,17 @@ fn read_layer(path: &Path) -> Result<RawConfig, ConfigError> {
             })
         }
     };
-    let raw: RawConfig = toml::from_str(&text).map_err(|e| ConfigError::Parse {
+    parse_layer_text(path, &text)
+}
+
+/// One layer's text, as the three-layer chain takes it.
+///
+/// Separate from reading the file so the config modal can run its own edited
+/// text through the identical step. A second implementation of this is a second
+/// opinion about what a layer may say, which is exactly what must not exist:
+/// the modal's job is to refuse what a session start would refuse.
+pub(crate) fn parse_layer_text(path: &Path, text: &str) -> Result<RawConfig, ConfigError> {
+    let raw: RawConfig = toml::from_str(text).map_err(|e| ConfigError::Parse {
         path: path.to_owned(),
         detail: e.to_string(),
     })?;

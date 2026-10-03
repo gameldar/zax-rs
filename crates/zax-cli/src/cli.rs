@@ -30,8 +30,19 @@ pub enum Commands {
         #[command(subcommand)]
         command: PaneCommand,
     },
+    /// View and edit the three config layers.
+    Config {
+        #[command(subcommand)]
+        command: Option<ConfigCommand>,
+    },
     /// Verify that tmux, git and gh are present and authenticated.
     Doctor,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ConfigCommand {
+    /// Print every setting, its effective value and the layer it came from.
+    Show,
 }
 
 #[derive(Debug, Subcommand)]
@@ -290,6 +301,24 @@ mod tests {
             }
             other => panic!("expected pane exec, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn config_opens_the_modal_and_show_prints_the_same_view() {
+        // Bare `zax config` is the modal; `show` is what you want when a session
+        // will not start and there is no popup to open one from.
+        assert!(matches!(
+            Cli::try_parse_from(["zax", "config"]).unwrap().command,
+            Commands::Config { command: None }
+        ));
+        assert!(matches!(
+            Cli::try_parse_from(["zax", "config", "show"])
+                .unwrap()
+                .command,
+            Commands::Config {
+                command: Some(ConfigCommand::Show)
+            }
+        ));
     }
 
     #[test]

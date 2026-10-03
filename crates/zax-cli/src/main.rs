@@ -1,11 +1,13 @@
 //! zax: the Zed agent terminal, with context around it.
 
 mod cli;
+mod cmd_config;
 mod cmd_doctor;
 mod cmd_pane;
 mod cmd_session;
 mod cmd_worktree;
 mod guard;
+mod screen;
 mod wiring;
 
 use anyhow::Result;
@@ -26,6 +28,7 @@ fn run() -> Result<()> {
         Commands::Session { command } => cmd_session::run(command),
         Commands::Worktree { command } => cmd_worktree::run(command),
         Commands::Pane { command } => cmd_pane::run(command),
+        Commands::Config { command } => cmd_config::run(command),
         Commands::Doctor => cmd_doctor::run(),
     }
 }

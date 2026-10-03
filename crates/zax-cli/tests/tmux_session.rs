@@ -60,7 +60,7 @@ impl Drop for TmuxServerGuard {
 /// never running. Recording the attach instead lets the test assert on the
 /// session tmux actually built.
 fn tmux_cli(socket: &str, conf_dir: &Path) -> TmuxCli<SystemExec, RecordingHandover> {
-    let conf_path = conf::write_to(conf_dir, "C-Space").unwrap();
+    let conf_path = conf::write_to(conf_dir, "C-Space", Path::new("/bin/true")).unwrap();
     TmuxCli::new(
         SystemExec,
         RecordingHandover::default(),

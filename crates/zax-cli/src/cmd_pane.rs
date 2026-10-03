@@ -4,25 +4,19 @@
 //! here is wiring: raw mode, a fetch thread, and turning a `PaneAction` into a
 //! side effect.
 
-use std::io::stdout;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
-use anyhow::{Context, Result};
-use ratatui::crossterm::event::{self, DisableFocusChange, EnableFocusChange, Event, KeyEventKind};
-use ratatui::crossterm::execute;
-use ratatui::crossterm::terminal::{
-    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
-};
-use ratatui::prelude::CrosstermBackend;
-use ratatui::Terminal;
+use anyhow::Result;
+use ratatui::crossterm::event::{self, Event, KeyEventKind};
 use zax_app::queries;
 use zax_domain::{parse_duration, Command};
 use zax_exec::{Exec, SystemExec};
 use zax_tui::{refresh, BranchStatusPane, ExecPane, PaneAction, PrsForReviewPane};
 
 use crate::cli::PaneCommand;
+use crate::screen::Screen;
 use crate::wiring;
 
 const JITTER: f64 = 0.15;
@@ -71,30 +65,6 @@ where
         }
     });
     (request_tx, result_rx)
-}
-
-struct Screen {
-    terminal: Terminal<CrosstermBackend<std::io::Stdout>>,
-}
-
-impl Screen {
-    fn enter() -> Result<Self> {
-        enable_raw_mode().context("could not put the terminal into raw mode")?;
-        // `EnableFocusChange` is what makes `Event::FocusGained` arrive, which is
-        // how a pane refreshes on focus. tmux forwards it because our conf sets
-        // `focus-events on`.
-        execute!(stdout(), EnterAlternateScreen, EnableFocusChange)?;
-        Ok(Self {
-            terminal: Terminal::new(CrosstermBackend::new(stdout()))?,
-        })
-    }
-}
-
-impl Drop for Screen {
-    fn drop(&mut self) {
-        let _ = disable_raw_mode();
-        let _ = execute!(stdout(), DisableFocusChange, LeaveAlternateScreen);
-    }
 }
 
 /// The shape every pane loop shares.

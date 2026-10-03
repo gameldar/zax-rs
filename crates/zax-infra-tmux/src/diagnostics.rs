@@ -20,6 +20,48 @@ the server with it (`<that-tmux> -L {socket} kill-server`) to start fresh."
     )
 }
 
+/// The tmux `display-popup` the config binding uses, with the border style it
+/// asks for, arrived in 3.3.
+const POPUP_SINCE: (u32, u32) = (3, 3);
+
+/// What to say about a tmux too old for the config popup, given a version
+/// string as `tmux -V` prints it (`tmux 3.2a`) or as `zax doctor` renders it.
+///
+/// Below this version `prefix C` reports an unknown command on tmux's message
+/// line rather than opening anything, which is a confusing way to learn that the
+/// multiplexer is the problem. `zax config` itself is unaffected: it is a
+/// command, and it runs in a pane like any other.
+pub fn popup_hint(version: &str) -> Option<String> {
+    let (major, minor) = tmux_version(version)?;
+    if (major, minor) >= POPUP_SINCE {
+        return None;
+    }
+    Some(format!(
+        "tmux {major}.{minor} has no `display-popup` with border styles, so `prefix C` will report an error instead of opening the config editor. Run `zax config` in a pane instead, or upgrade to tmux {}.{}.",
+        POPUP_SINCE.0, POPUP_SINCE.1
+    ))
+}
+
+/// The major and minor numbers out of whatever tmux and zax print around them.
+///
+/// tmux versions carry a letter suffix (`3.2a`) and `next-3.4` exists too, so
+/// the digits are taken as they come and anything else is ignored rather than
+/// refused: a version zax cannot read must not produce a warning about a
+/// capability it knows nothing about.
+fn tmux_version(text: &str) -> Option<(u32, u32)> {
+    let rest = text.split("tmux ").nth(1).unwrap_or(text).trim();
+    let digits = rest.trim_start_matches(|c: char| !c.is_ascii_digit());
+    let mut parts = digits.split('.');
+    let major: u32 = parts.next()?.parse().ok()?;
+    let minor_text: String = parts
+        .next()?
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect();
+    let minor: u32 = minor_text.parse().ok()?;
+    Some((major, minor))
+}
+
 /// Whether this stderr is one zax can explain further. The socket is named
 /// because the recovery commands are useless without it.
 pub fn hint_for(stderr: &str, socket: &str) -> Option<String> {
@@ -131,6 +173,44 @@ mod tests {
         assert!(!rendered.contains("tmux:"), "rendered was:\n{rendered}");
         // The facts it does know are still there.
         assert!(rendered.contains("socket:        zax"));
+    }
+
+    #[test]
+    fn a_tmux_without_popups_earns_a_line_about_the_config_binding() {
+        // `prefix C` is useless on an old tmux, and the error it produces says
+        // nothing about tmux being the reason.
+        let hint = popup_hint("tmux 3.2a").expect("3.2 has no styled popup");
+        assert!(hint.contains("prefix C"), "got: {hint}");
+        assert!(hint.contains("zax config"), "got: {hint}");
+        assert!(hint.contains("3.3"), "got: {hint}");
+    }
+
+    #[test]
+    fn a_tmux_new_enough_for_the_popup_says_nothing() {
+        for version in [
+            "tmux 3.3",
+            "tmux 3.3a",
+            "tmux 3.5a",
+            "tmux 4.0",
+            "tmux next-3.4",
+        ] {
+            assert_eq!(popup_hint(version), None, "{version} is new enough");
+        }
+    }
+
+    #[test]
+    fn a_version_string_zax_cannot_read_produces_no_claim_about_popups() {
+        for version in ["", "tmux", "tmux unknown", "master"] {
+            assert_eq!(popup_hint(version), None, "{version:?}");
+        }
+    }
+
+    #[test]
+    fn the_hint_is_found_in_the_line_doctor_renders_too() {
+        // `zax doctor` prints the version inside a longer line, and that is the
+        // string the command has to hand.
+        let detail = "tmux 3.2a at /usr/bin/tmux; socket \"zax\": no server";
+        assert!(popup_hint(detail).is_some(), "got: {detail}");
     }
 
     #[test]

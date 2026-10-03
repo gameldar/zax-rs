@@ -126,7 +126,7 @@ mod tests {
     use std::time::{Duration, UNIX_EPOCH};
 
     use zax_domain::{
-        BranchName, BranchStatus, BranchView, CheckState, Mergeable, PrFilter, PullRequest,
+        BranchName, BranchView, CheckState, Mergeable, PrFilter, PullRequest, PullRequestStatus,
         RepoPattern, RepoSlug, ReviewState, RootRepoName, WorktreeRoot,
     };
 
@@ -202,7 +202,7 @@ mod tests {
     fn the_branch_view_asks_the_forge_about_the_current_branch() {
         let git = FakeGitRepo::new("/Users/me/src/acme", "OMEGA-1963-stamp");
         let forge = FakeForge {
-            branch_status: Some(BranchStatus {
+            branch_status: Some(PullRequestStatus {
                 pr: pr(1963),
                 review: ReviewState::ReviewRequired,
                 unresolved_threads: 2,

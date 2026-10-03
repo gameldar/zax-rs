@@ -22,7 +22,7 @@ use serde::Deserialize;
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 use zax_app::PullRequestHead;
-use zax_domain::{BranchStatus, CheckState, Mergeable, PullRequest, RepoSlug, ReviewState};
+use zax_domain::{CheckState, Mergeable, PullRequest, PullRequestStatus, RepoSlug, ReviewState};
 
 #[derive(Debug, Deserialize)]
 struct Envelope<T> {
@@ -182,7 +182,7 @@ pub fn parse_search_response(json: &str) -> Result<Vec<PullRequest>, String> {
         .collect()
 }
 
-pub fn parse_branch_status_response(json: &str) -> Result<Option<BranchStatus>, String> {
+pub fn parse_branch_status_response(json: &str) -> Result<Option<PullRequestStatus>, String> {
     let data: RepositoryData = unwrap_envelope(json)?;
     let Some(repository) = data.repository else {
         return Ok(None);
@@ -201,7 +201,7 @@ pub fn parse_branch_status_response(json: &str) -> Result<Option<BranchStatus>, 
 
     let pr = to_pull_request(node)?;
 
-    Ok(Some(BranchStatus {
+    Ok(Some(PullRequestStatus {
         pr,
         review,
         unresolved_threads: u32::try_from(unresolved_threads).unwrap_or(u32::MAX),

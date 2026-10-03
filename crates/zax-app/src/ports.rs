@@ -5,7 +5,7 @@ use std::time::SystemTime;
 
 use thiserror::Error;
 use zax_domain::{
-    BranchName, BranchStatus, Command, LiveSession, PaneSize, PrFilter, PrRef, PullRequest,
+    BranchName, Command, LiveSession, PaneSize, PrFilter, PrRef, PullRequest, PullRequestStatus,
     RepoSlug, RootRepoName, SessionName,
 };
 
@@ -149,7 +149,7 @@ pub trait Forge {
     /// somewhere else has to be compared with.
     fn current_repo(&self) -> Result<RepoSlug, PortError>;
     /// `None` when the branch has no open pull request.
-    fn branch_status(&self, branch: &BranchName) -> Result<Option<BranchStatus>, PortError>;
+    fn branch_status(&self, branch: &BranchName) -> Result<Option<PullRequestStatus>, PortError>;
     fn pull_request_head(&self, pr: &PrRef) -> Result<PullRequestHead, PortError>;
     fn auth_status(&self) -> Result<String, PortError>;
     fn probe(&self) -> Result<String, PortError>;

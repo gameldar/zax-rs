@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use std::time::SystemTime;
 
 use zax_app::{Forge, PortError, PullRequestHead};
-use zax_domain::{BranchName, BranchStatus, PrFilter, PrRef, PullRequest, RepoSlug};
+use zax_domain::{BranchName, PrFilter, PrRef, PullRequest, PullRequestStatus, RepoSlug};
 use zax_exec::{Exec, ExecError, Output};
 
 const TOOL: &str = "gh";
@@ -107,7 +107,7 @@ impl<E: Exec> Forge for GhCli<E> {
         self.repo_slug()
     }
 
-    fn branch_status(&self, branch: &BranchName) -> Result<Option<BranchStatus>, PortError> {
+    fn branch_status(&self, branch: &BranchName) -> Result<Option<PullRequestStatus>, PortError> {
         let slug = self.repo_slug()?;
         let out = self.run_ok(argv::graphql_query(
             graphql::BRANCH_STATUS,

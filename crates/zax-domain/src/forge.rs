@@ -120,7 +120,7 @@ impl PullRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BranchStatus {
+pub struct PullRequestStatus {
     pub pr: PullRequest,
     pub review: ReviewState,
     pub unresolved_threads: u32,
@@ -138,12 +138,12 @@ pub enum BranchView {
     Detached,
     OnBranch {
         branch: BranchName,
-        status: Option<BranchStatus>,
+        status: Option<PullRequestStatus>,
     },
 }
 
 impl BranchView {
-    pub fn on_branch(branch: BranchName, status: Option<BranchStatus>) -> Self {
+    pub fn on_branch(branch: BranchName, status: Option<PullRequestStatus>) -> Self {
         Self::OnBranch { branch, status }
     }
 
@@ -154,7 +154,7 @@ impl BranchView {
         }
     }
 
-    pub fn status(&self) -> Option<&BranchStatus> {
+    pub fn status(&self) -> Option<&PullRequestStatus> {
         match self {
             Self::Detached => None,
             Self::OnBranch { status, .. } => status.as_ref(),
@@ -398,7 +398,7 @@ mod tests {
 
     #[test]
     fn a_branch_status_carries_its_unresolved_thread_count() {
-        let status = BranchStatus {
+        let status = PullRequestStatus {
             pr: pr(),
             review: ReviewState::ChangesRequested,
             unresolved_threads: 3,
@@ -425,7 +425,7 @@ mod tests {
 
     #[test]
     fn a_branch_view_carries_the_pull_request_status_when_there_is_one() {
-        let status = BranchStatus {
+        let status = PullRequestStatus {
             pr: pr(),
             review: ReviewState::Approved,
             unresolved_threads: 0,

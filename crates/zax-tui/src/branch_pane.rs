@@ -8,7 +8,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
-use zax_domain::{BranchName, BranchStatus, BranchView, CheckState, Mergeable, ReviewState};
+use zax_domain::{BranchName, BranchView, CheckState, Mergeable, PullRequestStatus, ReviewState};
 
 use crate::action::PaneAction;
 use crate::cache::Cached;
@@ -48,7 +48,7 @@ impl BranchStatusPane {
         }
     }
 
-    fn status(&self) -> Option<&BranchStatus> {
+    fn status(&self) -> Option<&PullRequestStatus> {
         self.cache.value().and_then(BranchView::status)
     }
 
@@ -117,7 +117,7 @@ fn branch_line(branch: &BranchName, width: u16) -> Line<'static> {
     )
 }
 
-fn pull_request_lines(status: &BranchStatus, width: u16) -> Vec<Line<'static>> {
+fn pull_request_lines(status: &PullRequestStatus, width: u16) -> Vec<Line<'static>> {
     // Through `truncate`, like every other string this crate renders. It bounds
     // the text to the pane and flattens control characters, and a pull request
     // title is somebody else's text arriving from a forge. The field rows below
@@ -244,7 +244,7 @@ mod tests {
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use ratatui::Terminal;
     use zax_domain::{
-        BranchName, BranchStatus, BranchView, CheckState, Mergeable, PullRequest, RepoSlug,
+        BranchName, BranchView, CheckState, Mergeable, PullRequest, PullRequestStatus, RepoSlug,
         ReviewState,
     };
 
@@ -275,8 +275,8 @@ mod tests {
             .join("\n")
     }
 
-    fn status() -> BranchStatus {
-        BranchStatus {
+    fn status() -> PullRequestStatus {
+        PullRequestStatus {
             pr: PullRequest {
                 repo: RepoSlug::parse("acme/omega").unwrap(),
                 number: 1963,
@@ -296,7 +296,7 @@ mod tests {
         BranchName::parse_local("OMEGA-1963-export-csv-reports").unwrap()
     }
 
-    fn view(status: Option<BranchStatus>) -> BranchView {
+    fn view(status: Option<PullRequestStatus>) -> BranchView {
         BranchView::on_branch(branch(), status)
     }
 
@@ -380,7 +380,7 @@ mod tests {
     fn no_unresolved_threads_is_reported_positively() {
         let mut pane = BranchStatusPane::new();
         pane.apply(
-            Ok(view(Some(BranchStatus {
+            Ok(view(Some(PullRequestStatus {
                 unresolved_threads: 0,
                 ..status()
             }))),

@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use zax_domain::{
-    BranchName, BranchStatus, Command, LiveSession, PaneSize, PrFilter, PrRef, PullRequest,
+    BranchName, Command, LiveSession, PaneSize, PrFilter, PrRef, PullRequest, PullRequestStatus,
     RepoSlug, RootRepoName, SessionName,
 };
 
@@ -389,7 +389,7 @@ impl GitRepo for FakeGitRepo {
 #[derive(Default)]
 pub struct FakeForge {
     pub review_requests: Vec<PullRequest>,
-    pub branch_status: Option<BranchStatus>,
+    pub branch_status: Option<PullRequestStatus>,
     pub head: Option<PullRequestHead>,
     pub current_repo: Option<RepoSlug>,
     pub fail_with: Option<PortError>,
@@ -407,7 +407,7 @@ impl Forge for FakeForge {
         }
     }
 
-    fn branch_status(&self, _branch: &BranchName) -> Result<Option<BranchStatus>, PortError> {
+    fn branch_status(&self, _branch: &BranchName) -> Result<Option<PullRequestStatus>, PortError> {
         match &self.fail_with {
             Some(e) => Err(e.clone()),
             None => Ok(self.branch_status.clone()),

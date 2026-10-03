@@ -1,6 +1,7 @@
 //! What zax knows about pull requests, independent of any forge.
 
 use std::fmt;
+use std::num::NonZeroU32;
 use std::time::{Duration, SystemTime};
 
 use thiserror::Error;
@@ -127,6 +128,89 @@ pub struct PullRequestStatus {
     pub mergeable: Mergeable,
 }
 
+/// Why a pull request of yours is waiting on you.
+///
+/// `rank` is the ranking, and it is what both the `my-prs` pane's sort order
+/// and its row glyph are built from: one ordering, so a row can never sort
+/// above one whose glyph looks more urgent.
+///
+/// The thread count is carried but does not rank. Two pull requests with open
+/// comments are equally stuck, and `Ord` derived over the payload would order
+/// them by comment count, which is not a thing anybody wants sorted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Attention {
+    Conflicting,
+    ChangesRequested,
+    ChecksFailing,
+    Unresolved(NonZeroU32),
+    ReadyToMerge,
+    Waiting,
+    Draft,
+}
+
+impl Attention {
+    pub fn rank(self) -> u8 {
+        match self {
+            Self::Conflicting => 0,
+            Self::ChangesRequested => 1,
+            Self::ChecksFailing => 2,
+            Self::Unresolved(_) => 3,
+            Self::ReadyToMerge => 4,
+            Self::Waiting => 5,
+            Self::Draft => 6,
+        }
+    }
+
+    /// A draft is tested first and returns immediately: it is work you parked,
+    /// so it ranks last whatever else is true of it. Everything after that is
+    /// worst-first.
+    pub fn of(status: &PullRequestStatus) -> Self {
+        if status.pr.is_draft {
+            return Self::Draft;
+        }
+        if status.mergeable == Mergeable::Conflicting {
+            return Self::Conflicting;
+        }
+        if status.review == ReviewState::ChangesRequested {
+            return Self::ChangesRequested;
+        }
+        if status.pr.checks == CheckState::Failing {
+            return Self::ChecksFailing;
+        }
+        if let Some(count) = NonZeroU32::new(status.unresolved_threads) {
+            return Self::Unresolved(count);
+        }
+        if status.review == ReviewState::Approved
+            && status.pr.checks == CheckState::Passing
+            && status.mergeable == Mergeable::Mergeable
+        {
+            return Self::ReadyToMerge;
+        }
+        Self::Waiting
+    }
+}
+
+/// A pull request of yours, with the verdict on it.
+///
+/// It lives in the domain rather than beside the use case that builds it
+/// because `zax-tui` depends on `zax-domain` alone. Pairing the verdict with
+/// the pull request also keeps the ranking in one place: the pane draws the
+/// `Attention` the use case sorted on instead of recomputing it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MyPullRequest {
+    pub attention: Attention,
+    pub status: PullRequestStatus,
+}
+
+impl MyPullRequest {
+    pub fn new(status: PullRequestStatus) -> Self {
+        Self {
+            attention: Attention::of(&status),
+            status,
+        }
+    }
+}
+
 /// What the `branch-status` pane reports on: where HEAD is, and the pull
 /// request status if the branch has one.
 ///
@@ -228,6 +312,7 @@ impl PrRef {
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)]
+    use std::num::NonZeroU32;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     use super::*;
@@ -443,5 +528,120 @@ mod tests {
         // Guards the "thiserror and nothing else" budget: if this compiles with
         // SystemTime, no date-time crate has crept into zax-domain.
         let _: SystemTime = pr().created_at;
+    }
+
+    fn status(review: ReviewState, threads: u32, mergeable: Mergeable) -> PullRequestStatus {
+        PullRequestStatus {
+            pr: pr(),
+            review,
+            unresolved_threads: threads,
+            mergeable,
+        }
+    }
+
+    #[test]
+    fn the_ranking_is_the_declared_one() {
+        // Written out rather than produced by sorting, so the test is an
+        // oracle and not a second copy of the code.
+        let ranked = [
+            Attention::Conflicting,
+            Attention::ChangesRequested,
+            Attention::ChecksFailing,
+            Attention::Unresolved(NonZeroU32::new(1).unwrap()),
+            Attention::ReadyToMerge,
+            Attention::Waiting,
+            Attention::Draft,
+        ];
+        let ranks: Vec<u8> = ranked.iter().map(|a| a.rank()).collect();
+        assert_eq!(ranks, vec![0, 1, 2, 3, 4, 5, 6]);
+    }
+
+    #[test]
+    fn the_thread_count_takes_no_part_in_the_ranking() {
+        // Two pull requests with open comments are equally stuck. The tie is
+        // broken by age, in the use case, not by how many comments are open.
+        let one = Attention::Unresolved(NonZeroU32::new(1).unwrap());
+        let many = Attention::Unresolved(NonZeroU32::new(40).unwrap());
+        assert_eq!(one.rank(), many.rank());
+    }
+
+    #[test]
+    fn a_conflict_outranks_everything_but_a_draft() {
+        let s = status(ReviewState::ChangesRequested, 5, Mergeable::Conflicting);
+        assert_eq!(Attention::of(&s), Attention::Conflicting);
+    }
+
+    #[test]
+    fn changes_requested_outranks_a_red_build_and_open_comments() {
+        let s = status(ReviewState::ChangesRequested, 5, Mergeable::Mergeable);
+        assert_eq!(Attention::of(&s), Attention::ChangesRequested);
+    }
+
+    #[test]
+    fn a_red_build_outranks_open_comments() {
+        let mut s = status(ReviewState::ReviewRequired, 5, Mergeable::Mergeable);
+        s.pr.checks = CheckState::Failing;
+        assert_eq!(Attention::of(&s), Attention::ChecksFailing);
+    }
+
+    #[test]
+    fn open_comments_carry_their_count() {
+        let s = status(ReviewState::ReviewRequired, 3, Mergeable::Mergeable);
+        assert_eq!(
+            Attention::of(&s),
+            Attention::Unresolved(NonZeroU32::new(3).unwrap())
+        );
+    }
+
+    #[test]
+    fn no_open_comments_is_not_an_unresolved_state() {
+        // `Unresolved(0)` is not a state this can be in, and NonZeroU32 is
+        // what makes that true rather than a convention.
+        let s = status(ReviewState::ReviewRequired, 0, Mergeable::Mergeable);
+        assert_ne!(Attention::of(&s).rank(), 3);
+    }
+
+    #[test]
+    fn ready_to_merge_needs_approval_a_green_build_and_a_clean_merge() {
+        let ready = status(ReviewState::Approved, 0, Mergeable::Mergeable);
+        assert_eq!(Attention::of(&ready), Attention::ReadyToMerge);
+
+        // Each leg removed in turn is no longer ready, and none of them is a
+        // problem that outranks it either.
+        let mut pending = ready.clone();
+        pending.pr.checks = CheckState::Pending;
+        assert_eq!(Attention::of(&pending), Attention::Waiting);
+
+        let unknown = status(ReviewState::Approved, 0, Mergeable::Unknown);
+        assert_eq!(Attention::of(&unknown), Attention::Waiting);
+
+        let unreviewed = status(ReviewState::ReviewRequired, 0, Mergeable::Mergeable);
+        assert_eq!(Attention::of(&unreviewed), Attention::Waiting);
+    }
+
+    #[test]
+    fn an_unknown_merge_state_is_not_a_conflict() {
+        // GitHub reports Unknown while it computes the merge commit. Treating
+        // it as a problem makes a freshly pushed pull request jump to the top
+        // of the pane and fall back down again seconds later.
+        let s = status(ReviewState::ReviewRequired, 0, Mergeable::Unknown);
+        assert_eq!(Attention::of(&s), Attention::Waiting);
+    }
+
+    #[test]
+    fn a_draft_ranks_last_whatever_else_is_wrong_with_it() {
+        // A draft is work you parked. Its row still carries its own glyphs,
+        // so a conflicting draft is visible even while it sits at the bottom.
+        let mut s = status(ReviewState::ChangesRequested, 9, Mergeable::Conflicting);
+        s.pr.is_draft = true;
+        assert_eq!(Attention::of(&s), Attention::Draft);
+    }
+
+    #[test]
+    fn a_pull_request_pairs_with_the_verdict_on_it() {
+        let s = status(ReviewState::Approved, 0, Mergeable::Mergeable);
+        let mine = MyPullRequest::new(s.clone());
+        assert_eq!(mine.attention, Attention::ReadyToMerge);
+        assert_eq!(mine.status, s);
     }
 }

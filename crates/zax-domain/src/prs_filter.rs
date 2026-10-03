@@ -89,11 +89,18 @@ pub struct PrFilter {
 }
 
 impl PrFilter {
-    pub fn admits(&self, pr: &PullRequest, now: SystemTime) -> bool {
-        if self.exclude.iter().any(|p| p.matches(&pr.repo)) {
+    /// The repository lists alone, with no age threshold. The `my-prs` pane
+    /// narrows by repository and deliberately does not age anything out: an
+    /// old pull request of your own is exactly the one that is rotting.
+    pub fn admits_repo(&self, repo: &RepoSlug) -> bool {
+        if self.exclude.iter().any(|p| p.matches(repo)) {
             return false;
         }
-        if !self.include.is_empty() && !self.include.iter().any(|p| p.matches(&pr.repo)) {
+        self.include.is_empty() || self.include.iter().any(|p| p.matches(repo))
+    }
+
+    pub fn admits(&self, pr: &PullRequest, now: SystemTime) -> bool {
+        if !self.admits_repo(&pr.repo) {
             return false;
         }
         // `age` clamps a future timestamp to zero, so a skewed clock cannot
@@ -301,5 +308,35 @@ mod tests {
             RepoPattern::parse("acme/*").unwrap().to_string(),
             "acme/*"
         );
+    }
+
+    #[test]
+    fn admits_repo_judges_the_repository_alone() {
+        // The my-prs pane narrows by repository and deliberately ignores the
+        // age threshold: an old pull request of your own is the one that is
+        // rotting.
+        let filter = PrFilter {
+            include: vec![RepoPattern::parse("acme/*").unwrap()],
+            exclude: vec![RepoPattern::parse("acme/legacy-api").unwrap()],
+            max_age: Some(Duration::from_secs(1)),
+        };
+
+        assert!(filter.admits_repo(&slug("acme/omega")));
+        assert!(!filter.admits_repo(&slug("acme/legacy-api")));
+        assert!(!filter.admits_repo(&slug("other/omega")));
+    }
+
+    #[test]
+    fn admits_still_applies_the_age_threshold_on_top_of_the_repository() {
+        // Splitting the method must not quietly drop max_age from the review
+        // queue, which is the one pane that wants it.
+        let filter = PrFilter {
+            max_age: Some(Duration::from_secs(86_400)),
+            ..PrFilter::default()
+        };
+        let old = pr_from("acme/omega", Duration::from_secs(30 * 86_400));
+
+        assert!(filter.admits_repo(&old.repo), "the repository is admitted");
+        assert!(!filter.admits(&old, now()), "but its age is not");
     }
 }

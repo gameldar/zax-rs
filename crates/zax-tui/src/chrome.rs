@@ -11,6 +11,7 @@ pub const GLYPH_PASS: &str = "\u{2713}";
 pub const GLYPH_FAIL: &str = "\u{2717}";
 pub const GLYPH_PENDING: &str = "\u{25cf}";
 pub const GLYPH_NONE: &str = "\u{00b7}";
+pub const GLYPH_CHANGES: &str = "\u{270e}";
 
 /// A single header line exactly `width` characters wide.
 pub fn header_line(title: &str, status: &str, focused: bool, width: u16) -> Line<'static> {

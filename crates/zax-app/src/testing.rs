@@ -390,12 +390,16 @@ impl GitRepo for FakeGitRepo {
 pub struct FakeForge {
     pub review_requests: Vec<PullRequest>,
     pub branch_status: Option<PullRequestStatus>,
+    pub authored: Vec<PullRequestStatus>,
     pub head: Option<PullRequestHead>,
     pub current_repo: Option<RepoSlug>,
     pub fail_with: Option<PortError>,
     /// Every filter `review_requests` was called with, so a test can prove the
     /// hint reaches the forge rather than being dropped on the way.
     pub asked_with: RefCell<Vec<PrFilter>>,
+    /// Every filter `authored_pull_requests` was called with, for the same
+    /// reason.
+    pub asked_authored_with: RefCell<Vec<PrFilter>>,
 }
 
 impl Forge for FakeForge {
@@ -404,6 +408,17 @@ impl Forge for FakeForge {
         match &self.fail_with {
             Some(e) => Err(e.clone()),
             None => Ok(self.review_requests.clone()),
+        }
+    }
+
+    fn authored_pull_requests(
+        &self,
+        filter: &PrFilter,
+    ) -> Result<Vec<PullRequestStatus>, PortError> {
+        self.asked_authored_with.borrow_mut().push(filter.clone());
+        match &self.fail_with {
+            Some(e) => Err(e.clone()),
+            None => Ok(self.authored.clone()),
         }
     }
 
@@ -455,6 +470,13 @@ impl FakeForge {
     pub fn with_review_requests(prs: Vec<PullRequest>) -> Self {
         Self {
             review_requests: prs,
+            ..Self::default()
+        }
+    }
+
+    pub fn with_authored(prs: Vec<PullRequestStatus>) -> Self {
+        Self {
+            authored: prs,
             ..Self::default()
         }
     }

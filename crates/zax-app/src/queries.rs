@@ -5,8 +5,8 @@ use std::time::SystemTime;
 
 use thiserror::Error;
 use zax_domain::{
-    BranchName, BranchView, PrFilter, PullRequest, RootRepoName, WorktreePath, WorktreePathError,
-    WorktreeRoot,
+    BranchName, BranchView, MyPullRequest, PrFilter, PullRequest, RootRepoName, WorktreePath,
+    WorktreePathError, WorktreeRoot,
 };
 
 use crate::ports::{FileSystem, Forge, GitRepo, Multiplexer, PortError, WorktreeEntry};
@@ -23,6 +23,30 @@ pub fn list_review_requests<Fg: Forge>(
     now: SystemTime,
 ) -> Result<Vec<PullRequest>, PortError> {
     Ok(filter.apply(forge.review_requests(filter)?, now))
+}
+
+/// The `my-prs` pane's data source.
+///
+/// It takes no clock, and the absent parameter is the point: `[prs] max_age`
+/// plays no part here, so `admits_repo` is what this calls rather than
+/// `admits`. Your own three-week-old pull request is the one that is rotting.
+pub fn list_my_pull_requests<Fg: Forge>(
+    forge: &Fg,
+    filter: &PrFilter,
+) -> Result<Vec<MyPullRequest>, PortError> {
+    let mut mine: Vec<MyPullRequest> = forge
+        .authored_pull_requests(filter)?
+        .into_iter()
+        .filter(|status| filter.admits_repo(&status.pr.repo))
+        .map(MyPullRequest::new)
+        .collect();
+    mine.sort_by(|a, b| {
+        a.attention
+            .rank()
+            .cmp(&b.attention.rank())
+            .then_with(|| a.status.pr.created_at.cmp(&b.status.pr.created_at))
+    });
+    Ok(mine)
 }
 
 /// The `branch-status` pane's data source. A detached HEAD has no branch and so
@@ -126,8 +150,8 @@ mod tests {
     use std::time::{Duration, UNIX_EPOCH};
 
     use zax_domain::{
-        BranchName, BranchView, CheckState, Mergeable, PrFilter, PullRequest, PullRequestStatus,
-        RepoPattern, RepoSlug, ReviewState, RootRepoName, WorktreeRoot,
+        Attention, BranchName, BranchView, CheckState, Mergeable, PrFilter, PullRequest,
+        PullRequestStatus, RepoPattern, RepoSlug, ReviewState, RootRepoName, WorktreeRoot,
     };
 
     use super::*;
@@ -344,5 +368,170 @@ mod tests {
                 ("gh auth", false)
             ]
         );
+    }
+
+    fn authored(
+        number: u32,
+        created: u64,
+        review: ReviewState,
+        threads: u32,
+        mergeable: Mergeable,
+    ) -> PullRequestStatus {
+        let mut pr = pr(number);
+        pr.created_at = UNIX_EPOCH + Duration::from_secs(created);
+        PullRequestStatus {
+            pr,
+            review,
+            unresolved_threads: threads,
+            mergeable,
+        }
+    }
+
+    #[test]
+    fn my_pull_requests_come_back_worst_first() {
+        // Numbers chosen so the expected order is nothing like the input one.
+        let forge = FakeForge::with_authored(vec![
+            authored(
+                1,
+                1_700_000_000,
+                ReviewState::Approved,
+                0,
+                Mergeable::Mergeable,
+            ),
+            authored(
+                2,
+                1_700_000_000,
+                ReviewState::ReviewRequired,
+                2,
+                Mergeable::Mergeable,
+            ),
+            authored(
+                3,
+                1_700_000_000,
+                ReviewState::ChangesRequested,
+                0,
+                Mergeable::Mergeable,
+            ),
+            authored(
+                4,
+                1_700_000_000,
+                ReviewState::ReviewRequired,
+                0,
+                Mergeable::Conflicting,
+            ),
+            authored(
+                5,
+                1_700_000_000,
+                ReviewState::ReviewRequired,
+                0,
+                Mergeable::Mergeable,
+            ),
+        ]);
+
+        let mine = list_my_pull_requests(&forge, &PrFilter::default()).unwrap();
+
+        assert_eq!(
+            mine.iter().map(|m| m.status.pr.number).collect::<Vec<_>>(),
+            vec![4, 3, 2, 1, 5]
+        );
+        assert_eq!(mine[0].attention, Attention::Conflicting);
+    }
+
+    #[test]
+    fn equally_stuck_pull_requests_put_the_oldest_first() {
+        let forge = FakeForge::with_authored(vec![
+            authored(
+                1,
+                1_700_000_900,
+                ReviewState::ChangesRequested,
+                0,
+                Mergeable::Mergeable,
+            ),
+            authored(
+                2,
+                1_700_000_100,
+                ReviewState::ChangesRequested,
+                0,
+                Mergeable::Mergeable,
+            ),
+        ]);
+
+        let mine = list_my_pull_requests(&forge, &PrFilter::default()).unwrap();
+
+        assert_eq!(
+            mine.iter().map(|m| m.status.pr.number).collect::<Vec<_>>(),
+            vec![2, 1]
+        );
+    }
+
+    #[test]
+    fn an_excluded_repository_is_dropped_from_my_pull_requests() {
+        let mut elsewhere = authored(
+            9,
+            1_700_000_000,
+            ReviewState::ReviewRequired,
+            0,
+            Mergeable::Mergeable,
+        );
+        elsewhere.pr.repo = RepoSlug::parse("acme/legacy-api").unwrap();
+        let forge = FakeForge::with_authored(vec![
+            authored(
+                1,
+                1_700_000_000,
+                ReviewState::ReviewRequired,
+                0,
+                Mergeable::Mergeable,
+            ),
+            elsewhere,
+        ]);
+        let filter = PrFilter {
+            exclude: vec![RepoPattern::parse("acme/legacy-api").unwrap()],
+            ..PrFilter::default()
+        };
+
+        let mine = list_my_pull_requests(&forge, &filter).unwrap();
+
+        assert_eq!(
+            mine.iter().map(|m| m.status.pr.number).collect::<Vec<_>>(),
+            vec![1]
+        );
+    }
+
+    #[test]
+    fn a_pull_request_older_than_max_age_is_still_mine() {
+        // max_age hides a stale review request. Your own three-week-old pull
+        // request is the one that is rotting, so it must survive.
+        let forge = FakeForge::with_authored(vec![authored(
+            1,
+            1_600_000_000,
+            ReviewState::ReviewRequired,
+            0,
+            Mergeable::Mergeable,
+        )]);
+        let filter = PrFilter {
+            max_age: Some(Duration::from_secs(14 * 86_400)),
+            ..PrFilter::default()
+        };
+
+        assert_eq!(list_my_pull_requests(&forge, &filter).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn the_filter_reaches_the_forge_for_my_pull_requests_too() {
+        let forge = FakeForge::with_authored(vec![]);
+        let filter = PrFilter {
+            exclude: vec![RepoPattern::parse("acme/legacy-api").unwrap()],
+            ..PrFilter::default()
+        };
+
+        list_my_pull_requests(&forge, &filter).unwrap();
+
+        assert_eq!(*forge.asked_authored_with.borrow(), vec![filter]);
+    }
+
+    #[test]
+    fn a_broken_forge_is_not_an_empty_list_of_my_pull_requests() {
+        let forge = FakeForge::failing(PortError::MissingTool { tool: "gh" });
+        assert!(list_my_pull_requests(&forge, &PrFilter::default()).is_err());
     }
 }

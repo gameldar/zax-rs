@@ -143,6 +143,13 @@ pub trait Forge {
     /// not the authority. Whatever comes back is filtered again in the
     /// application layer, which is where the rules actually live.
     fn review_requests(&self, filter: &PrFilter) -> Result<Vec<PullRequest>, PortError>;
+    /// Every open pull request the authenticated user wrote, with the review
+    /// state each one is in. The filter is a hint a forge may narrow its own
+    /// search with, exactly as `review_requests` treats it.
+    fn authored_pull_requests(
+        &self,
+        filter: &PrFilter,
+    ) -> Result<Vec<PullRequestStatus>, PortError>;
     /// The repository the current directory belongs to, as the forge resolves
     /// it. This is the repository a bare pull request number is read against
     /// and the one `origin` points at, so it is what a pull request from

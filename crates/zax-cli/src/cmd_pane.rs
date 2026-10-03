@@ -148,7 +148,7 @@ fn run_branch_pane() -> Result<()> {
     let (request, results) = spawn_fetcher(move || {
         let git = zax_infra_git::GitCli::new(SystemExec, cwd.clone());
         let gh = zax_infra_github::GhCli::new(SystemExec, cwd.clone());
-        queries::branch_status(&git, &gh).map_err(|e| e.to_string())
+        queries::branch_view(&git, &gh).map_err(|e| e.to_string())
     });
     pane_loop!(
         BranchStatusPane::new(),

@@ -14,8 +14,8 @@ pub mod ticket;
 
 pub use branch::{BranchName, BranchNameError, BranchOrigin};
 pub use forge::{
-    BranchStatus, CheckState, Mergeable, PrRef, PrRefError, PullRequest, RepoSlug, RepoSlugError,
-    ReviewState,
+    BranchStatus, BranchView, CheckState, Mergeable, PrRef, PrRefError, PullRequest, RepoSlug,
+    RepoSlugError, ReviewState,
 };
 pub use layout::{
     format_duration, parse_duration, BuiltinPane, BuiltinPaneError, Command, CommandError,

@@ -8,12 +8,13 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
-use zax_domain::{CheckState, PullRequest};
+use zax_domain::PullRequest;
 
 use crate::action::PaneAction;
 use crate::cache::Cached;
-use crate::chrome::{error_line, header_line, GLYPH_FAIL, GLYPH_NONE, GLYPH_PASS, GLYPH_PENDING};
+use crate::chrome::{error_line, header_line};
 use crate::fmt::{display_width, format_age, truncate};
+use crate::pr_fields::{check_glyph, check_style};
 
 const TITLE: &str = "Review requests";
 
@@ -200,25 +201,6 @@ impl PrsForReviewPane {
             _ => PaneAction::None,
         }
     }
-}
-
-pub(crate) fn check_glyph(state: CheckState) -> &'static str {
-    match state {
-        CheckState::Passing => GLYPH_PASS,
-        CheckState::Failing => GLYPH_FAIL,
-        CheckState::Pending => GLYPH_PENDING,
-        CheckState::None => GLYPH_NONE,
-    }
-}
-
-pub(crate) fn check_style(state: CheckState) -> Style {
-    let colour = match state {
-        CheckState::Passing => Color::Green,
-        CheckState::Failing => Color::Red,
-        CheckState::Pending => Color::Yellow,
-        CheckState::None => Color::DarkGray,
-    };
-    Style::default().fg(colour)
 }
 
 #[cfg(test)]

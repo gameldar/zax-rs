@@ -8,13 +8,16 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
-use zax_domain::{BranchName, BranchView, CheckState, Mergeable, PullRequestStatus, ReviewState};
+use zax_domain::{BranchName, BranchView, PullRequestStatus};
 
 use crate::action::PaneAction;
 use crate::cache::Cached;
 use crate::chrome::{error_line, header_line};
 use crate::fmt::{display_width, truncate};
-use crate::prs_pane::{check_glyph, check_style};
+use crate::pr_fields::{
+    check_glyph, check_style, checks_label, mergeable_label, mergeable_style, review_label,
+    review_style, threads_label, threads_style,
+};
 
 const TITLE: &str = "This branch";
 
@@ -168,70 +171,6 @@ fn field(label: &str, glyph: &str, value: String, style: Style) -> Line<'static>
     }
     spans.push(Span::styled(value, style));
     Line::from(spans)
-}
-
-fn checks_label(state: CheckState) -> String {
-    match state {
-        CheckState::Passing => "passing",
-        CheckState::Failing => "failing",
-        CheckState::Pending => "pending",
-        CheckState::None => "none reported",
-    }
-    .to_owned()
-}
-
-fn review_label(state: ReviewState) -> String {
-    match state {
-        ReviewState::Approved => "approved",
-        ReviewState::ChangesRequested => "changes requested",
-        ReviewState::ReviewRequired => "review required",
-        ReviewState::None => "no review requested",
-    }
-    .to_owned()
-}
-
-fn review_style(state: ReviewState) -> Style {
-    let colour = match state {
-        ReviewState::Approved => Color::Green,
-        ReviewState::ChangesRequested => Color::Red,
-        ReviewState::ReviewRequired => Color::Yellow,
-        ReviewState::None => Color::DarkGray,
-    };
-    Style::default().fg(colour)
-}
-
-fn threads_label(unresolved: u32) -> String {
-    if unresolved == 0 {
-        "all resolved".to_owned()
-    } else {
-        format!("{unresolved} unresolved")
-    }
-}
-
-fn threads_style(unresolved: u32) -> Style {
-    Style::default().fg(if unresolved == 0 {
-        Color::Green
-    } else {
-        Color::Yellow
-    })
-}
-
-fn mergeable_label(state: Mergeable) -> String {
-    match state {
-        Mergeable::Mergeable => "mergeable",
-        Mergeable::Conflicting => "conflicting",
-        Mergeable::Unknown => "unknown",
-    }
-    .to_owned()
-}
-
-fn mergeable_style(state: Mergeable) -> Style {
-    let colour = match state {
-        Mergeable::Mergeable => Color::Green,
-        Mergeable::Conflicting => Color::Red,
-        Mergeable::Unknown => Color::DarkGray,
-    };
-    Style::default().fg(colour)
 }
 
 #[cfg(test)]

@@ -7,6 +7,7 @@ pub mod chrome;
 pub mod config_modal;
 pub mod exec_pane;
 pub mod fmt;
+pub(crate) mod pr_fields;
 pub mod prs_pane;
 pub mod refresh;
 

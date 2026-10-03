@@ -2,6 +2,7 @@
 
 use anyhow::Result;
 use zax_app::queries;
+use zax_infra_tmux::diagnostics;
 
 use crate::wiring;
 
@@ -19,11 +20,17 @@ pub fn run() -> Result<()> {
         match &check.result {
             // A working check needs one line to say so. `gh auth status` in
             // particular prints an account dump nobody asked to see.
-            Ok(detail) => println!(
-                "ok    {:<8} {}",
-                check.name,
-                detail.lines().next().unwrap_or("")
-            ),
+            Ok(detail) => {
+                let first = detail.lines().next().unwrap_or("");
+                println!("ok    {:<8} {}", check.name, first);
+                // A working tmux can still be too old for the config popup,
+                // which is a note about one binding rather than a failure.
+                if check.name == "tmux" {
+                    if let Some(hint) = diagnostics::popup_hint(first) {
+                        println!("note           {hint}");
+                    }
+                }
+            }
             Err(error) => {
                 all_ok = false;
                 print_failure(check.name, &error.to_string());

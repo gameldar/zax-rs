@@ -201,7 +201,7 @@ fn validate_prefix(prefix: &str) -> Result<(), String> {
 }
 
 /// With no configured layout, both built-ins are shown.
-fn default_panes() -> Result<Vec<PaneSpec>, ConfigError> {
+pub(crate) fn default_panes() -> Result<Vec<PaneSpec>, ConfigError> {
     let size = |v: u8| {
         PaneSize::percent(v).map_err(|e| ConfigError::Invalid {
             field: "layout.panes.size",

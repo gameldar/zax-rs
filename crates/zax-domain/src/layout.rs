@@ -89,6 +89,11 @@ pub enum BuiltinPaneError {
 }
 
 impl BuiltinPane {
+    /// Every built-in there is. Help text, validation messages and the CLI's
+    /// own subcommand test read the list from here, so a built-in added to
+    /// the enum cannot be left out of one of them unnoticed.
+    pub const ALL: [Self; 3] = [Self::PrsForReview, Self::BranchStatus, Self::MyPrs];
+
     pub fn parse(raw: &str) -> Result<Self, BuiltinPaneError> {
         match raw {
             "prs-for-review" => Ok(Self::PrsForReview),
@@ -331,10 +336,24 @@ mod tests {
     }
 
     #[test]
-    fn an_unknown_built_in_names_all_three() {
+    fn an_unknown_built_in_names_every_built_in_there_is() {
+        // Driven from ALL rather than a list written out here, so adding a
+        // built-in and forgetting the message is a failing test.
         let message = BuiltinPane::parse("my-pr").unwrap_err().to_string();
-        for known in ["prs-for-review", "branch-status", "my-prs"] {
-            assert!(message.contains(known), "got: {message}");
+        for known in BuiltinPane::ALL {
+            assert!(
+                message.contains(known.as_str()),
+                "`{}` is missing from: {message}",
+                known.as_str()
+            );
+        }
+    }
+
+    #[test]
+    fn all_lists_every_built_in_and_each_one_round_trips() {
+        assert_eq!(BuiltinPane::ALL.len(), 3);
+        for builtin in BuiltinPane::ALL {
+            assert_eq!(BuiltinPane::parse(builtin.as_str()).unwrap(), builtin);
         }
     }
 }

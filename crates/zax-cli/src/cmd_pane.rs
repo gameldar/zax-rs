@@ -13,7 +13,7 @@ use ratatui::crossterm::event::{self, Event, KeyEventKind};
 use zax_app::queries;
 use zax_domain::{parse_duration, Command};
 use zax_exec::{Exec, SystemExec};
-use zax_tui::{refresh, BranchStatusPane, ExecPane, PaneAction, PrsForReviewPane};
+use zax_tui::{refresh, BranchStatusPane, ExecPane, MyPrsPane, PaneAction, PrsForReviewPane};
 
 use crate::cli::PaneCommand;
 use crate::screen::Screen;
@@ -27,6 +27,7 @@ pub fn run(command: PaneCommand) -> Result<()> {
     match command {
         PaneCommand::PrsForReview => run_prs_pane(),
         PaneCommand::BranchStatus => run_branch_pane(),
+        PaneCommand::MyPrs => run_my_prs_pane(),
         PaneCommand::Exec {
             title,
             every,
@@ -136,6 +137,25 @@ fn run_prs_pane() -> Result<()> {
     });
     pane_loop!(
         PrsForReviewPane::new(),
+        Duration::from_secs(120),
+        request,
+        results,
+        perform
+    )
+}
+
+fn run_my_prs_pane() -> Result<()> {
+    let cwd = std::env::current_dir()?;
+    // The same `[prs]` filter the review queue reads, minus its max_age, which
+    // `list_my_pull_requests` does not apply. A config this pane cannot read is
+    // worth failing over: the alternative is quietly showing an unfiltered one.
+    let filter = wiring::resolve()?.config.prs;
+    let (request, results) = spawn_fetcher(move || {
+        let gh = zax_infra_github::GhCli::new(SystemExec, cwd.clone());
+        queries::list_my_pull_requests(&gh, &filter).map_err(|e| e.to_string())
+    });
+    pane_loop!(
+        MyPrsPane::new(),
         Duration::from_secs(120),
         request,
         results,

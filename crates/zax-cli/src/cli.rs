@@ -100,6 +100,8 @@ pub enum PaneCommand {
     PrsForReview,
     /// The status of this worktree's own pull request.
     BranchStatus,
+    /// Your own open pull requests, across every repository.
+    MyPrs,
     /// Wrap any command's stdout in a header, refresh loop and scrollback.
     Exec {
         #[arg(long)]
@@ -327,5 +329,14 @@ mod tests {
             Cli::try_parse_from(["zax", "doctor"]).unwrap().command,
             Commands::Doctor
         ));
+    }
+
+    #[test]
+    fn the_pane_subcommand_accepts_every_built_in() {
+        use clap::Parser;
+        for name in ["prs-for-review", "branch-status", "my-prs"] {
+            Cli::try_parse_from(["zax", "pane", name])
+                .unwrap_or_else(|e| panic!("`zax pane {name}` was refused: {e}"));
+        }
     }
 }

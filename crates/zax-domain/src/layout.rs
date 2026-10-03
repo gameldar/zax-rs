@@ -77,11 +77,14 @@ impl PaneSize {
 pub enum BuiltinPane {
     PrsForReview,
     BranchStatus,
+    MyPrs,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum BuiltinPaneError {
-    #[error("`{0}` is not a built-in pane; the built-ins are prs-for-review and branch-status")]
+    #[error(
+        "`{0}` is not a built-in pane; the built-ins are prs-for-review, branch-status and my-prs"
+    )]
     Unknown(String),
 }
 
@@ -90,6 +93,7 @@ impl BuiltinPane {
         match raw {
             "prs-for-review" => Ok(Self::PrsForReview),
             "branch-status" => Ok(Self::BranchStatus),
+            "my-prs" => Ok(Self::MyPrs),
             other => Err(BuiltinPaneError::Unknown(other.to_owned())),
         }
     }
@@ -98,6 +102,7 @@ impl BuiltinPane {
         match self {
             Self::PrsForReview => "prs-for-review",
             Self::BranchStatus => "branch-status",
+            Self::MyPrs => "my-prs",
         }
     }
 }
@@ -317,5 +322,19 @@ mod tests {
             assert_eq!(parse_duration(&rendered).unwrap(), parsed, "for {text}");
         }
         assert_eq!(format_duration(Duration::from_secs(90)), "90s");
+    }
+
+    #[test]
+    fn my_prs_is_a_built_in_pane() {
+        assert_eq!(BuiltinPane::parse("my-prs").unwrap(), BuiltinPane::MyPrs);
+        assert_eq!(BuiltinPane::MyPrs.as_str(), "my-prs");
+    }
+
+    #[test]
+    fn an_unknown_built_in_names_all_three() {
+        let message = BuiltinPane::parse("my-pr").unwrap_err().to_string();
+        for known in ["prs-for-review", "branch-status", "my-prs"] {
+            assert!(message.contains(known), "got: {message}");
+        }
     }
 }

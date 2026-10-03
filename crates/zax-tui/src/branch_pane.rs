@@ -4,11 +4,11 @@ use std::time::SystemTime;
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
-use zax_domain::{BranchStatus, CheckState, Mergeable, ReviewState};
+use zax_domain::{BranchName, BranchStatus, BranchView, CheckState, Mergeable, ReviewState};
 
 use crate::action::PaneAction;
 use crate::cache::Cached;
@@ -19,7 +19,7 @@ use crate::prs_pane::{check_glyph, check_style};
 const TITLE: &str = "This branch";
 
 pub struct BranchStatusPane {
-    cache: Cached<Option<BranchStatus>>,
+    cache: Cached<BranchView>,
     focused: bool,
 }
 
@@ -41,15 +41,15 @@ impl BranchStatusPane {
         self.focused = focused;
     }
 
-    pub fn apply(&mut self, result: Result<Option<BranchStatus>, String>, at: SystemTime) {
+    pub fn apply(&mut self, result: Result<BranchView, String>, at: SystemTime) {
         match result {
-            Ok(status) => self.cache.record_ok(status, at),
+            Ok(view) => self.cache.record_ok(view, at),
             Err(message) => self.cache.record_err(message, at),
         }
     }
 
     fn status(&self) -> Option<&BranchStatus> {
-        self.cache.value().and_then(Option::as_ref)
+        self.cache.value().and_then(BranchView::status)
     }
 
     pub fn render(&self, frame: &mut Frame, area: Rect, now: SystemTime) {
@@ -64,54 +64,27 @@ impl BranchStatusPane {
             area.width,
         )];
 
-        match (self.cache.value(), self.status()) {
-            (None, _) => {
+        match self.cache.value() {
+            None => {
                 if let Some(error) = self.cache.error() {
                     lines.push(error_line(error));
                 }
             }
-            (Some(_), None) => lines.push(Line::styled(
-                "No open pull request for this branch",
+            // A detached HEAD is on no branch, so there is nothing to say about
+            // a pull request either.
+            Some(BranchView::Detached) => lines.push(Line::styled(
+                "detached HEAD",
                 Style::default().fg(Color::DarkGray),
             )),
-            (Some(_), Some(status)) => {
-                // Through `truncate`, like every other string this crate
-                // renders. It bounds the text to the pane and flattens control
-                // characters, and a pull request title is somebody else's text
-                // arriving from a forge. The field rows below are built from
-                // this crate's own constants and need no such care.
-                let reference = truncate(&status.pr.short_ref(), usize::from(area.width));
-                let title_budget =
-                    usize::from(area.width).saturating_sub(display_width(&reference) + 1);
-                lines.push(Line::from(vec![
-                    Span::styled(reference, Style::default().fg(Color::Cyan)),
-                    Span::raw(" "),
-                    Span::raw(truncate(&status.pr.title, title_budget)),
-                ]));
-                lines.push(field(
-                    "Checks",
-                    check_glyph(status.pr.checks),
-                    checks_label(status.pr.checks),
-                    check_style(status.pr.checks),
-                ));
-                lines.push(field(
-                    "Review",
-                    "",
-                    review_label(status.review),
-                    review_style(status.review),
-                ));
-                lines.push(field(
-                    "Threads",
-                    "",
-                    threads_label(status.unresolved_threads),
-                    threads_style(status.unresolved_threads),
-                ));
-                lines.push(field(
-                    "Merge",
-                    "",
-                    mergeable_label(status.mergeable),
-                    mergeable_style(status.mergeable),
-                ));
+            Some(BranchView::OnBranch { branch, status }) => {
+                lines.push(branch_line(branch, area.width));
+                match status {
+                    None => lines.push(Line::styled(
+                        "No open pull request for this branch",
+                        Style::default().fg(Color::DarkGray),
+                    )),
+                    Some(status) => lines.extend(pull_request_lines(status, area.width)),
+                }
             }
         }
 
@@ -133,6 +106,55 @@ impl BranchStatusPane {
             _ => PaneAction::None,
         }
     }
+}
+
+/// The branch the worktree is on. A foreign branch is somebody else's name, so
+/// it goes through `truncate` like every other borrowed string.
+fn branch_line(branch: &BranchName, width: u16) -> Line<'static> {
+    Line::styled(
+        truncate(branch.as_str(), usize::from(width)),
+        Style::default().add_modifier(Modifier::BOLD),
+    )
+}
+
+fn pull_request_lines(status: &BranchStatus, width: u16) -> Vec<Line<'static>> {
+    // Through `truncate`, like every other string this crate renders. It bounds
+    // the text to the pane and flattens control characters, and a pull request
+    // title is somebody else's text arriving from a forge. The field rows below
+    // are built from this crate's own constants and need no such care.
+    let reference = truncate(&status.pr.short_ref(), usize::from(width));
+    let title_budget = usize::from(width).saturating_sub(display_width(&reference) + 1);
+    vec![
+        Line::from(vec![
+            Span::styled(reference, Style::default().fg(Color::Cyan)),
+            Span::raw(" "),
+            Span::raw(truncate(&status.pr.title, title_budget)),
+        ]),
+        field(
+            "Checks",
+            check_glyph(status.pr.checks),
+            checks_label(status.pr.checks),
+            check_style(status.pr.checks),
+        ),
+        field(
+            "Review",
+            "",
+            review_label(status.review),
+            review_style(status.review),
+        ),
+        field(
+            "Threads",
+            "",
+            threads_label(status.unresolved_threads),
+            threads_style(status.unresolved_threads),
+        ),
+        field(
+            "Merge",
+            "",
+            mergeable_label(status.mergeable),
+            mergeable_style(status.mergeable),
+        ),
+    ]
 }
 
 fn field(label: &str, glyph: &str, value: String, style: Style) -> Line<'static> {
@@ -221,7 +243,10 @@ mod tests {
     use ratatui::buffer::Buffer;
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use ratatui::Terminal;
-    use zax_domain::{BranchStatus, CheckState, Mergeable, PullRequest, RepoSlug, ReviewState};
+    use zax_domain::{
+        BranchName, BranchStatus, BranchView, CheckState, Mergeable, PullRequest, RepoSlug,
+        ReviewState,
+    };
 
     use super::*;
     use crate::action::PaneAction;
@@ -267,10 +292,70 @@ mod tests {
         }
     }
 
+    fn branch() -> BranchName {
+        BranchName::parse_local("OMEGA-1963-export-csv-reports").unwrap()
+    }
+
+    fn view(status: Option<BranchStatus>) -> BranchView {
+        BranchView::on_branch(branch(), status)
+    }
+
     fn loaded() -> BranchStatusPane {
         let mut pane = BranchStatusPane::new();
-        pane.apply(Ok(Some(status())), t(100));
+        pane.apply(Ok(view(Some(status()))), t(100));
         pane
+    }
+
+    #[test]
+    fn the_pane_names_the_branch_it_is_reporting_on() {
+        let text = buffer_text(&loaded(), t(100));
+        assert!(
+            text.contains("OMEGA-1963-export-csv-reports"),
+            "got:\n{text}"
+        );
+    }
+
+    #[test]
+    fn a_branch_with_no_pull_request_is_still_named() {
+        // Which branch the worktree is on is the one thing this pane can always
+        // answer, so a missing pull request must not blank it.
+        let mut pane = BranchStatusPane::new();
+        pane.apply(Ok(view(None)), t(100));
+        let text = buffer_text(&pane, t(100));
+        assert!(
+            text.contains("OMEGA-1963-export-csv-reports"),
+            "got:\n{text}"
+        );
+    }
+
+    #[test]
+    fn a_detached_head_says_so_rather_than_naming_a_branch() {
+        let mut pane = BranchStatusPane::new();
+        pane.apply(Ok(BranchView::Detached), t(100));
+        let text = buffer_text(&pane, t(100));
+        assert!(text.contains("detached HEAD"), "got:\n{text}");
+        // There is no branch, so a line about "this branch" would be a claim
+        // about nothing.
+        assert!(!text.contains("No open pull request"), "got:\n{text}");
+    }
+
+    #[test]
+    fn a_long_branch_name_is_bounded_to_the_pane_width() {
+        // A pull request's head branch is not ours to name: it can be long and
+        // it can carry slashes. Measured in columns through `unicode-width`
+        // directly rather than through this crate's own `display_width`, so the
+        // assertion cannot agree with a broken measurement.
+        let long = BranchName::parse_foreign(&format!("dependabot/cargo/{}", "serde-".repeat(20)))
+            .unwrap();
+
+        for width in 0..=60u16 {
+            let line = branch_line(&long, width);
+            let rendered: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+            assert!(
+                unicode_width::UnicodeWidthStr::width(rendered.as_str()) <= usize::from(width),
+                "width {width} overflowed: {rendered:?}"
+            );
+        }
     }
 
     #[test]
@@ -287,7 +372,7 @@ mod tests {
     #[test]
     fn a_branch_with_no_pull_request_says_so() {
         let mut pane = BranchStatusPane::new();
-        pane.apply(Ok(None), t(100));
+        pane.apply(Ok(view(None)), t(100));
         assert!(buffer_text(&pane, t(100)).contains("No open pull request"));
     }
 
@@ -295,10 +380,10 @@ mod tests {
     fn no_unresolved_threads_is_reported_positively() {
         let mut pane = BranchStatusPane::new();
         pane.apply(
-            Ok(Some(BranchStatus {
+            Ok(view(Some(BranchStatus {
                 unresolved_threads: 0,
                 ..status()
-            })),
+            }))),
             t(100),
         );
         assert!(buffer_text(&pane, t(100)).contains("all resolved"));
@@ -336,7 +421,7 @@ mod tests {
     #[test]
     fn row_actions_do_nothing_when_there_is_no_pull_request() {
         let mut pane = BranchStatusPane::new();
-        pane.apply(Ok(None), t(100));
+        pane.apply(Ok(view(None)), t(100));
         assert_eq!(pane.on_key(key(KeyCode::Enter)), PaneAction::None);
     }
 
@@ -355,7 +440,7 @@ mod tests {
         let mut pane = BranchStatusPane::new();
         let mut broken = status();
         broken.pr.title = format!("first\nsecond\tthird\r{}", "very long ".repeat(40));
-        pane.apply(Ok(Some(broken)), t(100));
+        pane.apply(Ok(view(Some(broken))), t(100));
 
         for width in 1..=60u16 {
             let mut terminal = Terminal::new(TestBackend::new(width, 8)).unwrap();

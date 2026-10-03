@@ -5,6 +5,8 @@ use std::time::{Duration, SystemTime};
 
 use thiserror::Error;
 
+use crate::branch::BranchName;
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct RepoSlug {
     owner: String,
@@ -123,6 +125,41 @@ pub struct BranchStatus {
     pub review: ReviewState,
     pub unresolved_threads: u32,
     pub mergeable: Mergeable,
+}
+
+/// What the `branch-status` pane reports on: where HEAD is, and the pull
+/// request status if the branch has one.
+///
+/// An enum rather than a pair of options because a status without a branch is
+/// not a state this can be in: the status is the forge's answer about a branch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BranchView {
+    /// HEAD is detached, so there is no branch to report on.
+    Detached,
+    OnBranch {
+        branch: BranchName,
+        status: Option<BranchStatus>,
+    },
+}
+
+impl BranchView {
+    pub fn on_branch(branch: BranchName, status: Option<BranchStatus>) -> Self {
+        Self::OnBranch { branch, status }
+    }
+
+    pub fn branch(&self) -> Option<&BranchName> {
+        match self {
+            Self::Detached => None,
+            Self::OnBranch { branch, .. } => Some(branch),
+        }
+    }
+
+    pub fn status(&self) -> Option<&BranchStatus> {
+        match self {
+            Self::Detached => None,
+            Self::OnBranch { status, .. } => status.as_ref(),
+        }
+    }
 }
 
 /// How a user names a pull request on the command line.
@@ -369,6 +406,36 @@ mod tests {
         };
         assert_eq!(status.unresolved_threads, 3);
         assert_eq!(status.pr.number, 1963);
+    }
+
+    #[test]
+    fn a_branch_view_names_the_branch_it_is_reporting_on() {
+        let branch = BranchName::parse_local("OMEGA-1963-stamp").unwrap();
+        let view = BranchView::on_branch(branch.clone(), None);
+        assert_eq!(view.branch(), Some(&branch));
+        assert_eq!(view.status(), None);
+    }
+
+    #[test]
+    fn a_detached_head_has_no_branch_and_no_status() {
+        let view = BranchView::Detached;
+        assert_eq!(view.branch(), None);
+        assert_eq!(view.status(), None);
+    }
+
+    #[test]
+    fn a_branch_view_carries_the_pull_request_status_when_there_is_one() {
+        let status = BranchStatus {
+            pr: pr(),
+            review: ReviewState::Approved,
+            unresolved_threads: 0,
+            mergeable: Mergeable::Mergeable,
+        };
+        let view = BranchView::on_branch(
+            BranchName::parse_local("OMEGA-1963-stamp").unwrap(),
+            Some(status.clone()),
+        );
+        assert_eq!(view.status(), Some(&status));
     }
 
     #[test]

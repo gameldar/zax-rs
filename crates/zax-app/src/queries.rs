@@ -5,7 +5,7 @@ use std::time::SystemTime;
 
 use thiserror::Error;
 use zax_domain::{
-    BranchName, BranchStatus, PrFilter, PullRequest, RootRepoName, WorktreePath, WorktreePathError,
+    BranchName, BranchView, PrFilter, PullRequest, RootRepoName, WorktreePath, WorktreePathError,
     WorktreeRoot,
 };
 
@@ -27,13 +27,13 @@ pub fn list_review_requests<Fg: Forge>(
 
 /// The `branch-status` pane's data source. A detached HEAD has no branch and so
 /// no status, which is not an error.
-pub fn branch_status<G: GitRepo, Fg: Forge>(
-    git: &G,
-    forge: &Fg,
-) -> Result<Option<BranchStatus>, PortError> {
+pub fn branch_view<G: GitRepo, Fg: Forge>(git: &G, forge: &Fg) -> Result<BranchView, PortError> {
     match git.current_branch()? {
-        None => Ok(None),
-        Some(branch) => forge.branch_status(&branch),
+        None => Ok(BranchView::Detached),
+        Some(branch) => {
+            let status = forge.branch_status(&branch)?;
+            Ok(BranchView::on_branch(branch, status))
+        }
     }
 }
 
@@ -126,8 +126,8 @@ mod tests {
     use std::time::{Duration, UNIX_EPOCH};
 
     use zax_domain::{
-        BranchName, BranchStatus, CheckState, Mergeable, PrFilter, PullRequest, RepoPattern,
-        RepoSlug, ReviewState, RootRepoName, WorktreeRoot,
+        BranchName, BranchStatus, BranchView, CheckState, Mergeable, PrFilter, PullRequest,
+        RepoPattern, RepoSlug, ReviewState, RootRepoName, WorktreeRoot,
     };
 
     use super::*;
@@ -199,7 +199,7 @@ mod tests {
     }
 
     #[test]
-    fn branch_status_asks_the_forge_about_the_current_branch() {
+    fn the_branch_view_asks_the_forge_about_the_current_branch() {
         let git = FakeGitRepo::new("/Users/me/src/acme", "OMEGA-1963-stamp");
         let forge = FakeForge {
             branch_status: Some(BranchStatus {
@@ -210,15 +210,31 @@ mod tests {
             }),
             ..FakeForge::default()
         };
-        let status = branch_status(&git, &forge).unwrap().unwrap();
-        assert_eq!(status.unresolved_threads, 2);
+
+        let view = branch_view(&git, &forge).unwrap();
+
+        assert_eq!(view.branch().unwrap().as_str(), "OMEGA-1963-stamp");
+        assert_eq!(view.status().unwrap().unresolved_threads, 2);
     }
 
     #[test]
-    fn branch_status_is_none_on_a_detached_head_rather_than_an_error() {
+    fn the_branch_view_still_names_the_branch_when_it_has_no_pull_request() {
+        // The pane has to say where HEAD is even when the forge has nothing to
+        // report, so an absent pull request must not erase the branch.
+        let git = FakeGitRepo::new("/Users/me/src/acme", "OMEGA-1963-stamp");
+        let forge = FakeForge::default();
+
+        let view = branch_view(&git, &forge).unwrap();
+
+        assert_eq!(view.branch().unwrap().as_str(), "OMEGA-1963-stamp");
+        assert_eq!(view.status(), None);
+    }
+
+    #[test]
+    fn the_branch_view_is_detached_on_a_detached_head_rather_than_an_error() {
         let git = FakeGitRepo::detached("/Users/me/src/acme");
         let forge = FakeForge::default();
-        assert_eq!(branch_status(&git, &forge).unwrap(), None);
+        assert_eq!(branch_view(&git, &forge).unwrap(), BranchView::Detached);
     }
 
     #[test]

@@ -1,5 +1,5 @@
-//! The two queries. Both exist because `gh`'s own `--json` flag cannot produce
-//! the fields the spec's panes require: `gh search prs --json` has no check
+//! The three queries. All exist because `gh`'s own `--json` flag cannot
+//! produce the fields the panes require: `gh search prs --json` has no check
 //! state, and `gh pr view --json` has no unresolved-review-thread count.
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -56,6 +56,68 @@ query($owner: String!, $name: String!, $branch: String!) {
 }
 "#;
 
+/// Variables: `q` (the GitHub search query string).
+///
+/// `BRANCH_STATUS`'s field set inside a search. The review search cannot be
+/// reused - it carries no `reviewDecision`, `mergeable` or `reviewThreads` -
+/// and `BRANCH_STATUS` cannot, because it is scoped to one branch of one
+/// repository.
+///
+/// The same two caps as the queries above: 50 results, and `reviewThreads`
+/// capped at 100 per pull request.
+pub const SEARCH_AUTHORED: &str = r#"
+query($q: String!) {
+  search(query: $q, type: ISSUE, first: 50) {
+    nodes {
+      ... on PullRequest {
+        number
+        title
+        url
+        isDraft
+        createdAt
+        mergeable
+        reviewDecision
+        repository { nameWithOwner }
+        commits(last: 1) {
+          nodes { commit { statusCheckRollup { state } } }
+        }
+        reviewThreads(first: 100) { nodes { isResolved } }
+      }
+    }
+  }
+}
+"#;
+
+/// The `repo:` and `-repo:` qualifiers a filter translates into exactly.
+///
+/// An `owner/*` entry has no qualifier: GitHub spells an organisation `org:`
+/// and a person `user:`, and which an owner is cannot be known here. One such
+/// entry therefore drops the whole include list, because sending the rest
+/// would ask for less than the filter admits. An exclusion only ever widens
+/// what is left out, so dropping a wildcard one loses nothing the local
+/// filter will not catch.
+fn repo_qualifiers(filter: &PrFilter) -> String {
+    let mut qualifiers = String::new();
+    let exact: Option<Vec<String>> = filter.include.iter().map(RepoPattern::exact_slug).collect();
+    for slug in exact.unwrap_or_default() {
+        qualifiers.push_str(&format!(" repo:{slug}"));
+    }
+    for slug in filter.exclude.iter().filter_map(RepoPattern::exact_slug) {
+        qualifiers.push_str(&format!(" -repo:{slug}"));
+    }
+    qualifiers
+}
+
+/// The `my-prs` pane's search. No `created:` qualifier: `max_age` is the
+/// review queue's knob, and ageing out your own oldest pull request would
+/// hide the one most worth seeing.
+pub fn authored_query(login: &str, filter: &PrFilter) -> String {
+    format!(
+        "is:pr is:open archived:false author:{login}{}",
+        repo_qualifiers(filter)
+    )
+}
+
 /// The search string the spec's `gh search prs --review-requested=@me
 /// --state=open` stands for. GitHub's search API does not understand `@me`, so
 /// the login is resolved first.
@@ -66,23 +128,10 @@ query($owner: String!, $name: String!, $branch: String!) {
 /// filter itself admits - `PrFilter` remains the authority over what the pane
 /// shows, and this never has to agree with it, only to be no stricter.
 pub fn review_requested_query(login: &str, filter: &PrFilter, now: SystemTime) -> String {
-    let mut query = format!("is:pr is:open archived:false review-requested:{login}");
-
-    // An `owner/*` entry has no qualifier: GitHub spells an organisation
-    // `org:` and a person `user:`, and which an owner is cannot be known here.
-    // One such entry therefore drops the whole include list, because sending
-    // the rest would ask for less than the filter admits.
-    let exact: Option<Vec<String>> = filter.include.iter().map(RepoPattern::exact_slug).collect();
-    for slug in exact.unwrap_or_default() {
-        query.push_str(&format!(" repo:{slug}"));
-    }
-
-    // An exclusion only ever widens what is left out, so dropping a wildcard
-    // one loses nothing the local filter will not catch.
-    for slug in filter.exclude.iter().filter_map(RepoPattern::exact_slug) {
-        query.push_str(&format!(" -repo:{slug}"));
-    }
-
+    let mut query = format!(
+        "is:pr is:open archived:false review-requested:{login}{}",
+        repo_qualifiers(filter)
+    );
     if let Some(date) = created_since(now, filter.max_age) {
         query.push_str(&format!(" created:>={date}"));
     }
@@ -202,6 +251,36 @@ mod tests {
             ..PrFilter::default()
         };
         let q = review_requested_query("octocat", &filter, UNIX_EPOCH);
+        assert!(!q.contains("created:"), "got: {q}");
+    }
+
+    #[test]
+    fn the_authored_search_asks_for_your_own_open_pull_requests() {
+        let q = authored_query("octocat", &PrFilter::default());
+        assert_eq!(q, "is:pr is:open archived:false author:octocat");
+    }
+
+    #[test]
+    fn the_authored_search_carries_the_repository_qualifiers() {
+        let filter = PrFilter {
+            include: patterns(&["acme/omega"]),
+            exclude: patterns(&["acme/legacy-api"]),
+            ..PrFilter::default()
+        };
+        let q = authored_query("octocat", &filter);
+        assert!(q.contains("repo:acme/omega"), "got: {q}");
+        assert!(q.contains("-repo:acme/legacy-api"), "got: {q}");
+    }
+
+    #[test]
+    fn the_authored_search_never_carries_a_date_qualifier() {
+        // max_age is the review queue's knob. Sending it here would hide the
+        // oldest pull request of your own, which is the one most worth seeing.
+        let filter = PrFilter {
+            max_age: Some(Duration::from_secs(14 * 86_400)),
+            ..PrFilter::default()
+        };
+        let q = authored_query("octocat", &filter);
         assert!(!q.contains("created:"), "got: {q}");
     }
 }

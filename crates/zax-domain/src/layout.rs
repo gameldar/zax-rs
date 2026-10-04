@@ -48,7 +48,16 @@ impl Command {
     }
 }
 
-/// A pane's share of the window, as a percentage.
+/// A pane's size, as a percentage of the pane it is split from - which is what
+/// `tmux split-window -l` takes, and is not the same as a share of the window.
+///
+/// Pane 1 splits the agent sideways, so its size is the context column's width.
+/// Every later pane splits its predecessor, so its size is a share of that
+/// pane's height and the predecessor keeps the rest. Sizes therefore compound
+/// down the stack and do not add up to anything: a column of three even rows
+/// is written 67% then 50%, not 33% apiece, and the first pane's own size is
+/// the column's width rather than a height at all. `default_panes` in
+/// `zax-config` is the worked example.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PaneSize(u8);
 
@@ -77,19 +86,28 @@ impl PaneSize {
 pub enum BuiltinPane {
     PrsForReview,
     BranchStatus,
+    MyPrs,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum BuiltinPaneError {
-    #[error("`{0}` is not a built-in pane; the built-ins are prs-for-review and branch-status")]
+    #[error(
+        "`{0}` is not a built-in pane; the built-ins are prs-for-review, branch-status and my-prs"
+    )]
     Unknown(String),
 }
 
 impl BuiltinPane {
+    /// Every built-in there is. Help text, validation messages and the CLI's
+    /// own subcommand test read the list from here, so a built-in added to
+    /// the enum cannot be left out of one of them unnoticed.
+    pub const ALL: [Self; 3] = [Self::PrsForReview, Self::BranchStatus, Self::MyPrs];
+
     pub fn parse(raw: &str) -> Result<Self, BuiltinPaneError> {
         match raw {
             "prs-for-review" => Ok(Self::PrsForReview),
             "branch-status" => Ok(Self::BranchStatus),
+            "my-prs" => Ok(Self::MyPrs),
             other => Err(BuiltinPaneError::Unknown(other.to_owned())),
         }
     }
@@ -98,6 +116,7 @@ impl BuiltinPane {
         match self {
             Self::PrsForReview => "prs-for-review",
             Self::BranchStatus => "branch-status",
+            Self::MyPrs => "my-prs",
         }
     }
 }
@@ -131,23 +150,12 @@ pub struct LayoutSpec {
     panes: Vec<PaneSpec>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Error)]
-pub enum LayoutError {
-    #[error("pane sizes add up to {0}%, leaving nothing for the agent pane")]
-    SizesExceedFull(u32),
-}
-
 impl LayoutSpec {
-    pub fn new(agent: Command, panes: Vec<PaneSpec>) -> Result<Self, LayoutError> {
-        let total: u32 = panes
-            .iter()
-            .filter_map(|p| p.size)
-            .map(|s| u32::from(s.get()))
-            .sum();
-        if total >= 100 {
-            return Err(LayoutError::SizesExceedFull(total));
-        }
-        Ok(Self { agent, panes })
+    /// Infallible: a `PaneSize` is already a percentage of the pane it splits,
+    /// and panes do not share a budget, so there is no cross-pane rule left to
+    /// check.
+    pub fn new(agent: Command, panes: Vec<PaneSpec>) -> Self {
+        Self { agent, panes }
     }
 
     pub fn agent(&self) -> &Command {
@@ -256,28 +264,33 @@ mod tests {
     }
 
     #[test]
-    fn a_layout_rejects_pane_sizes_that_leave_no_room_for_the_agent() {
+    fn pane_sizes_do_not_share_one_budget_because_each_splits_its_predecessor() {
+        // A size is a share of the pane being split, not of the window, so
+        // sizes past 100% together are the normal way to describe an even
+        // stack rather than a layout that crowds out the agent.
         let agent = Command::new(vec!["claude".to_owned()]).unwrap();
         let panes = vec![
             PaneSpec {
                 kind: PaneKind::Builtin(BuiltinPane::PrsForReview),
-                size: Some(PaneSize::percent(60).unwrap()),
+                size: Some(PaneSize::percent(30).unwrap()),
             },
             PaneSpec {
                 kind: PaneKind::Builtin(BuiltinPane::BranchStatus),
-                size: Some(PaneSize::percent(45).unwrap()),
+                size: Some(PaneSize::percent(55).unwrap()),
+            },
+            PaneSpec {
+                kind: PaneKind::Builtin(BuiltinPane::MyPrs),
+                size: Some(PaneSize::percent(64).unwrap()),
             },
         ];
-        assert_eq!(
-            LayoutSpec::new(agent, panes),
-            Err(LayoutError::SizesExceedFull(105))
-        );
+        let layout = LayoutSpec::new(agent, panes);
+        assert_eq!(layout.panes().len(), 3);
     }
 
     #[test]
     fn a_layout_with_no_context_panes_is_valid() {
         let agent = Command::new(vec!["claude".to_owned()]).unwrap();
-        let layout = LayoutSpec::new(agent, vec![]).unwrap();
+        let layout = LayoutSpec::new(agent, vec![]);
         assert_eq!(layout.agent().program(), "claude");
         assert!(layout.panes().is_empty());
     }
@@ -317,5 +330,33 @@ mod tests {
             assert_eq!(parse_duration(&rendered).unwrap(), parsed, "for {text}");
         }
         assert_eq!(format_duration(Duration::from_secs(90)), "90s");
+    }
+
+    #[test]
+    fn my_prs_is_a_built_in_pane() {
+        assert_eq!(BuiltinPane::parse("my-prs").unwrap(), BuiltinPane::MyPrs);
+        assert_eq!(BuiltinPane::MyPrs.as_str(), "my-prs");
+    }
+
+    #[test]
+    fn an_unknown_built_in_names_every_built_in_there_is() {
+        // Driven from ALL rather than a list written out here, so adding a
+        // built-in and forgetting the message is a failing test.
+        let message = BuiltinPane::parse("my-pr").unwrap_err().to_string();
+        for known in BuiltinPane::ALL {
+            assert!(
+                message.contains(known.as_str()),
+                "`{}` is missing from: {message}",
+                known.as_str()
+            );
+        }
+    }
+
+    #[test]
+    fn all_lists_every_built_in_and_each_one_round_trips() {
+        assert_eq!(BuiltinPane::ALL.len(), 3);
+        for builtin in BuiltinPane::ALL {
+            assert_eq!(BuiltinPane::parse(builtin.as_str()).unwrap(), builtin);
+        }
     }
 }

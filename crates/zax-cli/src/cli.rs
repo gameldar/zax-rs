@@ -100,6 +100,8 @@ pub enum PaneCommand {
     PrsForReview,
     /// The status of this worktree's own pull request.
     BranchStatus,
+    /// Your own open pull requests, across every repository.
+    MyPrs,
     /// Wrap any command's stdout in a header, refresh loop and scrollback.
     Exec {
         #[arg(long)]
@@ -231,7 +233,11 @@ mod tests {
 
     #[test]
     fn the_builtin_pane_subcommands_match_the_builtin_pane_names() {
-        for name in ["prs-for-review", "branch-status"] {
+        // Driven from the domain's own list, so a built-in added there
+        // without a subcommand here is a failing test rather than a pane
+        // that cannot start.
+        for builtin in zax_domain::BuiltinPane::ALL {
+            let name = builtin.as_str();
             assert!(
                 Cli::try_parse_from(["zax", "pane", name]).is_ok(),
                 "`zax pane {name}` must parse"

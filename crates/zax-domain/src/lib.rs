@@ -14,12 +14,12 @@ pub mod ticket;
 
 pub use branch::{BranchName, BranchNameError, BranchOrigin};
 pub use forge::{
-    BranchStatus, BranchView, CheckState, Mergeable, PrRef, PrRefError, PullRequest, RepoSlug,
-    RepoSlugError, ReviewState,
+    Attention, BranchView, CheckState, Mergeable, MyPullRequest, PrRef, PrRefError, PullRequest,
+    PullRequestStatus, RepoSlug, RepoSlugError, ReviewState,
 };
 pub use layout::{
     format_duration, parse_duration, BuiltinPane, BuiltinPaneError, Command, CommandError,
-    DurationError, LayoutError, LayoutSpec, PaneKind, PaneSize, PaneSizeError, PaneSpec,
+    DurationError, LayoutSpec, PaneKind, PaneSize, PaneSizeError, PaneSpec,
 };
 pub use prs_filter::{PrFilter, RepoPattern, RepoPatternError};
 pub use repo::{

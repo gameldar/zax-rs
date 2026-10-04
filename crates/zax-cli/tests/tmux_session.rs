@@ -161,8 +161,7 @@ fn a_session_is_built_with_one_pane_per_layout_entry() {
                 size: Some(PaneSize::percent(25).unwrap()),
             },
         ],
-    )
-    .unwrap();
+    );
 
     let name = expected_session_name();
 
@@ -218,8 +217,7 @@ fn a_second_start_attaches_instead_of_rebuilding() {
             kind: PaneKind::Raw { command: sleep },
             size: Some(PaneSize::percent(30).unwrap()),
         }],
-    )
-    .unwrap();
+    );
     let request = || StartSessionRequest {
         cwd: repo.clone(),
         zax_bin: std::path::PathBuf::from("/bin/true"),
@@ -260,7 +258,7 @@ fn the_server_runs_on_our_socket_and_not_the_default_one() {
     let git = GitCli::new(SystemExec, repo.clone());
 
     let sleep = ZaxCommand::new(vec!["sleep".to_owned(), "30".to_owned()]).unwrap();
-    let layout = LayoutSpec::new(sleep, vec![]).unwrap();
+    let layout = LayoutSpec::new(sleep, vec![]);
     StartSession::new(&tmux, &git)
         .run(StartSessionRequest {
             cwd: repo,
@@ -303,7 +301,7 @@ fn a_start_while_the_session_is_attached_builds_a_second_one() {
     let request = || StartSessionRequest {
         cwd: repo.clone(),
         zax_bin: std::path::PathBuf::from("/bin/true"),
-        layout: LayoutSpec::new(sleep.clone(), vec![]).unwrap(),
+        layout: LayoutSpec::new(sleep.clone(), vec![]),
         inside_multiplexer: false,
     };
 

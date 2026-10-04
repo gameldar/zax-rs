@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use std::time::SystemTime;
 
 use zax_app::{Forge, PortError, PullRequestHead};
-use zax_domain::{BranchName, BranchStatus, PrFilter, PrRef, PullRequest, RepoSlug};
+use zax_domain::{BranchName, PrFilter, PrRef, PullRequest, PullRequestStatus, RepoSlug};
 use zax_exec::{Exec, ExecError, Output};
 
 const TOOL: &str = "gh";
@@ -103,11 +103,24 @@ impl<E: Exec> Forge for GhCli<E> {
         dto::parse_search_response(&out.stdout).map_err(unparseable)
     }
 
+    fn authored_pull_requests(
+        &self,
+        filter: &PrFilter,
+    ) -> Result<Vec<PullRequestStatus>, PortError> {
+        let login = self.login()?;
+        let query = graphql::authored_query(&login, filter);
+        let out = self.run_ok(argv::graphql_query(
+            graphql::SEARCH_AUTHORED,
+            &[("q", &query)],
+        ))?;
+        dto::parse_authored_search_response(&out.stdout).map_err(unparseable)
+    }
+
     fn current_repo(&self) -> Result<RepoSlug, PortError> {
         self.repo_slug()
     }
 
-    fn branch_status(&self, branch: &BranchName) -> Result<Option<BranchStatus>, PortError> {
+    fn branch_status(&self, branch: &BranchName) -> Result<Option<PullRequestStatus>, PortError> {
         let slug = self.repo_slug()?;
         let out = self.run_ok(argv::graphql_query(
             graphql::BRANCH_STATUS,
@@ -193,6 +206,28 @@ mod tests {
                 .iter()
                 .any(|a| a.contains("review-requested:octocat")),
             "the resolved login must reach the search query: {:?}",
+            calls[1].args
+        );
+    }
+
+    #[test]
+    fn authored_pull_requests_resolve_the_login_before_searching() {
+        let gh = cli(vec![
+            ok("octocat\n"),
+            ok(include_str!("../tests/fixtures/authored_prs.json")),
+        ]);
+
+        let mine = gh.authored_pull_requests(&PrFilter::default()).unwrap();
+        assert_eq!(mine.len(), 4);
+
+        let calls = gh.exec_ref().calls();
+        assert_eq!(calls[0].args, ["api", "user", "-q", ".login"]);
+        assert!(
+            calls[1]
+                .args
+                .iter()
+                .any(|a| a.contains("author:octocat")),
+            "the resolved login must reach the search: {:?}",
             calls[1].args
         );
     }

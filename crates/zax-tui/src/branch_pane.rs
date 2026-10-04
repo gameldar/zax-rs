@@ -8,13 +8,16 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
-use zax_domain::{BranchName, BranchStatus, BranchView, CheckState, Mergeable, ReviewState};
+use zax_domain::{BranchName, BranchView, PullRequestStatus};
 
 use crate::action::PaneAction;
 use crate::cache::Cached;
 use crate::chrome::{error_line, header_line};
 use crate::fmt::{display_width, truncate};
-use crate::prs_pane::{check_glyph, check_style};
+use crate::pr_fields::{
+    check_glyph, check_style, checks_label, mergeable_label, mergeable_style, review_label,
+    review_style, threads_label, threads_style,
+};
 
 const TITLE: &str = "This branch";
 
@@ -48,7 +51,7 @@ impl BranchStatusPane {
         }
     }
 
-    fn status(&self) -> Option<&BranchStatus> {
+    fn status(&self) -> Option<&PullRequestStatus> {
         self.cache.value().and_then(BranchView::status)
     }
 
@@ -117,7 +120,7 @@ fn branch_line(branch: &BranchName, width: u16) -> Line<'static> {
     )
 }
 
-fn pull_request_lines(status: &BranchStatus, width: u16) -> Vec<Line<'static>> {
+fn pull_request_lines(status: &PullRequestStatus, width: u16) -> Vec<Line<'static>> {
     // Through `truncate`, like every other string this crate renders. It bounds
     // the text to the pane and flattens control characters, and a pull request
     // title is somebody else's text arriving from a forge. The field rows below
@@ -170,70 +173,6 @@ fn field(label: &str, glyph: &str, value: String, style: Style) -> Line<'static>
     Line::from(spans)
 }
 
-fn checks_label(state: CheckState) -> String {
-    match state {
-        CheckState::Passing => "passing",
-        CheckState::Failing => "failing",
-        CheckState::Pending => "pending",
-        CheckState::None => "none reported",
-    }
-    .to_owned()
-}
-
-fn review_label(state: ReviewState) -> String {
-    match state {
-        ReviewState::Approved => "approved",
-        ReviewState::ChangesRequested => "changes requested",
-        ReviewState::ReviewRequired => "review required",
-        ReviewState::None => "no review requested",
-    }
-    .to_owned()
-}
-
-fn review_style(state: ReviewState) -> Style {
-    let colour = match state {
-        ReviewState::Approved => Color::Green,
-        ReviewState::ChangesRequested => Color::Red,
-        ReviewState::ReviewRequired => Color::Yellow,
-        ReviewState::None => Color::DarkGray,
-    };
-    Style::default().fg(colour)
-}
-
-fn threads_label(unresolved: u32) -> String {
-    if unresolved == 0 {
-        "all resolved".to_owned()
-    } else {
-        format!("{unresolved} unresolved")
-    }
-}
-
-fn threads_style(unresolved: u32) -> Style {
-    Style::default().fg(if unresolved == 0 {
-        Color::Green
-    } else {
-        Color::Yellow
-    })
-}
-
-fn mergeable_label(state: Mergeable) -> String {
-    match state {
-        Mergeable::Mergeable => "mergeable",
-        Mergeable::Conflicting => "conflicting",
-        Mergeable::Unknown => "unknown",
-    }
-    .to_owned()
-}
-
-fn mergeable_style(state: Mergeable) -> Style {
-    let colour = match state {
-        Mergeable::Mergeable => Color::Green,
-        Mergeable::Conflicting => Color::Red,
-        Mergeable::Unknown => Color::DarkGray,
-    };
-    Style::default().fg(colour)
-}
-
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)]
@@ -244,7 +183,7 @@ mod tests {
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use ratatui::Terminal;
     use zax_domain::{
-        BranchName, BranchStatus, BranchView, CheckState, Mergeable, PullRequest, RepoSlug,
+        BranchName, BranchView, CheckState, Mergeable, PullRequest, PullRequestStatus, RepoSlug,
         ReviewState,
     };
 
@@ -275,8 +214,8 @@ mod tests {
             .join("\n")
     }
 
-    fn status() -> BranchStatus {
-        BranchStatus {
+    fn status() -> PullRequestStatus {
+        PullRequestStatus {
             pr: PullRequest {
                 repo: RepoSlug::parse("acme/omega").unwrap(),
                 number: 1963,
@@ -296,7 +235,7 @@ mod tests {
         BranchName::parse_local("OMEGA-1963-export-csv-reports").unwrap()
     }
 
-    fn view(status: Option<BranchStatus>) -> BranchView {
+    fn view(status: Option<PullRequestStatus>) -> BranchView {
         BranchView::on_branch(branch(), status)
     }
 
@@ -380,7 +319,7 @@ mod tests {
     fn no_unresolved_threads_is_reported_positively() {
         let mut pane = BranchStatusPane::new();
         pane.apply(
-            Ok(view(Some(BranchStatus {
+            Ok(view(Some(PullRequestStatus {
                 unresolved_threads: 0,
                 ..status()
             }))),

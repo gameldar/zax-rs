@@ -5,7 +5,7 @@ use std::time::SystemTime;
 
 use thiserror::Error;
 use zax_domain::{
-    BranchName, BranchStatus, Command, LiveSession, PaneSize, PrFilter, PrRef, PullRequest,
+    BranchName, Command, LiveSession, PaneSize, PrFilter, PrRef, PullRequest, PullRequestStatus,
     RepoSlug, RootRepoName, SessionName,
 };
 
@@ -143,13 +143,20 @@ pub trait Forge {
     /// not the authority. Whatever comes back is filtered again in the
     /// application layer, which is where the rules actually live.
     fn review_requests(&self, filter: &PrFilter) -> Result<Vec<PullRequest>, PortError>;
+    /// Every open pull request the authenticated user wrote, with the review
+    /// state each one is in. The filter is a hint a forge may narrow its own
+    /// search with, exactly as `review_requests` treats it.
+    fn authored_pull_requests(
+        &self,
+        filter: &PrFilter,
+    ) -> Result<Vec<PullRequestStatus>, PortError>;
     /// The repository the current directory belongs to, as the forge resolves
     /// it. This is the repository a bare pull request number is read against
     /// and the one `origin` points at, so it is what a pull request from
     /// somewhere else has to be compared with.
     fn current_repo(&self) -> Result<RepoSlug, PortError>;
     /// `None` when the branch has no open pull request.
-    fn branch_status(&self, branch: &BranchName) -> Result<Option<BranchStatus>, PortError>;
+    fn branch_status(&self, branch: &BranchName) -> Result<Option<PullRequestStatus>, PortError>;
     fn pull_request_head(&self, pr: &PrRef) -> Result<PullRequestHead, PortError>;
     fn auth_status(&self) -> Result<String, PortError>;
     fn probe(&self) -> Result<String, PortError>;

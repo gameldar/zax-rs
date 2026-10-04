@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use zax_domain::{
-    BranchName, BranchStatus, Command, LiveSession, PaneSize, PrFilter, PrRef, PullRequest,
+    BranchName, Command, LiveSession, PaneSize, PrFilter, PrRef, PullRequest, PullRequestStatus,
     RepoSlug, RootRepoName, SessionName,
 };
 
@@ -389,13 +389,17 @@ impl GitRepo for FakeGitRepo {
 #[derive(Default)]
 pub struct FakeForge {
     pub review_requests: Vec<PullRequest>,
-    pub branch_status: Option<BranchStatus>,
+    pub branch_status: Option<PullRequestStatus>,
+    pub authored: Vec<PullRequestStatus>,
     pub head: Option<PullRequestHead>,
     pub current_repo: Option<RepoSlug>,
     pub fail_with: Option<PortError>,
     /// Every filter `review_requests` was called with, so a test can prove the
     /// hint reaches the forge rather than being dropped on the way.
     pub asked_with: RefCell<Vec<PrFilter>>,
+    /// Every filter `authored_pull_requests` was called with, for the same
+    /// reason.
+    pub asked_authored_with: RefCell<Vec<PrFilter>>,
 }
 
 impl Forge for FakeForge {
@@ -407,7 +411,18 @@ impl Forge for FakeForge {
         }
     }
 
-    fn branch_status(&self, _branch: &BranchName) -> Result<Option<BranchStatus>, PortError> {
+    fn authored_pull_requests(
+        &self,
+        filter: &PrFilter,
+    ) -> Result<Vec<PullRequestStatus>, PortError> {
+        self.asked_authored_with.borrow_mut().push(filter.clone());
+        match &self.fail_with {
+            Some(e) => Err(e.clone()),
+            None => Ok(self.authored.clone()),
+        }
+    }
+
+    fn branch_status(&self, _branch: &BranchName) -> Result<Option<PullRequestStatus>, PortError> {
         match &self.fail_with {
             Some(e) => Err(e.clone()),
             None => Ok(self.branch_status.clone()),
@@ -455,6 +470,13 @@ impl FakeForge {
     pub fn with_review_requests(prs: Vec<PullRequest>) -> Self {
         Self {
             review_requests: prs,
+            ..Self::default()
+        }
+    }
+
+    pub fn with_authored(prs: Vec<PullRequestStatus>) -> Self {
+        Self {
+            authored: prs,
             ..Self::default()
         }
     }

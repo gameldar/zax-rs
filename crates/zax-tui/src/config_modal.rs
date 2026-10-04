@@ -17,6 +17,7 @@ use zax_domain::settings::{
     ConfigView, LayerSlot, Origin, PaneEdit, PaneField, PaneKindTag, Pending, Saved, SettingKey,
     SettingRow, SettingShape, SettingValue,
 };
+use zax_domain::BuiltinPane;
 
 use crate::chrome::{error_line, header_line, GLYPH_ERROR, GLYPH_NONE, GLYPH_PASS};
 use crate::fmt::{display_width, truncate};
@@ -1392,12 +1393,23 @@ fn kind_index(kind: PaneKindTag) -> usize {
         .unwrap_or(0)
 }
 
-fn kind_help(kind: PaneKindTag) -> &'static str {
+fn kind_help(kind: PaneKindTag) -> String {
     match kind {
-        PaneKindTag::Builtin => "a pane zax ships: prs-for-review, branch-status",
-        PaneKindTag::Exec => "a command zax re-runs and wraps in a header",
-        PaneKindTag::Raw => "a command that owns the pane outright",
+        PaneKindTag::Builtin => format!("a pane zax ships: {}", builtin_names()),
+        PaneKindTag::Exec => "a command zax re-runs and wraps in a header".to_owned(),
+        PaneKindTag::Raw => "a command that owns the pane outright".to_owned(),
     }
+}
+
+/// The built-ins, read from the domain rather than written out again. Three
+/// places used to spell this list, and they drifted the moment a fourth
+/// built-in was added.
+fn builtin_names() -> String {
+    BuiltinPane::ALL
+        .iter()
+        .map(|b| b.as_str())
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn pane_field_help(view: &ConfigView, pane: usize, field: PaneField) -> String {
@@ -1408,7 +1420,7 @@ fn pane_field_help(view: &ConfigView, pane: usize, field: PaneField) -> String {
         .map(|edit| edit.kind.as_str())
         .unwrap_or("pane");
     match field {
-        PaneField::Name => "a built-in pane: prs-for-review or branch-status".to_owned(),
+        PaneField::Name => format!("a built-in pane: {}", builtin_names()),
         PaneField::Title => "the header this pane carries".to_owned(),
         PaneField::Every => "how often to re-run it: 30s, 5m, 2h".to_owned(),
         PaneField::Command => "the program and its arguments".to_owned(),
@@ -2725,6 +2737,26 @@ mod tests {
         }
         for height in [1_u16, 2, 3, 6] {
             let _ = rendered(&modal, &view, 40, height);
+        }
+    }
+
+    #[test]
+    fn the_builtin_help_names_every_built_in_there_is() {
+        // The modal is the documented way to edit a layout. Help text that
+        // omits a built-in tells the reader it does not exist.
+        let name_help = pane_field_help(&empty_view(), 0, PaneField::Name);
+        let kind = kind_help(PaneKindTag::Builtin);
+        for builtin in BuiltinPane::ALL {
+            assert!(
+                name_help.contains(builtin.as_str()),
+                "`{}` missing from the name help: {name_help}",
+                builtin.as_str()
+            );
+            assert!(
+                kind.contains(builtin.as_str()),
+                "`{}` missing from the kind help: {kind}",
+                builtin.as_str()
+            );
         }
     }
 }

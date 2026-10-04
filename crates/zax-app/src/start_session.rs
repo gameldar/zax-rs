@@ -210,7 +210,6 @@ mod tests {
                 },
             ],
         )
-        .unwrap()
     }
 
     /// The session name these fakes derive. Never spelled out: this file tests
@@ -405,8 +404,7 @@ mod tests {
         let mux = FakeMultiplexer::default();
         let git = FakeGitRepo::new("/Users/me/src/acme", "OMEGA-1963-stamp");
         let cwd = PathBuf::from("/Users/me/src/worktrees/acme/OMEGA-1963-stamp");
-        let bare =
-            LayoutSpec::new(Command::new(vec!["claude".to_owned()]).unwrap(), vec![]).unwrap();
+        let bare = LayoutSpec::new(Command::new(vec!["claude".to_owned()]).unwrap(), vec![]);
         let name = session_name(&git);
 
         let outcome = StartSession::new(&mux, &git)

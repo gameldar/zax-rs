@@ -79,7 +79,7 @@ title is what drives Zed's in-progress indicator for a thread. tmux's own
 | `zax worktree review <pr\|url> [--force] [--no-hooks]` | A pull request's head branch in a worktree, then copy and hooks |
 | `zax worktree list` | The worktrees zax manages for this repository |
 | `zax worktree rm <branch> [--force]` | Remove one |
-| `zax pane prs-for-review \| branch-status` | Built-in pane processes, normally launched by `session start` |
+| `zax pane prs-for-review \| branch-status \| my-prs` | Built-in pane processes, normally launched by `session start` |
 | `zax pane exec --title <t> --every <dur> -- <cmd>` | Wrap any command's stdout in a header and refresh loop |
 | `zax config` | View and edit the three config layers, in a popup over the session |
 | `zax config show` | The same view, printed: every setting, its effective value and its origin |
@@ -149,7 +149,12 @@ size = "30%"
 [[layout.panes]]
 kind = "builtin"
 name = "branch-status"
-size = "25%"
+size = "55%"
+
+[[layout.panes]]
+kind = "builtin"
+name = "my-prs"
+size = "64%"
 
 [[layout.panes]]
 kind = "exec"
@@ -180,17 +185,25 @@ max_age = "14d"
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `agent.command` | `["claude"]` | What runs in pane 0 |
-| `layout.panes` | `prs-for-review` at 30%, `branch-status` at 25% | The context panes around the agent |
+| `layout.panes` | `prs-for-review`, `branch-status` and `my-prs`, at 30%, 55% and 64% | The context panes around the agent |
 | `worktree.root` | `~/src/worktrees` | Where worktrees are created |
 | `worktree.copy` | none | Gitignored-but-required files to copy into a new worktree |
 | `worktree.hooks` | none | Shell scripts run in a new worktree |
 | `tmux.prefix` | `C-Space` | Prefix key for zax's tmux server |
-| `prs.include` / `prs.exclude` | none | Which repositories `prs-for-review` shows |
-| `prs.max_age` | none | Hide pull requests older than this |
+| `prs.include` / `prs.exclude` | none | Which repositories `prs-for-review` and `my-prs` show |
+| `prs.max_age` | none | Hide pull requests older than this, in `prs-for-review` only |
 
 Durations are written `30s`, `5m`, `2h` or `14d`; a bare number means
-seconds. Pane sizes are percentages, with or without the `%`, and must leave
-room for the agent.
+seconds.
+
+**A pane size is a percentage of the pane it splits, not of the window.** The
+first context pane splits the agent sideways, so its size is the width of the
+context column and the agent keeps the rest. Every pane after that splits its
+predecessor, so its size is a share of that pane's height and the predecessor
+keeps what is left. Sizes compound down the stack and are not meant to add up
+to 100: a column of three even rows is written `67%` then `50%`, not `33%`
+apiece. The defaults above give 45% / 20% / 35% of a column that is 30% of the
+window wide.
 
 ### Panes
 
@@ -198,7 +211,7 @@ Three kinds, and the built-ins are privileged instances of the same
 mechanism:
 
 - **`builtin`** - a Rust pane shipped with zax. Takes `name`:
-  `prs-for-review` or `branch-status`.
+  `prs-for-review`, `branch-status` or `my-prs`.
 - **`exec`** - runs a command on a loop and wraps its stdout in a styled
   header with a last-updated time, stale and error marking, and scrollback.
   Takes `title`, `every` and `command`.
@@ -238,6 +251,53 @@ Only what translates exactly is sent, and the search is only ever allowed to
 be looser than the filter, so what you see is always what the config asks
 for.
 
+### Your own pull requests
+
+`my-prs` is the other half of `prs-for-review`: every open pull request you
+wrote, in any repository, rather than the ones waiting on your review. It is
+in the default layout, as the smaller of the two queues - what other people
+are waiting on comes first:
+
+```toml
+[[layout.panes]]
+kind = "builtin"
+name = "my-prs"
+size = "64%"
+```
+
+Rows are ranked by what is waiting on you, worst first, and ties go to the
+older pull request:
+
+| Rank | Means |
+| --- | --- |
+| conflicting | It no longer merges, and only you can fix that |
+| changes requested | A reviewer asked for work |
+| checks failing | The build is red |
+| unresolved threads | Comments are waiting for an answer |
+| ready to merge | Approved, green and mergeable |
+| waiting | The reviewers have it; nothing for you |
+| draft | Work you parked. It ranks last whatever state it is in |
+
+A row carries two glyphs. The first is the check rollup, exactly as in
+`prs-for-review`. The second says what the first cannot:
+
+| Glyph | Means |
+| --- | --- |
+| `⚠` | Conflicting |
+| `✎` | Changes requested |
+| `1`-`9`, `+` | That many unresolved review threads |
+| `✓` | Ready to merge |
+| `·` | Nothing the check glyph is not already saying |
+
+Under the rows, one line spells out all four signals for the selected row -
+checks, review decision, threads and mergeability - in words.
+
+`[prs] include` and `exclude` narrow both pull request panes. **`max_age`
+applies to `prs-for-review` only.** It exists to hide a review request that
+has gone stale; your own three-week-old pull request is not stale, it is the
+one that is rotting, and ageing it out of this pane would hide exactly what
+the pane is for.
+
 ## Keys in a session
 
 tmux's prefix is `C-Space` by default. Pane 0 is the agent and should swallow
@@ -256,8 +316,8 @@ Inside a focused built-in pane:
 | `y` | Copy its URL |
 | `r` | Refresh now |
 | `q` / `esc` | Close the pane |
-| `j` / `k`, arrows | Move the selection (`prs-for-review`) |
-| `w` | `zax worktree review` for the selected row (`prs-for-review`) |
+| `j` / `k`, arrows | Move the selection (`prs-for-review`, `my-prs`) |
+| `w` | `zax worktree review` for the selected row (`prs-for-review`, `my-prs`) |
 
 The context panes stay read-only and action-oriented: a keystroke opens, copies
 or starts something, and a row action that fails says so on the pane's own error

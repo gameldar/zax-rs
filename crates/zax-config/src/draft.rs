@@ -1049,10 +1049,11 @@ prefix = \"C-a\"
         let view = Fixture::new(None, None, None).draft().view();
 
         assert_eq!(view.panes.origin, Origin::Default);
-        assert_eq!(view.panes.panes.len(), 2);
+        assert_eq!(view.panes.panes.len(), 3);
         assert_eq!(view.panes.panes[0].kind, PaneKindTag::Builtin);
         assert_eq!(view.panes.panes[0].name.as_deref(), Some("prs-for-review"));
         assert_eq!(view.panes.panes[1].name.as_deref(), Some("branch-status"));
+        assert_eq!(view.panes.panes[2].name.as_deref(), Some("my-prs"));
     }
 
     #[test]

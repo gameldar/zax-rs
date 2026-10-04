@@ -149,12 +149,12 @@ size = "30%"
 [[layout.panes]]
 kind = "builtin"
 name = "branch-status"
-size = "25%"
+size = "55%"
 
 [[layout.panes]]
 kind = "builtin"
 name = "my-prs"
-size = "30%"
+size = "64%"
 
 [[layout.panes]]
 kind = "exec"
@@ -185,7 +185,7 @@ max_age = "14d"
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `agent.command` | `["claude"]` | What runs in pane 0 |
-| `layout.panes` | `prs-for-review` at 30%, `branch-status` at 25% | The context panes around the agent |
+| `layout.panes` | `prs-for-review`, `branch-status` and `my-prs`, at 30%, 55% and 64% | The context panes around the agent |
 | `worktree.root` | `~/src/worktrees` | Where worktrees are created |
 | `worktree.copy` | none | Gitignored-but-required files to copy into a new worktree |
 | `worktree.hooks` | none | Shell scripts run in a new worktree |
@@ -194,8 +194,16 @@ max_age = "14d"
 | `prs.max_age` | none | Hide pull requests older than this, in `prs-for-review` only |
 
 Durations are written `30s`, `5m`, `2h` or `14d`; a bare number means
-seconds. Pane sizes are percentages, with or without the `%`, and must leave
-room for the agent.
+seconds.
+
+**A pane size is a percentage of the pane it splits, not of the window.** The
+first context pane splits the agent sideways, so its size is the width of the
+context column and the agent keeps the rest. Every pane after that splits its
+predecessor, so its size is a share of that pane's height and the predecessor
+keeps what is left. Sizes compound down the stack and are not meant to add up
+to 100: a column of three even rows is written `67%` then `50%`, not `33%`
+apiece. The defaults above give 45% / 20% / 35% of a column that is 30% of the
+window wide.
 
 ### Panes
 
@@ -247,14 +255,14 @@ for.
 
 `my-prs` is the other half of `prs-for-review`: every open pull request you
 wrote, in any repository, rather than the ones waiting on your review. It is
-opt-in, because a pane that appeared in everyone's session on upgrade would be
-a layout imposed rather than offered:
+in the default layout, as the smaller of the two queues - what other people
+are waiting on comes first:
 
 ```toml
 [[layout.panes]]
 kind = "builtin"
 name = "my-prs"
-size = "30%"
+size = "64%"
 ```
 
 Rows are ranked by what is waiting on you, worst first, and ties go to the

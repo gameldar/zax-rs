@@ -58,10 +58,7 @@ pub fn from_raw(raw: RawConfig, home: &str) -> Result<Config, ConfigError> {
         None => default_panes()?,
     };
 
-    let layout = LayoutSpec::new(agent, panes).map_err(|e| ConfigError::Invalid {
-        field: "layout.panes",
-        detail: e.to_string(),
-    })?;
+    let layout = LayoutSpec::new(agent, panes);
 
     let raw_worktree = raw.worktree.unwrap_or_default();
     let root_text = raw_worktree
@@ -200,7 +197,15 @@ fn validate_prefix(prefix: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// With no configured layout, both built-ins are shown.
+/// With no configured layout, all three built-ins are shown.
+///
+/// The sizes are relative - each is a share of the pane it splits - so they
+/// read oddly until the chain is walked. 30% is the context column's width.
+/// Then 55% leaves `prs-for-review` 45% of the column's height, and 64% of
+/// that 55% gives `my-prs` 35% and leaves `branch-status` 20%. The review
+/// queue is widest because it is what other people are waiting on, `my-prs`
+/// next, and `branch-status` smallest because a branch, its ahead/behind and
+/// its checks are a handful of lines.
 pub(crate) fn default_panes() -> Result<Vec<PaneSpec>, ConfigError> {
     let size = |v: u8| {
         PaneSize::percent(v).map_err(|e| ConfigError::Invalid {
@@ -215,7 +220,11 @@ pub(crate) fn default_panes() -> Result<Vec<PaneSpec>, ConfigError> {
         },
         PaneSpec {
             kind: PaneKind::Builtin(BuiltinPane::BranchStatus),
-            size: Some(size(25)?),
+            size: Some(size(55)?),
+        },
+        PaneSpec {
+            kind: PaneKind::Builtin(BuiltinPane::MyPrs),
+            size: Some(size(64)?),
         },
     ])
 }
@@ -331,7 +340,7 @@ mod tests {
     fn an_empty_config_yields_the_documented_defaults() {
         let config = config_from("");
         assert_eq!(config.layout.agent().argv(), ["claude"]);
-        assert_eq!(config.layout.panes().len(), 2);
+        assert_eq!(config.layout.panes().len(), 3);
         assert_eq!(
             config.layout.panes()[0].kind,
             PaneKind::Builtin(BuiltinPane::PrsForReview)
@@ -339,6 +348,10 @@ mod tests {
         assert_eq!(
             config.layout.panes()[1].kind,
             PaneKind::Builtin(BuiltinPane::BranchStatus)
+        );
+        assert_eq!(
+            config.layout.panes()[2].kind,
+            PaneKind::Builtin(BuiltinPane::MyPrs)
         );
         assert_eq!(
             config.worktree.root.as_path(),
@@ -558,14 +571,58 @@ hooks = ["direnv allow", "bundle install"]
     }
 
     #[test]
-    fn pane_sizes_that_crowd_out_the_agent_are_rejected() {
+    fn the_default_panes_stack_into_the_intended_column_geometry() {
+        // The sizes are relative, so what they are worth is only visible after
+        // walking the split chain: pane 1 splits the agent, and every later
+        // pane splits its predecessor, taking that share of it. These numbers
+        // are chosen for the result, so the result is what is asserted.
+        let config = config_from("");
+        let sizes: Vec<f64> = config
+            .layout
+            .panes()
+            .iter()
+            .map(|p| f64::from(p.size.unwrap().get()))
+            .collect();
+
+        // Pane 1's size is a width share of the window; the agent keeps the rest.
+        assert_eq!(sizes[0], 30.0, "the context column's width");
+
+        // Heights, as shares of that column. Each split hands the new pane its
+        // percentage of the predecessor and leaves the predecessor the rest.
+        let mut remaining = 100.0;
+        let mut heights = Vec::new();
+        for size in &sizes[1..] {
+            let taken = remaining * size / 100.0;
+            heights.push(remaining - taken);
+            remaining = taken;
+        }
+        heights.push(remaining);
+
+        let near = |got: f64, want: f64, what: &str| {
+            assert!(
+                (got - want).abs() < 2.0,
+                "{what}: wanted about {want}%, got {got:.1}%"
+            );
+        };
+        near(heights[0], 45.0, "prs-for-review");
+        near(heights[1], 20.0, "branch-status");
+        near(heights[2], 35.0, "my-prs");
+
+        let total: f64 = heights.iter().sum();
+        near(total, 100.0, "the column is fully used");
+    }
+
+    #[test]
+    fn pane_sizes_past_one_hundred_percent_together_are_accepted() {
+        // Each size is a share of the pane it splits, so sizes that add up to
+        // more than 100% are how an even stack is written, not an error.
         let raw: RawConfig = toml::from_str(
             "[[layout.panes]]\nkind = \"builtin\"\nname = \"prs-for-review\"\nsize = \"60%\"\n\n\
              [[layout.panes]]\nkind = \"builtin\"\nname = \"branch-status\"\nsize = \"45%\"",
         )
         .unwrap();
-        let err = from_raw(raw, "/home/me").unwrap_err();
-        assert!(err.to_string().contains("105"), "got: {err}");
+        let config = from_raw(raw, "/home/me").unwrap();
+        assert_eq!(config.layout.panes().len(), 2);
     }
 
     #[test]

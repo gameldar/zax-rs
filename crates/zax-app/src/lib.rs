@@ -12,8 +12,8 @@ pub use create_worktree::{
     CreateWorktree, CreateWorktreeError, CreateWorktreeOutcome, CreateWorktreeRequest,
 };
 pub use ports::{
-    Clock, FileSystem, Forge, GitRepo, Multiplexer, PortError, ProcessRunner, PullRequestHead,
-    WorktreeEntry,
+    Clock, Editor, FileSystem, Forge, GitRepo, Multiplexer, PortError, ProcessRunner,
+    PullRequestHead, WorktreeEntry,
 };
 pub use provision::{ProvisionError, ProvisionReport, Provisioning};
 pub use queries::{DoctorCheck, RemoveWorktreeError};

@@ -13,6 +13,7 @@ zax-domain = { path = "crates/zax-domain" }
 zax-app = { path = "crates/zax-app" }
 zax-config = { path = "crates/zax-config" }
 zax-exec = { path = "crates/zax-exec" }
+zax-infra-editor = { path = "crates/zax-infra-editor" }
 zax-infra-git = { path = "crates/zax-infra-git" }
 zax-infra-github = { path = "crates/zax-infra-github" }
 zax-infra-tmux = { path = "crates/zax-infra-tmux" }

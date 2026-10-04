@@ -9,7 +9,7 @@ use zax_domain::{
 };
 
 use crate::error::ConfigError;
-use crate::raw::{RawConfig, RawPane, RawPrs};
+use crate::raw::{RawConfig, RawEditor, RawPane, RawPrs};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
@@ -17,6 +17,7 @@ pub struct Config {
     pub worktree: WorktreeConfig,
     pub tmux: TmuxConfig,
     pub prs: PrFilter,
+    pub editor: EditorConfig,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -27,6 +28,15 @@ pub struct WorktreeConfig {
     pub hooks: Vec<Command>,
 }
 
+/// What a freshly made worktree is opened in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EditorConfig {
+    /// `None` when no editor should be opened at all. An editor command with
+    /// no program is not a command, so the absence is the type rather than a
+    /// separate flag every caller would have to consult.
+    pub command: Option<Command>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TmuxConfig {
     pub prefix: String,
@@ -35,6 +45,9 @@ pub struct TmuxConfig {
 const DEFAULT_AGENT: &str = "claude";
 const DEFAULT_WORKTREE_ROOT: &str = "~/src/worktrees";
 const DEFAULT_PREFIX: &str = "C-Space";
+/// zax is the Zed agent terminal, so a new worktree opens in Zed. `-e` is the
+/// flag Zed's own CLI takes for "open this path".
+const DEFAULT_EDITOR: [&str; 2] = ["zed", "-e"];
 
 /// `home` is the value `~` expands to. It is a parameter rather than a lookup so
 /// this function stays pure and testable.
@@ -105,12 +118,33 @@ pub fn from_raw(raw: RawConfig, home: &str) -> Result<Config, ConfigError> {
     })?;
 
     let prs = prs_filter_from_raw(raw.prs.unwrap_or_default())?;
+    let editor = editor_from_raw(raw.editor.unwrap_or_default())?;
 
     Ok(Config {
         layout,
         worktree: WorktreeConfig { root, copy, hooks },
         tmux: TmuxConfig { prefix },
         prs,
+        editor,
+    })
+}
+
+/// An absent table opens Zed; an empty list opens nothing. Only a list with a
+/// program in it has to be checked, and it is checked here so nothing that
+/// holds an `EditorConfig` afterwards asks again.
+fn editor_from_raw(raw: RawEditor) -> Result<EditorConfig, ConfigError> {
+    let argv = raw
+        .command
+        .unwrap_or_else(|| DEFAULT_EDITOR.iter().map(|s| (*s).to_owned()).collect());
+    if argv.is_empty() {
+        return Ok(EditorConfig { command: None });
+    }
+    let command = Command::new(argv).map_err(|e| ConfigError::Invalid {
+        field: "editor.command",
+        detail: e.to_string(),
+    })?;
+    Ok(EditorConfig {
+        command: Some(command),
     })
 }
 
@@ -360,6 +394,41 @@ mod tests {
         assert!(config.worktree.copy.is_empty());
         assert!(config.worktree.hooks.is_empty());
         assert_eq!(config.tmux.prefix, "C-Space");
+    }
+
+    #[test]
+    fn no_editor_table_opens_the_worktree_in_zed() {
+        // zax exists to sit beside Zed, so the editor it opens a new worktree
+        // in is the one you are already in unless you say otherwise.
+        let config = config_from("");
+        assert_eq!(
+            config.editor.command.unwrap().argv(),
+            ["zed".to_owned(), "-e".to_owned()]
+        );
+    }
+
+    #[test]
+    fn an_editor_command_replaces_the_default_argv_entirely() {
+        let config = config_from("[editor]\ncommand = [\"code\", \"--new-window\"]");
+        assert_eq!(
+            config.editor.command.unwrap().argv(),
+            ["code".to_owned(), "--new-window".to_owned()]
+        );
+    }
+
+    #[test]
+    fn an_empty_editor_command_is_how_you_turn_opening_off() {
+        // There is no separate on/off key: a command with no program is the
+        // absence of a command, and the type says so rather than a flag some
+        // later caller has to remember to consult.
+        assert_eq!(config_from("[editor]\ncommand = []").editor.command, None);
+    }
+
+    #[test]
+    fn an_editor_command_whose_program_is_blank_is_rejected() {
+        let raw: RawConfig = toml::from_str("[editor]\ncommand = [\"  \"]").unwrap();
+        let err = from_raw(raw, "/home/me").unwrap_err();
+        assert!(err.to_string().contains("editor.command"), "got: {err}");
     }
 
     #[test]

@@ -1006,6 +1006,7 @@ dependencies = [
  "zax-config",
  "zax-domain",
  "zax-exec",
+ "zax-infra-editor",
  "zax-infra-git",
  "zax-infra-github",
  "zax-infra-tmux",
@@ -1036,6 +1037,15 @@ name = "zax-exec"
 version = "0.1.0"
 dependencies = [
  "thiserror",
+]
+
+[[package]]
+name = "zax-infra-editor"
+version = "0.1.0"
+dependencies = [
+ "zax-app",
+ "zax-domain",
+ "zax-exec",
 ]
 
 [[package]]

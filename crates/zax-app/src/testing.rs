@@ -12,8 +12,8 @@ use zax_domain::{
 };
 
 use crate::ports::{
-    Clock, FileSystem, Forge, GitRepo, Multiplexer, PortError, ProcessRunner, PullRequestHead,
-    WorktreeEntry,
+    Clock, Editor, FileSystem, Forge, GitRepo, Multiplexer, PortError, ProcessRunner,
+    PullRequestHead, WorktreeEntry,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -734,5 +734,40 @@ mod tests {
     fn the_clock_fake_does_not_move() {
         let clock = FixedClock::at_unix_seconds(1_700_000_000);
         assert_eq!(clock.now(), clock.now());
+    }
+}
+
+/// An editor that records what it was asked to open.
+#[derive(Debug, Default)]
+pub struct FakeEditor {
+    pub opened: RefCell<Vec<PathBuf>>,
+    failure: Option<PortError>,
+}
+
+impl FakeEditor {
+    /// An editor that cannot be started. The attempt is still recorded, so a
+    /// test can assert what was asked for before it failed.
+    pub fn failing(error: PortError) -> Self {
+        Self {
+            failure: Some(error),
+            ..Self::default()
+        }
+    }
+}
+
+impl Editor for FakeEditor {
+    fn open(&self, path: &Path) -> Result<(), PortError> {
+        self.opened.borrow_mut().push(path.to_owned());
+        match &self.failure {
+            Some(error) => Err(error.clone()),
+            None => Ok(()),
+        }
+    }
+
+    fn probe(&self) -> Result<String, PortError> {
+        match &self.failure {
+            Some(error) => Err(error.clone()),
+            None => Ok("zed 0.0.0".to_owned()),
+        }
     }
 }

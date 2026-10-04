@@ -100,6 +100,7 @@ pub enum SettingKey {
     WorktreeRoot,
     WorktreeCopy,
     WorktreeHooks,
+    EditorCommand,
     TmuxPrefix,
     PrsInclude,
     PrsExclude,
@@ -110,11 +111,12 @@ pub enum SettingKey {
 impl SettingKey {
     /// Display order: grouped as the TOML is, with the repo key last because it
     /// is the one setting that is about zax's own bookkeeping.
-    pub const ALL: [SettingKey; 9] = [
+    pub const ALL: [SettingKey; 10] = [
         SettingKey::AgentCommand,
         SettingKey::WorktreeRoot,
         SettingKey::WorktreeCopy,
         SettingKey::WorktreeHooks,
+        SettingKey::EditorCommand,
         SettingKey::TmuxPrefix,
         SettingKey::PrsInclude,
         SettingKey::PrsExclude,
@@ -127,6 +129,7 @@ impl SettingKey {
         match self {
             Self::AgentCommand => Some("agent"),
             Self::WorktreeRoot | Self::WorktreeCopy | Self::WorktreeHooks => Some("worktree"),
+            Self::EditorCommand => Some("editor"),
             Self::TmuxPrefix => Some("tmux"),
             Self::PrsInclude | Self::PrsExclude | Self::PrsMaxAge => Some("prs"),
             Self::RepoKeyName => None,
@@ -136,7 +139,7 @@ impl SettingKey {
     /// The key within its table.
     pub fn label(self) -> &'static str {
         match self {
-            Self::AgentCommand => "command",
+            Self::AgentCommand | Self::EditorCommand => "command",
             Self::WorktreeRoot => "root",
             Self::WorktreeCopy => "copy",
             Self::WorktreeHooks => "hooks",
@@ -155,6 +158,7 @@ impl SettingKey {
             Self::WorktreeRoot => "worktree.root",
             Self::WorktreeCopy => "worktree.copy",
             Self::WorktreeHooks => "worktree.hooks",
+            Self::EditorCommand => "editor.command",
             Self::TmuxPrefix => "tmux.prefix",
             Self::PrsInclude => "prs.include",
             Self::PrsExclude => "prs.exclude",
@@ -168,7 +172,7 @@ impl SettingKey {
     /// read as a comma-separated list.
     pub fn list_separator(self) -> &'static str {
         match self {
-            Self::AgentCommand => " ",
+            Self::AgentCommand | Self::EditorCommand => " ",
             _ => ", ",
         }
     }
@@ -178,6 +182,7 @@ impl SettingKey {
             Self::AgentCommand
             | Self::WorktreeCopy
             | Self::WorktreeHooks
+            | Self::EditorCommand
             | Self::PrsInclude
             | Self::PrsExclude => SettingShape::List,
             Self::WorktreeRoot | Self::TmuxPrefix | Self::PrsMaxAge | Self::RepoKeyName => {
@@ -193,6 +198,7 @@ impl SettingKey {
             Self::WorktreeRoot => "every worktree lives under <root>/<repo>/<branch>",
             Self::WorktreeCopy => "paths copied into a new worktree, relative to the repository",
             Self::WorktreeHooks => "shell commands run in a new worktree, in order",
+            Self::EditorCommand => "what a new worktree opens in; empty opens nothing",
             Self::TmuxPrefix => "the tmux prefix key, such as C-Space or C-a",
             Self::PrsInclude => "only these repositories; empty means every repository",
             Self::PrsExclude => "never these repositories, even when included",
@@ -207,6 +213,7 @@ impl SettingKey {
             Self::AgentCommand => "claude",
             Self::WorktreeRoot => "~/src/worktrees",
             Self::WorktreeCopy | Self::WorktreeHooks | Self::PrsExclude => "[]",
+            Self::EditorCommand => "zed -e",
             Self::TmuxPrefix => "C-Space",
             Self::PrsInclude => "[] (every repository)",
             Self::PrsMaxAge => "(no limit)",
@@ -554,6 +561,22 @@ mod tests {
     }
 
     #[test]
+    fn the_editor_command_is_an_argv_list_shown_the_way_a_command_line_reads() {
+        // Like `agent.command` and unlike every other list, this is one
+        // command rather than a set of entries, so it reads with spaces.
+        assert_eq!(SettingKey::EditorCommand.shape(), SettingShape::List);
+        assert_eq!(SettingKey::EditorCommand.list_separator(), " ");
+        let row = SettingRow::new(SettingKey::EditorCommand, [None, None, None]);
+        assert_eq!(row.display_effective(), "zed -e");
+    }
+
+    #[test]
+    fn an_empty_editor_command_reads_as_the_setting_that_opens_nothing() {
+        let row = SettingRow::new(SettingKey::EditorCommand, [None, None, list(&[])]);
+        assert_eq!(row.display_effective(), "[]");
+    }
+
+    #[test]
     fn the_highest_layer_defining_a_setting_supplies_the_effective_value() {
         let row = SettingRow::new(
             SettingKey::TmuxPrefix,
@@ -662,6 +685,7 @@ mod tests {
                 SettingKey::AgentCommand,
                 SettingKey::WorktreeCopy,
                 SettingKey::WorktreeHooks,
+                SettingKey::EditorCommand,
                 SettingKey::PrsInclude,
                 SettingKey::PrsExclude,
             ]

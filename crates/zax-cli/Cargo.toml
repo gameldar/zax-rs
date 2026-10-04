@@ -17,6 +17,7 @@ zax-app.workspace = true
 zax-config.workspace = true
 zax-domain.workspace = true
 zax-exec.workspace = true
+zax-infra-editor.workspace = true
 zax-infra-git.workspace = true
 zax-infra-github.workspace = true
 zax-infra-tmux.workspace = true

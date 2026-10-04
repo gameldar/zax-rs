@@ -20,9 +20,13 @@ scrollback intact.
 
 - `tmux`, `git` and `gh` on `PATH`.
 - `gh` already authenticated. zax never manages GitHub auth; it inherits it.
+- `zed` on `PATH`, for opening a new worktree. On macOS the CLI ships inside
+  the application bundle rather than on `PATH`: open Zed and run `cli: install`
+  from the command palette. Set `[editor] command` to use something else, or
+  `[]` to open nothing.
 
-`zax doctor` checks tmux, git, gh and gh's auth, and reports each separately,
-so one missing tool never hides the state of the others.
+`zax doctor` checks tmux, git, gh, gh's auth and the editor, and reports each
+separately, so one missing tool never hides the state of the others.
 
 ## Install
 
@@ -75,15 +79,15 @@ title is what drives Zed's in-progress indicator for a thread. tmux's own
 | `zax session start` | Reattach to a detached session in this worktree, or build a new one |
 | `zax session list` | The zax sessions on the dedicated socket |
 | `zax session kill [name]` | Kill a session. Defaults to this worktree's own, when it has only one |
-| `zax worktree new <branch> [--from <base>] [--no-hooks]` | Branch plus worktree at the canonical path, then copy and hooks |
-| `zax worktree review <pr\|url> [--force] [--no-hooks]` | A pull request's head branch in a worktree, then copy and hooks |
+| `zax worktree new <branch> [--from <base>] [--no-hooks] [--no-open]` | Branch plus worktree at the canonical path, then copy, hooks and the editor |
+| `zax worktree review <pr\|url> [--force] [--no-hooks] [--no-open]` | A pull request's head branch in a worktree, then copy, hooks and the editor |
 | `zax worktree list` | The worktrees zax manages for this repository |
 | `zax worktree rm <branch> [--force]` | Remove one |
 | `zax pane prs-for-review \| branch-status \| my-prs` | Built-in pane processes, normally launched by `session start` |
 | `zax pane exec --title <t> --every <dur> -- <cmd>` | Wrap any command's stdout in a header and refresh loop |
 | `zax config` | View and edit the three config layers, in a popup over the session |
 | `zax config show` | The same view, printed: every setting, its effective value and its origin |
-| `zax doctor` | Verify tmux, git and gh are present and authenticated |
+| `zax doctor` | Verify tmux, git, gh and the editor are present and authenticated |
 
 ## Configuration
 
@@ -170,6 +174,9 @@ command = ["lazygit"]
 root  = "~/src/worktrees"
 copy  = [".env", ".envrc"]
 hooks = ["direnv allow", "bundle install"]
+
+[editor]
+command = ["zed", "-e"]
 
 [tmux]
 prefix = "C-Space"
@@ -377,6 +384,20 @@ Pass `--no-hooks` to skip the hooks. The copies still happen; a file listed
 in `copy` but absent from the source tree is skipped rather than being an
 error, so a repository config can list `.envrc` for the people who use
 direnv.
+
+Last, the finished worktree is opened in `[editor] command`, which defaults to
+`zed -e` and takes the worktree's path as its final argument. This happens
+after the copies and the hooks, so what opens is a worktree that is ready to
+work in rather than one that fills itself in while you look at it. `w` in the
+pull request panes goes through `zax worktree review`, so a review ends in an
+editor window on the branch.
+
+Pass `--no-open` to skip it for one command, or set `command = []` to never
+open anything. An editor that will not start is a warning and not a failed
+command: the worktree was made either way. The command is run with its output
+captured and is waited on, which suits an editor that hands the path to a
+running application and returns - `zed`, `code`, `nvim --remote` - rather than
+a terminal editor expecting this terminal.
 
 ## Sessions
 

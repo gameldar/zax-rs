@@ -9,7 +9,7 @@ use zax_domain::{
     WorktreePathError, WorktreeRoot,
 };
 
-use crate::ports::{FileSystem, Forge, GitRepo, Multiplexer, PortError, WorktreeEntry};
+use crate::ports::{Editor, FileSystem, Forge, GitRepo, Multiplexer, PortError, WorktreeEntry};
 
 /// The `prs-for-review` pane's data source.
 ///
@@ -118,10 +118,11 @@ impl DoctorCheck {
 }
 
 /// Every check runs, so one missing tool does not hide the next.
-pub fn doctor<M: Multiplexer, G: GitRepo, Fg: Forge>(
+pub fn doctor<M: Multiplexer, G: GitRepo, Fg: Forge, E: Editor>(
     mux: &M,
     git: &G,
     forge: &Fg,
+    editor: &E,
 ) -> Vec<DoctorCheck> {
     vec![
         DoctorCheck {
@@ -140,6 +141,10 @@ pub fn doctor<M: Multiplexer, G: GitRepo, Fg: Forge>(
             name: "gh auth",
             result: forge.auth_status(),
         },
+        DoctorCheck {
+            name: "editor",
+            result: editor.probe(),
+        },
     ]
 }
 
@@ -156,7 +161,7 @@ mod tests {
 
     use super::*;
     use crate::ports::{PortError, WorktreeEntry};
-    use crate::testing::{FakeForge, FakeFs, FakeGitRepo, FakeMultiplexer};
+    use crate::testing::{FakeEditor, FakeForge, FakeFs, FakeGitRepo, FakeMultiplexer};
 
     fn pr(number: u32) -> PullRequest {
         PullRequest {
@@ -336,12 +341,13 @@ mod tests {
         let mux = FakeMultiplexer::default();
         let git = FakeGitRepo::new("/Users/me/src/acme", "main");
         let forge = FakeForge::default();
+        let editor = FakeEditor::default();
 
-        let checks = doctor(&mux, &git, &forge);
+        let checks = doctor(&mux, &git, &forge, &editor);
 
         assert_eq!(
             checks.iter().map(|c| c.name).collect::<Vec<_>>(),
-            vec!["tmux", "git", "gh", "gh auth"]
+            vec!["tmux", "git", "gh", "gh auth", "editor"]
         );
         assert!(checks.iter().all(DoctorCheck::is_ok));
     }
@@ -351,8 +357,9 @@ mod tests {
         let mux = FakeMultiplexer::default();
         let git = FakeGitRepo::new("/Users/me/src/acme", "main");
         let forge = FakeForge::failing(PortError::MissingTool { tool: "gh" });
+        let editor = FakeEditor::default();
 
-        let checks = doctor(&mux, &git, &forge);
+        let checks = doctor(&mux, &git, &forge, &editor);
 
         // One missing tool must not hide the state of the others: every check
         // still runs, and each reports its own verdict.
@@ -365,9 +372,31 @@ mod tests {
                 ("tmux", true),
                 ("git", true),
                 ("gh", false),
-                ("gh auth", false)
+                ("gh auth", false),
+                ("editor", true)
             ]
         );
+    }
+
+    #[test]
+    fn doctor_reports_an_editor_that_is_not_installed() {
+        // The `w` row action ends in an editor window, so an editor zax cannot
+        // start is exactly the kind of thing doctor exists to find before the
+        // keystroke does.
+        let mux = FakeMultiplexer::default();
+        let git = FakeGitRepo::new("/Users/me/src/acme", "main");
+        let forge = FakeForge::default();
+        let editor = FakeEditor::failing(PortError::MissingProgram {
+            program: "zed".to_owned(),
+            hint: "install the CLI from the app".to_owned(),
+        });
+
+        let checks = doctor(&mux, &git, &forge, &editor);
+
+        let editor_check = checks.iter().find(|c| c.name == "editor").unwrap();
+        let message = editor_check.result.as_ref().unwrap_err().to_string();
+        assert!(message.contains("zed"), "got: {message}");
+        assert!(message.contains("install the CLI"), "got: {message}");
     }
 
     fn authored(

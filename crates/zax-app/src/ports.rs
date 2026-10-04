@@ -14,6 +14,12 @@ use zax_domain::{
 pub enum PortError {
     #[error("{tool} is not installed or not on PATH")]
     MissingTool { tool: &'static str },
+    /// A program the config named, rather than one of zax's own fixed
+    /// dependencies: which program it is cannot be known at compile time, and
+    /// the way to get it depends on which one it is, so the advice travels
+    /// with the error.
+    #[error("{program} is not installed or not on PATH\n{hint}")]
+    MissingProgram { program: String, hint: String },
     #[error("not authenticated with {tool}: {detail}")]
     NotAuthenticated { tool: &'static str, detail: String },
     #[error("{tool} exited with status {status}: {stderr}")]
@@ -177,6 +183,15 @@ pub trait FileSystem {
     fn exists(&self, path: &Path) -> bool;
     fn create_dir_all(&self, path: &Path) -> Result<(), PortError>;
     fn copy_file(&self, from: &Path, to: &Path) -> Result<(), PortError>;
+}
+
+/// The editor a finished worktree is handed to.
+pub trait Editor {
+    /// Open `path`. Returns once the editor has been asked, not once it has
+    /// been closed.
+    fn open(&self, path: &Path) -> Result<(), PortError>;
+    /// For `zax doctor`: can the configured editor be started at all?
+    fn probe(&self) -> Result<String, PortError>;
 }
 
 pub trait Clock {

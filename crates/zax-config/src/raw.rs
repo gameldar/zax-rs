@@ -13,6 +13,7 @@ pub struct RawConfig {
     pub worktree: Option<RawWorktree>,
     pub tmux: Option<RawTmux>,
     pub prs: Option<RawPrs>,
+    pub editor: Option<RawEditor>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
@@ -56,6 +57,13 @@ pub struct RawWorktree {
     pub root: Option<String>,
     pub copy: Option<Vec<String>>,
     pub hooks: Option<Vec<String>>,
+}
+
+/// The `[editor]` table: what a freshly made worktree is opened in.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RawEditor {
+    pub command: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]

@@ -8,6 +8,7 @@ license.workspace = true
 
 [dependencies]
 serde_json.workspace = true
+zax-domain.workspace = true
 zax-protocol.workspace = true
 
 [lints]

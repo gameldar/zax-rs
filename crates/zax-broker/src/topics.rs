@@ -165,35 +165,40 @@ pub fn encode_work(work: &WorkIndex) -> Value {
     serde_json::to_value(dto).unwrap_or(Value::Null)
 }
 
+/// Reads a `work` snapshot. Only a snapshot of the wrong overall shape is an
+/// error. A worktree, session or PR whose names do not parse is dropped on
+/// its own, and an unknown state string falls back to the field's neutral
+/// value, so one odd row (or a newer broker's new state) cannot blank the
+/// whole index.
 pub fn decode_work(value: &Value) -> Result<WorkIndex, String> {
     let dto: WorkDto = serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
     let worktrees = dto
         .worktrees
         .into_iter()
-        .map(|w| {
-            Ok(Worktree {
-                repo: RootRepoName::parse(&w.repo).map_err(|e| e.to_string())?,
-                branch: BranchName::parse_foreign(&w.branch).map_err(|e| e.to_string())?,
+        .filter_map(|w| {
+            Some(Worktree {
+                repo: RootRepoName::parse(&w.repo).ok()?,
+                branch: BranchName::parse_foreign(&w.branch).ok()?,
                 path: PathBuf::from(w.path),
             })
         })
-        .collect::<Result<_, String>>()?;
+        .collect();
     let sessions = dto
         .sessions
         .into_iter()
-        .map(|s| {
-            Ok(LiveSession {
-                name: SessionName::parse(&s.name).map_err(|e| e.to_string())?,
+        .filter_map(|s| {
+            Some(LiveSession {
+                name: SessionName::parse(&s.name).ok()?,
                 attached: s.attached,
                 path: PathBuf::from(s.path),
             })
         })
-        .collect::<Result<_, String>>()?;
+        .collect();
     let prs = dto
         .prs
         .into_iter()
-        .map(|p| pr_from_dto(p).map(MyPullRequest::new))
-        .collect::<Result<_, String>>()?;
+        .filter_map(|p| pr_from_dto(p).map(MyPullRequest::new))
+        .collect();
     Ok(WorkIndex {
         worktrees,
         sessions,
@@ -251,30 +256,27 @@ fn pr_to_dto(s: &PullRequestStatus) -> PrDto {
     }
 }
 
-fn pr_from_dto(p: PrDto) -> Result<PullRequestStatus, String> {
+fn pr_from_dto(p: PrDto) -> Option<PullRequestStatus> {
     let checks = match p.checks.as_str() {
         "Passing" => CheckState::Passing,
         "Failing" => CheckState::Failing,
         "Pending" => CheckState::Pending,
-        "None" => CheckState::None,
-        other => return Err(format!("unknown check state `{other}`")),
+        _ => CheckState::None,
     };
     let review = match p.review.as_str() {
         "Approved" => ReviewState::Approved,
         "ChangesRequested" => ReviewState::ChangesRequested,
         "ReviewRequired" => ReviewState::ReviewRequired,
-        "None" => ReviewState::None,
-        other => return Err(format!("unknown review state `{other}`")),
+        _ => ReviewState::None,
     };
     let mergeable = match p.mergeable.as_str() {
         "Mergeable" => Mergeable::Mergeable,
         "Conflicting" => Mergeable::Conflicting,
-        "Unknown" => Mergeable::Unknown,
-        other => return Err(format!("unknown mergeable state `{other}`")),
+        _ => Mergeable::Unknown,
     };
-    Ok(PullRequestStatus {
+    Some(PullRequestStatus {
         pr: PullRequest {
-            repo: RepoSlug::parse(&p.repo).map_err(|e| e.to_string())?,
+            repo: RepoSlug::parse(&p.repo).ok()?,
             number: p.number,
             title: p.title,
             url: p.url,
@@ -285,6 +287,8 @@ fn pr_from_dto(p: PrDto) -> Result<PullRequestStatus, String> {
         review,
         unresolved_threads: p.unresolved_threads,
         mergeable,
+        // The head is optional, so one that does not parse is treated as
+        // absent rather than costing the row.
         head: p.head.and_then(|h| BranchName::parse_foreign(&h).ok()),
     })
 }
@@ -384,5 +388,65 @@ mod tests {
             },
         );
         assert_eq!(key.source, r#"{"provider":["zax-jira"]}"#);
+    }
+
+    fn pr_row(
+        repo: &str,
+        checks: &str,
+        review: &str,
+        mergeable: &str,
+        head: Option<&str>,
+    ) -> serde_json::Value {
+        json!({"repo":repo,"number":1,"title":"t","url":"u","is_draft":false,"created_at":5,
+            "checks":checks,"review":review,"unresolved_threads":0,"mergeable":mergeable,"head":head})
+    }
+
+    #[test]
+    fn a_bad_worktree_row_is_dropped_and_the_rest_kept() {
+        let value = json!({"worktrees":[
+            {"repo":"omega","branch":"OMEGA-1-a","path":"/w/a"},
+            {"repo":"","branch":"OMEGA-2-b","path":"/w/b"}
+        ],"sessions":[],"prs":[]});
+        let work = decode_work(&value).unwrap();
+        assert_eq!(work.worktrees.len(), 1);
+        assert_eq!(work.worktrees[0].path, PathBuf::from("/w/a"));
+    }
+
+    #[test]
+    fn a_bad_session_row_is_dropped_and_the_rest_kept() {
+        let value = json!({"worktrees":[],"sessions":[
+            {"name":"not a session","attached":false,"path":"/w/a"},
+            {"name":"zax-omega-x-00000000","attached":true,"path":"/w/b"}
+        ],"prs":[]});
+        let work = decode_work(&value).unwrap();
+        assert_eq!(work.sessions.len(), 1);
+        assert!(work.sessions[0].attached);
+    }
+
+    #[test]
+    fn a_bad_pr_row_is_dropped_and_the_rest_kept() {
+        let value = json!({"worktrees":[],"sessions":[],"prs":[
+            pr_row("nonsense", "Passing", "Approved", "Mergeable", None),
+            pr_row("acme/omega", "Passing", "Approved", "Mergeable", None)
+        ]});
+        let work = decode_work(&value).unwrap();
+        assert_eq!(work.prs.len(), 1);
+    }
+
+    #[test]
+    fn unknown_state_strings_degrade_the_field_not_the_row() {
+        let value = json!({"worktrees":[],"sessions":[],"prs":[
+            pr_row("acme/omega", "Flaky", "Maybe", "Soon", Some("OMEGA-1-a"))
+        ]});
+        let work = decode_work(&value).unwrap();
+        let status = &work.prs[0].status;
+        assert_eq!(status.pr.checks, CheckState::None);
+        assert_eq!(status.review, ReviewState::None);
+        assert_eq!(status.mergeable, Mergeable::Unknown);
+    }
+
+    #[test]
+    fn a_work_index_of_the_wrong_shape_is_an_error() {
+        assert!(decode_work(&json!(null)).is_err());
     }
 }

@@ -5,11 +5,16 @@
 #   hang      never answers tickets/assigned
 #   die       exits after initialize
 #   closeout  closes stdout after initialize but keeps running
+#   noauth    answers initialize with a not_authenticated error
 # Every tickets/assigned is counted in $FAKE_COUNT if set.
 while IFS= read -r line; do
   id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9]*\).*/\1/p')
   case "$line" in
     *'"initialize"'*)
+      if [ "$FAKE_MODE" = noauth ]; then
+        printf '{"jsonrpc":"2.0","id":%s,"error":{"code":-32001,"message":"not logged in; run `acli jira auth login`","data":{"kind":"not_authenticated"}}}\n' "$id"
+        continue
+      fi
       proto=1; [ "$FAKE_MODE" = badproto ] && proto=2
       printf '{"jsonrpc":"2.0","id":%s,"result":{"protocol":%s,"name":"Fake","capabilities":{"transitions":true},"poll":"1m"}}\n' "$id" "$proto"
       [ "$FAKE_MODE" = die ] && exit 3

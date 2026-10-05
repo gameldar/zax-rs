@@ -4,7 +4,10 @@
 //! The child is started on first use and kept. A child that exits, closes
 //! its output or does not answer in time is killed, and the next start waits
 //! out an exponential backoff, so a broken provider is retried without being
-//! hammered. The last good value is the hub's to keep; this only reports.
+//! hammered. A provider that answers `initialize` with an error is healthy
+//! but refusing (logged out, say), so it is reaped without growing the
+//! backoff and is tried again as soon as anyone asks. The last good value is
+//! the hub's to keep; this only reports.
 
 use std::io::{BufRead, BufReader};
 use std::process::{Child, ChildStdin, Command, Stdio};
@@ -24,6 +27,9 @@ const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 const DEFAULT_POLL: Duration = Duration::from_secs(120);
 const BACKOFF_MIN: Duration = Duration::from_secs(1);
 const BACKOFF_MAX: Duration = Duration::from_secs(300);
+/// The soonest a failing provider asks to be fetched again, so a backoff
+/// that is about to end does not turn into a busy loop.
+const RETRY_FLOOR: Duration = Duration::from_secs(1);
 
 struct Running {
     child: Child,
@@ -47,6 +53,9 @@ pub struct ProviderSource {
     next_id: u64,
     backoff: Duration,
     retry_at: Option<Instant>,
+    /// What last broke the provider, repeated while the backoff runs so the
+    /// pane keeps saying what is wrong rather than only that something is.
+    last_error: Option<String>,
     poll: Duration,
 }
 
@@ -59,6 +68,7 @@ impl ProviderSource {
             next_id: 1,
             backoff: BACKOFF_MIN,
             retry_at: None,
+            last_error: None,
             poll: DEFAULT_POLL,
         }
     }
@@ -66,6 +76,18 @@ impl ProviderSource {
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = timeout;
         self
+    }
+
+    /// While failing, the next fetch is due when the backoff ends rather
+    /// than a whole poll later, so restarts follow the backoff schedule.
+    fn interval_at(&self, now: Instant) -> Duration {
+        match self.retry_at {
+            Some(at) => at
+                .saturating_duration_since(now)
+                .min(self.poll)
+                .max(RETRY_FLOOR),
+            None => self.poll,
+        }
     }
 
     fn program(&self) -> &str {
@@ -77,8 +99,13 @@ impl ProviderSource {
             return Ok(());
         }
         if let Some(at) = self.retry_at {
-            if Instant::now() < at {
-                return Err(format!("{} failed; restarting shortly", self.program()));
+            let now = Instant::now();
+            if now < at {
+                let last = self
+                    .last_error
+                    .clone()
+                    .unwrap_or_else(|| format!("{} failed", self.program()));
+                return Err(format!("{last} (retrying in {}s)", ceil_secs(at - now)));
             }
         }
         match self.start() {
@@ -92,15 +119,26 @@ impl ProviderSource {
                 self.running = Some(running);
                 Ok(())
             }
-            Err(e) => {
-                self.fail();
-                Err(e)
+            Err(RpcFailure::Provider(message)) => {
+                // It answered, so it is healthy; what it refused (a login,
+                // say) may be put right at any moment, and the next try
+                // must not wait out a backoff for it. Dropping the result
+                // has already reaped the child.
+                self.retry_at = None;
+                Err(message)
+            }
+            Err(RpcFailure::Broken(message)) => {
+                self.fail(&message);
+                Err(message)
             }
         }
     }
 
-    fn start(&mut self) -> Result<Running, String> {
-        let (program, args) = self.argv.split_first().ok_or("no provider command")?;
+    fn start(&mut self) -> Result<Running, RpcFailure> {
+        let (program, args) = self
+            .argv
+            .split_first()
+            .ok_or_else(|| RpcFailure::Broken("no provider command".into()))?;
         let mut child = Command::new(program)
             .args(args)
             .stdin(Stdio::piped())
@@ -108,14 +146,20 @@ impl ProviderSource {
             .stderr(Stdio::inherit())
             .spawn()
             .map_err(|e| {
-                if e.kind() == std::io::ErrorKind::NotFound {
+                RpcFailure::Broken(if e.kind() == std::io::ErrorKind::NotFound {
                     format!("{program} is not installed or not on PATH")
                 } else {
                     format!("could not start {program}: {e}")
-                }
+                })
             })?;
-        let stdin = child.stdin.take().ok_or("provider has no stdin")?;
-        let stdout = child.stdout.take().ok_or("provider has no stdout")?;
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| RpcFailure::Broken("provider has no stdin".into()))?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| RpcFailure::Broken("provider has no stdout".into()))?;
         let (tx, lines) = mpsc::channel();
         thread::spawn(move || {
             for line in BufReader::new(stdout).lines().map_while(Result::ok) {
@@ -138,7 +182,7 @@ impl ProviderSource {
         let params = serde_json::to_value(InitializeParams {
             protocol: PROTOCOL_VERSION,
         })
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| RpcFailure::Broken(e.to_string()))?;
         let value = request(
             &mut running,
             &mut self.next_id,
@@ -148,21 +192,24 @@ impl ProviderSource {
             params,
         )?;
         let init: InitializeResult = serde_json::from_value(value).map_err(|e| {
-            format!("{program} answered initialize in a shape zax does not know: {e}")
+            RpcFailure::Broken(format!(
+                "{program} answered initialize in a shape zax does not know: {e}"
+            ))
         })?;
         if init.protocol != PROTOCOL_VERSION {
-            return Err(format!(
+            return Err(RpcFailure::Broken(format!(
                 "{} speaks protocol {}, zax speaks {PROTOCOL_VERSION}",
                 init.name, init.protocol
-            ));
+            )));
         }
         running.init = init;
         Ok(running)
     }
 
     /// Kill the child and schedule the next start.
-    fn fail(&mut self) {
+    fn fail(&mut self, message: &str) {
         self.running = None;
+        self.last_error = Some(message.to_owned());
         self.retry_at = Some(Instant::now() + self.backoff);
         self.backoff = (self.backoff * 2).min(BACKOFF_MAX);
     }
@@ -186,15 +233,21 @@ impl ProviderSource {
                 // backoff; one that initializes and then dies keeps growing it.
                 self.backoff = BACKOFF_MIN;
                 self.retry_at = None;
+                self.last_error = None;
                 Ok(value)
             }
             Err(RpcFailure::Provider(message)) => Err(message),
             Err(RpcFailure::Broken(message)) => {
-                self.fail();
+                self.fail(&message);
                 Err(message)
             }
         }
     }
+}
+
+/// Whole seconds, rounded up, so a wait under a second still reads as 1s.
+fn ceil_secs(d: Duration) -> u64 {
+    d.as_secs() + u64::from(d.subsec_nanos() > 0)
 }
 
 enum RpcFailure {
@@ -202,14 +255,6 @@ enum RpcFailure {
     Provider(String),
     /// The provider died, closed its output or did not answer.
     Broken(String),
-}
-
-impl From<RpcFailure> for String {
-    fn from(f: RpcFailure) -> Self {
-        match f {
-            RpcFailure::Provider(m) | RpcFailure::Broken(m) => m,
-        }
-    }
 }
 
 fn request(
@@ -302,7 +347,7 @@ impl Source for ProviderSource {
     }
 
     fn interval(&self) -> Duration {
-        self.poll
+        self.interval_at(Instant::now())
     }
 }
 
@@ -405,12 +450,52 @@ mod tests {
     }
 
     #[test]
-    fn a_provider_that_died_is_restarted_on_the_next_fetch_after_backoff() {
+    fn inside_the_backoff_window_the_last_real_error_is_repeated() {
+        let mut source = ProviderSource::new(fake("die"));
+        let first = source.fetch().unwrap_err();
+        assert!(first.contains("exited with status 3"), "{first}");
+        // Inside the backoff window the error is immediate, and still says
+        // what went wrong rather than only that something did. The window
+        // is stretched so a loaded machine cannot outlast it.
+        source.retry_at = Some(Instant::now() + Duration::from_secs(30));
+        let err = source.fetch().unwrap_err();
+        assert_eq!(err, format!("{first} (retrying in 30s)"));
+    }
+
+    #[test]
+    fn an_error_answer_to_initialize_does_not_grow_the_backoff() {
+        let mut source = ProviderSource::new(fake("noauth"));
+        let err = source.fetch().unwrap_err();
+        assert!(err.contains("acli jira auth login"), "{err}");
+        assert!(source.running.is_none(), "the child is reaped");
+        assert_eq!(source.backoff, BACKOFF_MIN, "it answered, so it is healthy");
+        assert_eq!(source.retry_at, None);
+        // So a retry after logging in starts it again at once.
+        let again = source.fetch().unwrap_err();
+        assert!(!again.contains("retrying"), "{again}");
+        assert!(again.contains("acli jira auth login"), "{again}");
+    }
+
+    #[test]
+    fn while_failing_the_interval_follows_the_backoff() {
         let mut source = ProviderSource::new(fake("die"));
         assert!(source.fetch().is_err());
-        // Inside the backoff window the error is immediate and says so.
-        let err = source.fetch().unwrap_err();
-        assert!(err.contains("restarting"), "{err}");
+        assert_eq!(
+            source.interval(),
+            Duration::from_secs(1),
+            "the restart is due when the backoff ends, not at the next poll"
+        );
+        let now = Instant::now();
+        source.retry_at = Some(now + Duration::from_secs(30));
+        assert_eq!(source.interval_at(now), Duration::from_secs(30));
+        source.retry_at = Some(now + Duration::from_secs(600));
+        assert_eq!(
+            source.interval_at(now),
+            Duration::from_secs(60),
+            "never later than the provider's own poll"
+        );
+        source.retry_at = Some(now + Duration::from_millis(10));
+        assert_eq!(source.interval_at(now), Duration::from_secs(1), "floored");
     }
 
     #[test]

@@ -998,6 +998,7 @@ dependencies = [
 name = "zax-broker"
 version = "0.1.0"
 dependencies = [
+ "serde",
  "serde_json",
  "zax-domain",
  "zax-protocol",

@@ -5,6 +5,9 @@
 //! and performs its row actions either through the broker (transitions) or
 //! by running zax and the editor directly.
 
+use std::path::Path;
+use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{anyhow, Result};
@@ -38,6 +41,12 @@ pub fn run() -> Result<()> {
     let Some(provider) = ctx.config.tickets.provider.clone() else {
         return idle(TicketsPane::unconfigured());
     };
+    let main_worktree = {
+        use zax_app::GitRepo;
+        ctx.git.main_worktree()?
+    };
+    let provider_argv = anchor_provider(provider.argv(), &main_worktree);
+    let provider_name = provider_label(&provider_argv);
     let zax = wiring::zax_bin()?;
     let zax_program = zax.to_string_lossy().into_owned();
     let paths = BrokerPaths::resolve().map_err(|e| anyhow!(e))?;
@@ -47,7 +56,7 @@ pub fn run() -> Result<()> {
     let tickets_key = SourceKey::new(
         TICKETS,
         &TicketsSpec {
-            provider: provider.argv().to_vec(),
+            provider: provider_argv,
         },
     );
     let work_key = SourceKey::new(
@@ -63,11 +72,22 @@ pub fn run() -> Result<()> {
     let mut screen = Screen::enter()?;
     let mut client: Option<Client> = None;
     let mut next_connect = Instant::now();
+    // At most one `zax worktree new` at a time: the branch it is making, and
+    // where its result arrives.
+    let mut starting: Option<(String, Receiver<Option<String>>)> = None;
+
+    // The first connect can block while a broker is spawned; the pane is
+    // drawn before it so it is never blank.
+    draw(&mut screen, &pane)?;
 
     loop {
         if client.is_none() && Instant::now() >= next_connect {
+            let connected = Client::connect_or_spawn(&paths, identity, &spawn);
+            // Timed from when the attempt ended, not when it began: a failed
+            // attempt blocks for seconds, and counting that time would leave
+            // the pane frozen for most of every interval.
             next_connect = Instant::now() + RECONNECT_EVERY;
-            match Client::connect_or_spawn(&paths, identity, &spawn) {
+            match connected {
                 Ok(c) => {
                     let subscribed = c
                         .subscribe(tickets_key.clone())
@@ -99,9 +119,29 @@ pub fn run() -> Result<()> {
             }
         }
 
-        screen
-            .terminal
-            .draw(|f| pane.render(f, f.area(), SystemTime::now()))?;
+        if let Some((_, done)) = &starting {
+            match done.try_recv() {
+                Ok(Some(message)) => {
+                    pane.notice(message);
+                    starting = None;
+                }
+                Ok(None) => {
+                    if let Some(c) = &client {
+                        // The new worktree should show on its row now, not at
+                        // the next minute's poll.
+                        let _ = c.refresh(work_key.clone());
+                    }
+                    starting = None;
+                }
+                Err(TryRecvError::Empty) => {}
+                Err(TryRecvError::Disconnected) => {
+                    pane.notice("worktree new: the start was lost".to_owned());
+                    starting = None;
+                }
+            }
+        }
+
+        draw(&mut screen, &pane)?;
 
         if !event::poll(TICK)? {
             continue;
@@ -115,45 +155,58 @@ pub fn run() -> Result<()> {
                         let _ = c.refresh(work_key.clone());
                     }
                 }
+                // The two provider calls stay synchronous, since the picker
+                // needs the answer before anything else makes sense, but the
+                // pane says what it is waiting for before it waits.
                 PaneAction::ListTransitions { key } => match &client {
-                    Some(c) => match c
-                        .call(
-                            tickets_key.clone(),
-                            method::TRANSITIONS,
-                            json!({ "key": key.as_str() }),
-                            CALL_TIMEOUT,
-                        )
-                        .and_then(|v| decode_transitions(&v))
-                    {
-                        Ok(transitions) => pane.show_picker(key, transitions),
-                        Err(e) => pane.notice(format!("transitions: {e}")),
-                    },
+                    Some(c) => {
+                        pane.notice(format!("asking {provider_name} for transitions..."));
+                        draw(&mut screen, &pane)?;
+                        match c
+                            .call(
+                                tickets_key.clone(),
+                                method::TRANSITIONS,
+                                json!({ "key": key.as_str() }),
+                                CALL_TIMEOUT,
+                            )
+                            .and_then(|v| decode_transitions(&v))
+                        {
+                            Ok(transitions) => pane.show_picker(key, transitions),
+                            Err(e) => pane.notice(format!("transitions: {e}")),
+                        }
+                    }
                     None => pane.notice("not connected to the broker".to_owned()),
                 },
                 // A transition that worked needs no refresh here: the broker
                 // refetches a source after every successful call.
                 PaneAction::Transition { key, id } => match &client {
                     Some(c) => {
-                        if let Err(e) = c.call(
+                        pane.notice(format!("moving {key}..."));
+                        draw(&mut screen, &pane)?;
+                        match c.call(
                             tickets_key.clone(),
                             method::TRANSITION,
                             json!({ "key": key.as_str(), "id": id }),
                             CALL_TIMEOUT,
                         ) {
-                            pane.notice(format!("transition: {e}"));
+                            Ok(_) => pane.notice(format!("moved {key}")),
+                            Err(e) => pane.notice(format!("transition: {e}")),
                         }
                     }
                     None => pane.notice("not connected to the broker".to_owned()),
                 },
-                PaneAction::StartWork { branch } => {
-                    if let Some(message) = start_work(&SystemExec, &zax_program, branch.as_str()) {
-                        pane.notice(message);
-                    } else if let Some(c) = &client {
-                        // The new worktree should show on its row now, not at
-                        // the next minute's poll.
-                        let _ = c.refresh(work_key.clone());
+                // Off the UI thread: `worktree new` runs the repository's
+                // setup hooks, which can take minutes.
+                PaneAction::StartWork { branch } => match &starting {
+                    Some((already, _)) => pane.notice(format!("already starting {already}")),
+                    None => {
+                        let branch = branch.as_str().to_owned();
+                        pane.notice(format!("starting {branch}..."));
+                        let done =
+                            spawn_start_work(SystemExec, zax_program.clone(), branch.clone());
+                        starting = Some((branch, done));
                     }
-                }
+                },
                 PaneAction::OpenWorktree { path, others } => match editor.open(&path) {
                     Err(e) => pane.notice(format!("editor: {e}")),
                     Ok(()) if others > 0 => {
@@ -180,6 +233,56 @@ pub fn run() -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn draw(screen: &mut Screen, pane: &TicketsPane) -> Result<()> {
+    screen
+        .terminal
+        .draw(|f| pane.render(f, f.area(), SystemTime::now()))?;
+    Ok(())
+}
+
+/// The provider argv as the broker should run it.
+///
+/// The broker is shared by every repository and inherits nothing from the
+/// pane that happened to start it, so a relative path in the program would
+/// resolve against the wrong directory, and two repositories configuring
+/// the same relative path would share one source. A path is anchored at
+/// the repository's main worktree, which is where the layer that names it
+/// lives. A bare name is a PATH lookup, which means the same thing
+/// everywhere, so it is left alone.
+pub(crate) fn anchor_provider(argv: &[String], main_worktree: &Path) -> Vec<String> {
+    let mut argv = argv.to_vec();
+    if let Some(program) = argv.first_mut() {
+        if program.contains('/') && Path::new(program.as_str()).is_relative() {
+            *program = main_worktree.join(&*program).to_string_lossy().into_owned();
+        }
+    }
+    argv
+}
+
+/// What the pane calls the provider while it waits on it: the program's
+/// file name, which is enough to tell `zax-jira` from anything else.
+fn provider_label(argv: &[String]) -> String {
+    argv.first()
+        .and_then(|p| Path::new(p).file_name())
+        .map_or_else(
+            || "the provider".to_owned(),
+            |n| n.to_string_lossy().into_owned(),
+        )
+}
+
+/// Run `start_work` on its own thread; the result arrives on the receiver.
+fn spawn_start_work<E: Exec + Send + 'static>(
+    exec: E,
+    zax: String,
+    branch: String,
+) -> Receiver<Option<String>> {
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        let _ = tx.send(start_work(&exec, &zax, &branch));
+    });
+    rx
 }
 
 fn apply_tickets(pane: &mut TicketsPane, snapshot: Snapshot) {
@@ -250,9 +353,71 @@ fn start_work<E: Exec>(exec: &E, zax: &str, branch: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)]
-    use zax_exec::{Output, RecordingExec};
+    use std::path::Path;
+    use std::time::Duration;
 
-    use super::start_work;
+    use zax_exec::{Exec, ExecError, Output, RecordingExec};
+
+    use super::{anchor_provider, spawn_start_work, start_work};
+
+    fn argv(parts: &[&str]) -> Vec<String> {
+        parts.iter().map(|p| (*p).to_owned()).collect()
+    }
+
+    #[test]
+    fn a_relative_provider_path_is_anchored_at_the_main_worktree() {
+        // The broker is shared by every repository and started from
+        // whichever pane got there first, so a relative path would resolve
+        // against the wrong directory and two repos' providers would alias.
+        let anchored = anchor_provider(
+            &argv(&["./target/debug/zax-jira", "--verbose"]),
+            Path::new("/src/omega"),
+        );
+        assert_eq!(
+            anchored,
+            argv(&["/src/omega/./target/debug/zax-jira", "--verbose"])
+        );
+        assert_eq!(
+            anchor_provider(&argv(&["bin/jira"]), Path::new("/src/omega")),
+            argv(&["/src/omega/bin/jira"])
+        );
+    }
+
+    #[test]
+    fn a_bare_or_absolute_provider_is_left_alone() {
+        // A bare name is a PATH lookup, which means the same thing anywhere.
+        for given in [argv(&["zax-jira", "x"]), argv(&["/usr/bin/zax-jira"])] {
+            assert_eq!(anchor_provider(&given, Path::new("/src/omega")), given);
+        }
+        assert!(anchor_provider(&[], Path::new("/src/omega")).is_empty());
+    }
+
+    /// `RecordingExec` is not `Send`; the background start needs an exec
+    /// that can cross to its thread.
+    struct Refusing;
+
+    impl Exec for Refusing {
+        fn exec(
+            &self,
+            _program: &str,
+            _args: &[String],
+            _cwd: Option<&Path>,
+            _env: &[(String, String)],
+        ) -> Result<Output, ExecError> {
+            Ok(Output {
+                status: 1,
+                stdout: String::new(),
+                stderr: "zax: branch exists\n".into(),
+            })
+        }
+    }
+
+    #[test]
+    fn a_background_start_posts_its_result_back() {
+        let done = spawn_start_work(Refusing, "zax".to_owned(), "OMEGA-1-go".to_owned());
+        let message = done.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(message.as_deref(), Some("worktree new: branch exists"));
+    }
 
     #[test]
     fn start_work_runs_worktree_new_with_the_branch() {

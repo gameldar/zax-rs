@@ -39,7 +39,10 @@ pub struct EditorConfig {
 }
 
 /// Which ticket provider the tickets pane runs. A layer-2 provider is a
-/// command the repository runs, like its panes and hooks.
+/// command the repository runs, like its panes and hooks, except that it is
+/// run by the shared per-user broker, outside the repository's session. A
+/// relative program path is anchored at the repository's main worktree
+/// before it reaches the broker.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TicketsConfig {
     pub provider: Option<Command>,

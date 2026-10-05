@@ -28,6 +28,11 @@ const IDLE_EXIT: Duration = Duration::from_secs(30);
 const WORK_INTERVAL: Duration = Duration::from_secs(60);
 
 pub fn run() -> Result<()> {
+    // The broker outlives the pane that spawned it and serves every
+    // repository, so it must not hold that pane's worktree as its cwd: the
+    // directory could be removed, and nothing it runs should depend on it.
+    std::env::set_current_dir(wiring::home()?)
+        .map_err(|e| anyhow!("could not change to the home directory: {e}"))?;
     // `ZAX_BROKER_DIR` puts socket, lock and log in one directory. It exists
     // only so tests can run a broker without touching the real one; nothing
     // in zax itself sets it.

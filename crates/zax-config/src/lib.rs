@@ -3,13 +3,15 @@
 //!
 //! Layer 2 is a trust boundary. It is a file checked into somebody else's
 //! repository, and zax runs what it says: pane commands are executed when a
-//! session starts and `[worktree] hooks` are executed through `sh -c` when a
-//! worktree is made. That is the intended design of a layer whose purpose is
-//! shipping a repo's own layout, but it means opening an untrusted repository
-//! with zax as the agent entry point runs that repository's configuration. The
-//! values that are not already "the repo can run commands" are parsed strictly
-//! here for that reason: the override `name`, the tmux prefix and the `copy`
-//! list.
+//! session starts, `[worktree] hooks` are executed through `sh -c` when a
+//! worktree is made, and a `[tickets] provider` is started by the shared
+//! per-user broker, which runs it outside the repository's session and keeps
+//! it running while any pane subscribes to it. That is the intended design
+//! of a layer whose purpose is shipping a repo's own layout, but it means
+//! opening an untrusted repository with zax as the agent entry point runs
+//! that repository's configuration. The values that are not already "the
+//! repo can run commands" are parsed strictly here for that reason: the
+//! override `name`, the tmux prefix and the `copy` list.
 
 pub mod draft;
 pub mod error;

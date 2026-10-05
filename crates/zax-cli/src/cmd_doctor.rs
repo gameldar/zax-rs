@@ -44,7 +44,13 @@ pub fn run() -> Result<()> {
     // configured. Starting it and reading its `initialize` answer is the one
     // check that covers a wrong path, a bad build and a protocol mismatch.
     if let Some(provider) = &ctx.config.tickets.provider {
-        match zax_broker::provider_source::probe(provider.argv().to_vec()) {
+        // Probed exactly as the broker will run it, relative path anchored.
+        let main_worktree = {
+            use zax_app::GitRepo;
+            ctx.git.main_worktree()?
+        };
+        let argv = crate::cmd_tickets::anchor_provider(provider.argv(), &main_worktree);
+        match zax_broker::provider_source::probe(argv) {
             Ok(detail) => println!("ok    {:<8} {detail}", "tickets"),
             Err(error) => {
                 all_ok = false;

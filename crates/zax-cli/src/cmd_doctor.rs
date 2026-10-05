@@ -49,7 +49,9 @@ pub fn run() -> Result<()> {
             use zax_app::GitRepo;
             ctx.git.main_worktree()?
         };
-        let argv = crate::cmd_tickets::anchor_provider(provider.argv(), &main_worktree);
+        let home = crate::wiring::home().ok();
+        let argv =
+            crate::cmd_tickets::anchor_provider(provider.argv(), &main_worktree, home.as_deref());
         match zax_broker::provider_source::probe(argv) {
             Ok(detail) => println!("ok    {:<8} {detail}", "tickets"),
             Err(error) => {

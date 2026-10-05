@@ -29,9 +29,11 @@ use crate::wiring;
 
 /// How long the loop waits for a keystroke before re-checking the broker.
 const TICK: Duration = Duration::from_millis(250);
-/// A provider call can wait on Jira; the provider's own timeout is 30 s, so
-/// this only fires when the broker itself has stopped answering.
-const CALL_TIMEOUT: Duration = Duration::from_secs(40);
+/// A provider call can wait on Jira, and the source's worker runs one thing
+/// at a time, so a call can queue behind a fetch already in flight: up to
+/// 30 s for that fetch plus 30 s for the call, each the provider's own
+/// timeout. Past that margin the broker itself has stopped answering.
+const CALL_TIMEOUT: Duration = Duration::from_secs(65);
 /// A failed connect blocks for a few seconds while it waits for a spawned
 /// broker, so it is retried on a timer rather than on every tick.
 const RECONNECT_EVERY: Duration = Duration::from_secs(5);
@@ -45,7 +47,8 @@ pub fn run() -> Result<()> {
         use zax_app::GitRepo;
         ctx.git.main_worktree()?
     };
-    let provider_argv = anchor_provider(provider.argv(), &main_worktree);
+    let home = wiring::home().ok();
+    let provider_argv = anchor_provider(provider.argv(), &main_worktree, home.as_deref());
     let provider_name = provider_label(&provider_argv);
     let zax = wiring::zax_bin()?;
     let zax_program = zax.to_string_lossy().into_owned();
@@ -249,12 +252,22 @@ fn draw(screen: &mut Screen, pane: &TicketsPane) -> Result<()> {
 /// resolve against the wrong directory, and two repositories configuring
 /// the same relative path would share one source. A path is anchored at
 /// the repository's main worktree, which is where the layer that names it
-/// lives. A bare name is a PATH lookup, which means the same thing
-/// everywhere, so it is left alone.
-pub(crate) fn anchor_provider(argv: &[String], main_worktree: &Path) -> Vec<String> {
+/// lives. A leading `~/` is the user's home, as a shell would read it, so
+/// it is expanded first (and left as written when there is no home, where
+/// anchoring it would only hide the mistake). A bare name is a PATH lookup,
+/// which means the same thing everywhere, so it is left alone.
+pub(crate) fn anchor_provider(
+    argv: &[String],
+    main_worktree: &Path,
+    home: Option<&Path>,
+) -> Vec<String> {
     let mut argv = argv.to_vec();
     if let Some(program) = argv.first_mut() {
-        if program.contains('/') && Path::new(program.as_str()).is_relative() {
+        if let Some(rest) = program.strip_prefix("~/") {
+            if let Some(home) = home {
+                *program = home.join(rest).to_string_lossy().into_owned();
+            }
+        } else if program.contains('/') && Path::new(program.as_str()).is_relative() {
             *program = main_worktree.join(&*program).to_string_lossy().into_owned();
         }
     }
@@ -372,14 +385,34 @@ mod tests {
         let anchored = anchor_provider(
             &argv(&["./target/debug/zax-jira", "--verbose"]),
             Path::new("/src/omega"),
+            None,
         );
         assert_eq!(
             anchored,
             argv(&["/src/omega/./target/debug/zax-jira", "--verbose"])
         );
         assert_eq!(
-            anchor_provider(&argv(&["bin/jira"]), Path::new("/src/omega")),
+            anchor_provider(&argv(&["bin/jira"]), Path::new("/src/omega"), None),
             argv(&["/src/omega/bin/jira"])
+        );
+    }
+
+    #[test]
+    fn a_home_relative_provider_path_is_expanded_not_anchored() {
+        let home = Path::new("/home/me");
+        assert_eq!(
+            anchor_provider(
+                &argv(&["~/bin/zax-jira", "-v"]),
+                Path::new("/src/omega"),
+                Some(home)
+            ),
+            argv(&["/home/me/bin/zax-jira", "-v"])
+        );
+        // Without a home there is nothing to expand it to, and anchoring
+        // it at the repository would only hide what went wrong.
+        assert_eq!(
+            anchor_provider(&argv(&["~/bin/zax-jira"]), Path::new("/src/omega"), None),
+            argv(&["~/bin/zax-jira"])
         );
     }
 
@@ -387,9 +420,12 @@ mod tests {
     fn a_bare_or_absolute_provider_is_left_alone() {
         // A bare name is a PATH lookup, which means the same thing anywhere.
         for given in [argv(&["zax-jira", "x"]), argv(&["/usr/bin/zax-jira"])] {
-            assert_eq!(anchor_provider(&given, Path::new("/src/omega")), given);
+            assert_eq!(
+                anchor_provider(&given, Path::new("/src/omega"), None),
+                given
+            );
         }
-        assert!(anchor_provider(&[], Path::new("/src/omega")).is_empty());
+        assert!(anchor_provider(&[], Path::new("/src/omega"), None).is_empty());
     }
 
     /// `RecordingExec` is not `Send`; the background start needs an exec

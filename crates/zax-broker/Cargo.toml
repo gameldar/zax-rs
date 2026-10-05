@@ -12,5 +12,8 @@ serde_json.workspace = true
 zax-domain.workspace = true
 zax-protocol.workspace = true
 
+[dev-dependencies]
+tempfile.workspace = true
+
 [lints]
 workspace = true

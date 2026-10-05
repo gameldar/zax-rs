@@ -29,6 +29,7 @@ pub fn run(command: PaneCommand) -> Result<()> {
         PaneCommand::PrsForReview => run_prs_pane(),
         PaneCommand::BranchStatus => run_branch_pane(),
         PaneCommand::MyPrs => run_my_prs_pane(),
+        PaneCommand::Tickets => anyhow::bail!("the tickets pane is not wired yet"),
         PaneCommand::Exec {
             title,
             every,

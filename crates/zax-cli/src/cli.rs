@@ -108,6 +108,8 @@ pub enum PaneCommand {
     BranchStatus,
     /// Your own open pull requests, across every repository.
     MyPrs,
+    /// Your assigned tickets and the work behind each.
+    Tickets,
     /// Wrap any command's stdout in a header, refresh loop and scrollback.
     Exec {
         #[arg(long)]

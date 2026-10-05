@@ -9,7 +9,7 @@ use zax_domain::{
 };
 
 use crate::error::ConfigError;
-use crate::raw::{RawConfig, RawEditor, RawPane, RawPrs};
+use crate::raw::{RawConfig, RawEditor, RawPane, RawPrs, RawTickets};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
@@ -18,6 +18,7 @@ pub struct Config {
     pub tmux: TmuxConfig,
     pub prs: PrFilter,
     pub editor: EditorConfig,
+    pub tickets: TicketsConfig,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -35,6 +36,13 @@ pub struct EditorConfig {
     /// no program is not a command, so the absence is the type rather than a
     /// separate flag every caller would have to consult.
     pub command: Option<Command>,
+}
+
+/// Which ticket provider the tickets pane runs. A layer-2 provider is a
+/// command the repository runs, like its panes and hooks.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TicketsConfig {
+    pub provider: Option<Command>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -119,6 +127,7 @@ pub fn from_raw(raw: RawConfig, home: &str) -> Result<Config, ConfigError> {
 
     let prs = prs_filter_from_raw(raw.prs.unwrap_or_default())?;
     let editor = editor_from_raw(raw.editor.unwrap_or_default())?;
+    let tickets = tickets_from_raw(raw.tickets.unwrap_or_default())?;
 
     Ok(Config {
         layout,
@@ -126,7 +135,23 @@ pub fn from_raw(raw: RawConfig, home: &str) -> Result<Config, ConfigError> {
         tmux: TmuxConfig { prefix },
         prs,
         editor,
+        tickets,
     })
+}
+
+/// An absent table and an empty list both mean no provider, so the pane has
+/// nothing to run and says so.
+fn tickets_from_raw(raw: RawTickets) -> Result<TicketsConfig, ConfigError> {
+    match raw.provider {
+        None => Ok(TicketsConfig { provider: None }),
+        Some(argv) if argv.is_empty() => Ok(TicketsConfig { provider: None }),
+        Some(argv) => Command::new(argv)
+            .map(|c| TicketsConfig { provider: Some(c) })
+            .map_err(|e| ConfigError::Invalid {
+                field: "tickets.provider",
+                detail: e.to_string(),
+            }),
+    }
 }
 
 /// An absent table opens Zed; an empty list opens nothing. Only a list with a
@@ -368,6 +393,25 @@ mod tests {
     fn config_from(text: &str) -> Config {
         let raw: RawConfig = toml::from_str(text).unwrap();
         from_raw(raw, "/home/me").unwrap()
+    }
+
+    #[test]
+    fn no_tickets_table_means_no_provider() {
+        assert_eq!(config_from("").tickets.provider, None);
+    }
+
+    #[test]
+    fn a_tickets_provider_is_a_command() {
+        let config = config_from("[tickets]\nprovider = [\"zax-jira\"]");
+        assert_eq!(config.tickets.provider.unwrap().argv(), ["zax-jira"]);
+    }
+
+    #[test]
+    fn an_empty_tickets_provider_turns_it_off() {
+        assert_eq!(
+            config_from("[tickets]\nprovider = []").tickets.provider,
+            None
+        );
     }
 
     #[test]

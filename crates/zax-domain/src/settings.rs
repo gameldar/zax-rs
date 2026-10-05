@@ -91,9 +91,9 @@ pub enum SettingShape {
 
 /// Every setting the modal can edit.
 ///
-/// Closed on purpose. A new config key makes the catalogue match in `zax-config`
-/// fail to compile until the modal handles it, so the modal cannot silently omit
-/// a setting.
+/// Closed on purpose. A new config key makes the matches over it fail to compile
+/// until they handle it, and the modal's row list is held to `SettingKey::ALL`
+/// by a test, so the modal cannot silently omit a setting.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum SettingKey {
     AgentCommand,

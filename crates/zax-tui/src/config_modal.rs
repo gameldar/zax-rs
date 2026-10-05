@@ -57,12 +57,14 @@ enum Row {
 
 impl Row {
     /// Grouped as the TOML is, with the layout where a reader expects it.
-    const ALL: [Row; 10] = [
+    const ALL: [Row; 12] = [
         Row::Setting(SettingKey::AgentCommand),
         Row::Panes,
         Row::Setting(SettingKey::WorktreeRoot),
         Row::Setting(SettingKey::WorktreeCopy),
         Row::Setting(SettingKey::WorktreeHooks),
+        Row::Setting(SettingKey::EditorCommand),
+        Row::Setting(SettingKey::TicketsProvider),
         Row::Setting(SettingKey::TmuxPrefix),
         Row::Setting(SettingKey::PrsInclude),
         Row::Setting(SettingKey::PrsExclude),
@@ -1667,6 +1669,19 @@ fn draw(
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)]
+
+    #[test]
+    fn every_setting_has_a_row_on_the_main_screen() {
+        // Row::ALL is written out by hand, so nothing but this keeps a new
+        // SettingKey from being invisible and unsavable in the editor.
+        for key in SettingKey::ALL {
+            assert!(
+                Row::ALL.contains(&Row::Setting(key)),
+                "{} has no row",
+                key.full_name()
+            );
+        }
+    }
     use std::path::PathBuf;
 
     use ratatui::backend::TestBackend;
@@ -2016,10 +2031,10 @@ mod tests {
         );
         let modal = ConfigModal::new(true);
 
-        let wide = rendered(&modal, &view, 78, 20);
+        let wide = rendered(&modal, &view, 78, 24);
         assert!(wide.contains("personal"), "got:\n{wide}");
 
-        let narrow = rendered(&modal, &view, 34, 20);
+        let narrow = rendered(&modal, &view, 34, 24);
         // The value survives; the answer to "which layer" is what gives way.
         assert!(narrow.contains("C-q"), "got:\n{narrow}");
         assert!(

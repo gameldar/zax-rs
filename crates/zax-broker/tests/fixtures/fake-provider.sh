@@ -4,6 +4,7 @@
 #   badproto  answers initialize with protocol 2
 #   hang      never answers tickets/assigned
 #   die       exits after initialize
+#   closeout  closes stdout after initialize but keeps running
 # Every tickets/assigned is counted in $FAKE_COUNT if set.
 while IFS= read -r line; do
   id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9]*\).*/\1/p')
@@ -11,7 +12,8 @@ while IFS= read -r line; do
     *'"initialize"'*)
       proto=1; [ "$FAKE_MODE" = badproto ] && proto=2
       printf '{"jsonrpc":"2.0","id":%s,"result":{"protocol":%s,"name":"Fake","capabilities":{"transitions":true},"poll":"1m"}}\n' "$id" "$proto"
-      [ "$FAKE_MODE" = die ] && exit 3 ;;
+      [ "$FAKE_MODE" = die ] && exit 3
+      [ "$FAKE_MODE" = closeout ] && { exec 1>&-; sleep 30; } ;;
     *'"tickets/assigned"'*)
       [ -n "$FAKE_COUNT" ] && echo x >> "$FAKE_COUNT"
       [ "$FAKE_MODE" = hang ] && sleep 30

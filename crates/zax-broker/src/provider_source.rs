@@ -32,6 +32,14 @@ struct Running {
     init: InitializeResult,
 }
 
+impl Drop for Running {
+    /// Any early return that abandons a child also reaps it.
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
 pub struct ProviderSource {
     argv: Vec<String>,
     timeout: Duration,
@@ -82,8 +90,6 @@ impl ProviderSource {
                     .and_then(|p| zax_domain::parse_duration(p).ok())
                     .unwrap_or(DEFAULT_POLL);
                 self.running = Some(running);
-                self.backoff = BACKOFF_MIN;
-                self.retry_at = None;
                 Ok(())
             }
             Err(e) => {
@@ -99,7 +105,7 @@ impl ProviderSource {
             .args(args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
+            .stderr(Stdio::inherit())
             .spawn()
             .map_err(|e| {
                 if e.kind() == std::io::ErrorKind::NotFound {
@@ -145,8 +151,6 @@ impl ProviderSource {
             format!("{program} answered initialize in a shape zax does not know: {e}")
         })?;
         if init.protocol != PROTOCOL_VERSION {
-            let _ = running.child.kill();
-            let _ = running.child.wait();
             return Err(format!(
                 "{} speaks protocol {}, zax speaks {PROTOCOL_VERSION}",
                 init.name, init.protocol
@@ -158,10 +162,7 @@ impl ProviderSource {
 
     /// Kill the child and schedule the next start.
     fn fail(&mut self) {
-        if let Some(mut running) = self.running.take() {
-            let _ = running.child.kill();
-            let _ = running.child.wait();
-        }
+        self.running = None;
         self.retry_at = Some(Instant::now() + self.backoff);
         self.backoff = (self.backoff * 2).min(BACKOFF_MAX);
     }
@@ -180,7 +181,13 @@ impl ProviderSource {
             method,
             params,
         ) {
-            Ok(value) => Ok(value),
+            Ok(value) => {
+                // Only a provider that answers a request has earned a fresh
+                // backoff; one that initializes and then dies keeps growing it.
+                self.backoff = BACKOFF_MIN;
+                self.retry_at = None;
+                Ok(value)
+            }
             Err(RpcFailure::Provider(message)) => Err(message),
             Err(RpcFailure::Broken(message)) => {
                 self.fail();
@@ -219,7 +226,14 @@ fn request(
         .map_err(|e| RpcFailure::Broken(format!("{program} stopped reading: {e}")))?;
     let deadline = Instant::now() + timeout;
     loop {
+        // Chatter that is not our answer must not stretch the deadline.
         let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Err(RpcFailure::Broken(format!(
+                "{program} did not answer {method} within {}s",
+                timeout.as_secs().max(1)
+            )));
+        }
         let line = match running.lines.recv_timeout(left) {
             Ok(line) => line,
             Err(RecvTimeoutError::Timeout) => {
@@ -229,7 +243,15 @@ fn request(
                 )))
             }
             Err(RecvTimeoutError::Disconnected) => {
-                let status = running.child.wait().ok().and_then(|s| s.code());
+                // The reader also ends when stdout closes or is unreadable
+                // while the child lives on, so never wait on a live child.
+                let status = match running.child.try_wait().ok().flatten() {
+                    Some(s) => s.code(),
+                    None => {
+                        let _ = running.child.kill();
+                        running.child.wait().ok().and_then(|s| s.code())
+                    }
+                };
                 return Err(RpcFailure::Broken(match status {
                     Some(code) => format!("{program} exited with status {code}"),
                     None => format!("{program} exited"),
@@ -286,19 +308,15 @@ impl Source for ProviderSource {
 
 impl Drop for ProviderSource {
     fn drop(&mut self) {
-        if let Some(running) = self.running.take() {
-            let Running {
-                mut child,
-                mut stdin,
-                ..
-            } = running;
-            let _ = write_message(&mut stdin, &Request::new(0, method::SHUTDOWN, json!({})));
-            drop(stdin);
-            // Give it a moment to exit cleanly, then make sure. Only the
-            // direct child is killed; a grandchild is not waited on.
+        if let Some(mut running) = self.running.take() {
+            let _ = write_message(
+                &mut running.stdin,
+                &Request::new(0, method::SHUTDOWN, json!({})),
+            );
+            // Give it a moment to exit cleanly; dropping `running` then
+            // makes sure. Only the direct child is killed; a grandchild is
+            // not waited on.
             thread::sleep(Duration::from_millis(50));
-            let _ = child.kill();
-            let _ = child.wait();
         }
     }
 }
@@ -393,6 +411,26 @@ mod tests {
         // Inside the backoff window the error is immediate and says so.
         let err = source.fetch().unwrap_err();
         assert!(err.contains("restarting"), "{err}");
+    }
+
+    #[test]
+    fn a_provider_that_closes_stdout_but_lives_is_an_error_not_a_hang() {
+        let mut source = ProviderSource::new(fake("closeout")).with_timeout(Duration::from_secs(5));
+        let started = Instant::now();
+        let err = source.fetch().unwrap_err();
+        assert!(started.elapsed() < Duration::from_secs(4), "{err}");
+        assert!(err.contains("exited"), "{err}");
+    }
+
+    #[test]
+    fn a_provider_that_dies_on_its_first_request_keeps_backing_off() {
+        let mut source = ProviderSource::new(fake("die"));
+        assert!(source.fetch().is_err());
+        assert_eq!(
+            source.backoff,
+            BACKOFF_MIN * 2,
+            "initialize alone must not reset the backoff"
+        );
     }
 
     #[test]

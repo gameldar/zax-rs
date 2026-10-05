@@ -27,9 +27,10 @@ scrollback intact.
   from the command palette. Set `[editor] command` to use something else, or
   `[]` to open nothing.
 
-`zax doctor` checks tmux, git, gh, gh's auth and the editor - and, once a
-`[tickets] provider` is configured, starts that provider and reports its name
-and protocol - and reports each separately, so one missing tool never hides the state of the others.
+`zax doctor` checks tmux, git, gh, gh's auth and the editor, and reports each
+separately, so one missing tool never hides the state of the others. Once a
+`[tickets] provider` is configured it also starts that provider and reports its
+name and protocol.
 
 ## Install
 
@@ -123,14 +124,16 @@ one.
 **Layer 2 is a trust boundary.** It is a file checked into somebody else's
 repository, and zax runs what it says: `raw` and `exec` pane commands are
 executed when a session starts, and `[worktree] hooks` run through `sh -c`
-when a worktree is made. `[tickets] provider` is the same kind of command, with
-one difference worth knowing: a provider from any layer, including a
-repository's own `.zax.toml`, is run by the shared per-user broker, outside
-that repository's session. It is not a child of the pane or the session that
-named it, it does not inherit the session's working directory, and it keeps
-running for as long as any pane in any session uses it. That is the point of a layer whose job is shipping a
-repository's own layout, but it is worth knowing before opening an untrusted
-repository with zax as the agent entry point. The values that are not already
+when a worktree is made. Running what the repository says is the point of a
+layer whose job is shipping a repository's own layout, but it is worth knowing
+before opening an untrusted repository with zax as the agent entry point.
+
+`[tickets] provider` is the same kind of command, with one difference worth
+knowing: a provider from any layer, including a repository's own `.zax.toml`,
+is run by the shared per-user broker, outside that repository's session. It is
+not a child of the pane or the session that named it, it does not inherit the
+session's working directory, and it keeps running for as long as any pane in
+any session uses it. The values that are not already
 "the repository can run commands" are constrained: `name` must be a single
 directory name, `tmux.prefix` may not contain a control character, and `copy`
 entries may not be absolute or contain `..`.
@@ -350,7 +353,7 @@ differ:
 | `enter` / `y` | Open / copy the ticket's URL |
 | `p` | Open the ticket's most urgent pull request. `no pull request` on the error line when it has none |
 | `w` | Start or open work: `zax worktree new` on a branch named from the ticket when it has no worktree, otherwise open its first worktree in the editor |
-| `s` | Pick a transition: `1`-`9` chooses, `esc` cancels. Absent when the provider offers none |
+| `s` | Pick a transition: `1`-`9` chooses, `esc` cancels. Absent when the provider does not advertise transitions |
 
 The context panes stay read-only and action-oriented: a keystroke opens, copies
 or starts something, and a row action that fails says so on the pane's own error
@@ -440,6 +443,9 @@ zax sessions, and your pull requests.
 - It is started on demand by the first pane that needs it. Two panes racing
   cannot start two brokers.
 - It exits 30 seconds after its last pane goes away.
+- It polls the provider at the interval the provider advertises as `poll`, or
+  every 2 minutes when it advertises none; `zax-jira` advertises `2m`. The
+  work half is polled every 60 seconds. `r` in a pane refreshes now.
 - Its socket and lock are in `$XDG_RUNTIME_DIR/zax/` when that is set, else
   `~/.cache/zax/`. Its log is `~/.cache/zax/broker.log` (`$XDG_CACHE_HOME`
   replaces `~/.cache`). Look there when a pane shows no tickets.
@@ -637,15 +643,18 @@ zax-config  zax-infra-tmux  zax-infra-git  zax-infra-github  zax-tui
    ^
 zax-cli      clap + composition root
 
-zax-protocol  wire types for the broker and ticket providers, serde only
-zax-broker    shared per-user broker: socket, sources, fan-out (zax-protocol)
-zax-jira      the Jira ticket provider, a separate binary (zax-protocol)
+zax-protocol  wire types for the broker and providers (serde, serde_json)
+zax-broker    shared per-user broker: socket, sources, fan-out
+              (zax-domain, zax-protocol)
+zax-jira      the Jira ticket provider, a separate binary
+              (zax-exec, zax-protocol)
 ```
 
 `zax-protocol` depends on nothing else in the workspace, so a provider written
-in Rust needs only it. Nothing at `zax-app` or below mentions tmux, git or
-GitHub by name. Parsing
-happens once, at the boundary, into types that make the invalid states
+in Rust needs only it. `zax-broker` and `zax-jira` sit beside the main stack
+rather than in it: the broker depends only on `zax-domain` and `zax-protocol`,
+and `zax-jira` only on `zax-exec` and `zax-protocol`. Nothing at `zax-app` or
+below mentions tmux, git or GitHub by name. Parsing happens once, at the boundary, into types that make the invalid states
 unrepresentable.
 
 The original design document is

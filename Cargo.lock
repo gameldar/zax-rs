@@ -1012,8 +1012,10 @@ dependencies = [
  "anyhow",
  "clap",
  "ratatui",
+ "serde_json",
  "tempfile",
  "zax-app",
+ "zax-broker",
  "zax-config",
  "zax-domain",
  "zax-exec",
@@ -1022,6 +1024,7 @@ dependencies = [
  "zax-infra-github",
  "zax-infra-ssh",
  "zax-infra-tmux",
+ "zax-protocol",
  "zax-tui",
 ]
 

@@ -29,7 +29,7 @@ pub fn run(command: PaneCommand) -> Result<()> {
         PaneCommand::PrsForReview => run_prs_pane(),
         PaneCommand::BranchStatus => run_branch_pane(),
         PaneCommand::MyPrs => run_my_prs_pane(),
-        PaneCommand::Tickets => anyhow::bail!("the tickets pane is not wired yet"),
+        PaneCommand::Tickets => crate::cmd_tickets::run(),
         PaneCommand::Exec {
             title,
             every,
@@ -211,7 +211,7 @@ fn run_exec_pane(title: String, every: Duration, command: Command) -> Result<()>
 /// nothing opened. Building a review worktree is different: it mutates the
 /// repository, it can refuse for reasons the user needs to read, and a pane
 /// that swallowed the answer would leave a `w` press looking like a no-op.
-fn perform(action: PaneAction) -> Result<Option<String>> {
+pub(crate) fn perform(action: PaneAction) -> Result<Option<String>> {
     perform_with(&SystemExec, action)
 }
 
@@ -235,6 +235,8 @@ fn perform_with<E: Exec>(exec: &E, action: PaneAction) -> Result<Option<String>>
             );
             return Ok(review_message(result));
         }
+        // The tickets loop performs its own four row actions; they need the
+        // broker connection, which this function does not have.
         PaneAction::None
         | PaneAction::Refresh
         | PaneAction::Quit

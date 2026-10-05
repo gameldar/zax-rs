@@ -13,7 +13,9 @@ path = "src/main.rs"
 anyhow.workspace = true
 clap.workspace = true
 ratatui.workspace = true
+serde_json.workspace = true
 zax-app.workspace = true
+zax-broker.workspace = true
 zax-config.workspace = true
 zax-domain.workspace = true
 zax-exec.workspace = true
@@ -22,6 +24,7 @@ zax-infra-git.workspace = true
 zax-infra-github.workspace = true
 zax-infra-ssh.workspace = true
 zax-infra-tmux.workspace = true
+zax-protocol.workspace = true
 zax-tui.workspace = true
 
 [dev-dependencies]

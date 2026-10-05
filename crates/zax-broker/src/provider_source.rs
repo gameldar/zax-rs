@@ -452,8 +452,9 @@ mod tests {
     #[test]
     fn inside_the_backoff_window_the_last_real_error_is_repeated() {
         let mut source = ProviderSource::new(fake("die"));
+        // Whether the write or the read notices the exit first is a race,
+        // so the wording of the first error is not pinned.
         let first = source.fetch().unwrap_err();
-        assert!(first.contains("exited with status 3"), "{first}");
         // Inside the backoff window the error is immediate, and still says
         // what went wrong rather than only that something did. The window
         // is stretched so a loaded machine cannot outlast it.

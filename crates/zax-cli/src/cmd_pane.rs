@@ -234,7 +234,13 @@ fn perform_with<E: Exec>(exec: &E, action: PaneAction) -> Result<Option<String>>
             );
             return Ok(review_message(result));
         }
-        PaneAction::None | PaneAction::Refresh | PaneAction::Quit => {}
+        PaneAction::None
+        | PaneAction::Refresh
+        | PaneAction::Quit
+        | PaneAction::StartWork { .. }
+        | PaneAction::OpenWorktree { .. }
+        | PaneAction::ListTransitions { .. }
+        | PaneAction::Transition { .. } => {}
     }
     Ok(None)
 }

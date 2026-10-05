@@ -215,7 +215,7 @@ impl MyPrsPane {
 
 /// What the check glyph beside it cannot say. A red build is already red in
 /// that column, and a draft carries its own suffix, so both are quiet here.
-fn attention_glyph(attention: Attention) -> String {
+pub(crate) fn attention_glyph(attention: Attention) -> String {
     match attention {
         Attention::Conflicting => GLYPH_ERROR.to_owned(),
         Attention::ChangesRequested => GLYPH_CHANGES.to_owned(),
@@ -227,7 +227,7 @@ fn attention_glyph(attention: Attention) -> String {
     }
 }
 
-fn attention_style(attention: Attention) -> Style {
+pub(crate) fn attention_style(attention: Attention) -> Style {
     let colour = match attention {
         Attention::Conflicting | Attention::ChangesRequested => Color::Red,
         Attention::Unresolved(_) => Color::Yellow,

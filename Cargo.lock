@@ -995,6 +995,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "zax-broker"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "zax-protocol",
+]
+
+[[package]]
 name = "zax-cli"
 version = "0.1.0"
 dependencies = [

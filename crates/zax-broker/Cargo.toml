@@ -1,0 +1,14 @@
+[package]
+name = "zax-broker"
+description = "The per-user broker that shares sources between zax panes"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+serde_json.workspace = true
+zax-protocol.workspace = true
+
+[lints]
+workspace = true

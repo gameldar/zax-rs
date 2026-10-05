@@ -352,7 +352,7 @@ differ:
 | --- | --- |
 | `enter` / `y` | Open / copy the ticket's URL |
 | `p` | Open the ticket's most urgent pull request. `no pull request` on the error line when it has none |
-| `w` | Start or open work: `zax worktree new` on a branch named from the ticket when it has no worktree, otherwise open its first worktree in the editor |
+| `w` | Start or open work: `zax worktree new` on a branch named from the ticket when it has no worktree, otherwise open its most recently modified worktree in the editor |
 | `s` | Pick a transition: `1`-`9` chooses, `esc` cancels. Absent when the provider does not advertise transitions |
 
 The context panes stay read-only and action-oriented: a keystroke opens, copies
@@ -398,7 +398,7 @@ size = "30%"
 
 A relative path in the provider's program (`bin/jira`) is anchored at the
 repository's main worktree, so the same line means the same file wherever the
-broker happens to be running from. A bare name such as `zax-jira` is looked up
+broker happens to be running from. A leading `~/` is your home directory. A bare name such as `zax-jira` is looked up
 on `PATH`. `zax doctor` starts the provider exactly as the broker will and
 reports its name and protocol.
 
@@ -442,7 +442,9 @@ zax sessions, and your pull requests.
 
 - It is started on demand by the first pane that needs it. Two panes racing
   cannot start two brokers.
-- It exits 30 seconds after its last pane goes away.
+- It exits 30 seconds after its last pane goes away. A source nobody is
+  watching keeps its cache for those 30 seconds too, so a pane restarted by a
+  session rebuild shows its tickets at once.
 - It polls the provider at the interval the provider advertises as `poll`, or
   every 2 minutes when it advertises none; `zax-jira` advertises `2m`. The
   work half is polled every 60 seconds. `r` in a pane refreshes now.
@@ -455,7 +457,10 @@ zax sessions, and your pull requests.
   binary replaces an older running broker, and a pane never replaces a newer
   one, so two installed builds cannot restart each other in a loop.
 - A provider that exits, hangs or answers nothing for 30 seconds is restarted
-  with a backoff from one second to five minutes.
+  with a backoff from one second to five minutes, and the pane keeps showing
+  what went wrong with when the next try is. A provider that answers with an
+  error, such as `zax-jira` when `acli` is logged out, is not backed off: `r`
+  after logging in tries again at once.
 
 ### zax-jira
 
@@ -481,7 +486,9 @@ transitions = ["In Progress", "Code Review", "Done"]
 here rather than discovered. The ticket's current status is left out of the
 list, and each move runs `acli jira workitem transition` with the status name
 as its id. A move the workflow does not allow comes back as `acli`'s own error
-on the pane's error line. Unknown keys in the file are errors.
+on the pane's error line. Unknown keys in the file are errors, and a file
+that cannot be read is reported on the pane's error line with its path and
+line.
 
 ## Writing a ticket provider
 

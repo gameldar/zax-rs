@@ -1,0 +1,5 @@
+[
+  {"key":"ACME-12","fields":{"summary":"Make history available","status":{"name":"In Review","statusCategory":{"key":"indeterminate","name":"In Progress"}},"priority":{"name":"High"},"issuetype":{"name":"Story"}},"self":"https://api.example/rest/api/3/issue/1"},
+  {"key":"ACME-13","fields":{"summary":"Fix the thing","status":{"name":"To Do","statusCategory":{"key":"new","name":"To Do"}},"priority":null,"issuetype":{"name":"Bug"}}},
+  {"key":"ACME-14","fields":{"summary":"Weird","status":{"name":"Limbo","statusCategory":{"key":"undefined","name":"No Category"}}}}
+]

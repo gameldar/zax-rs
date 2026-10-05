@@ -1101,6 +1101,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "zax-jira"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "toml",
+ "zax-exec",
+ "zax-protocol",
+]
+
+[[package]]
 name = "zax-protocol"
 version = "0.1.0"
 dependencies = [

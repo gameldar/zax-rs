@@ -1,0 +1,4 @@
+✓ Authenticated
+  Site: acme.atlassian.net
+  Email: someone@example.com
+  Authentication Type: oauth

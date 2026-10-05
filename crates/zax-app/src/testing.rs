@@ -8,12 +8,12 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use zax_domain::{
     BranchName, Command, LiveSession, PaneSize, PrFilter, PrRef, PullRequest, PullRequestStatus,
-    RepoSlug, RootRepoName, SessionName,
+    RepoSlug, RootRepoName, SessionName, Worktree, WorktreeRoot,
 };
 
 use crate::ports::{
     Clock, Editor, FileSystem, Forge, GitRepo, Multiplexer, PortError, ProcessRunner,
-    PullRequestHead, SshAgent, WorktreeEntry,
+    PullRequestHead, SshAgent, WorktreeEntry, WorktreeScanner,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -830,5 +830,14 @@ impl Editor for FakeEditor {
             Some(error) => Err(error.clone()),
             None => Ok("zed 0.0.0".to_owned()),
         }
+    }
+}
+
+/// Worktrees as a scan of the root would find them.
+pub struct FakeScanner(pub Vec<Worktree>);
+
+impl WorktreeScanner for FakeScanner {
+    fn scan(&self, _root: &WorktreeRoot) -> Result<Vec<Worktree>, PortError> {
+        Ok(self.0.clone())
     }
 }

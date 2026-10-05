@@ -13,7 +13,7 @@ pub use create_worktree::{
 };
 pub use ports::{
     Clock, Editor, FileSystem, Forge, GitRepo, Multiplexer, PortError, ProcessRunner,
-    PullRequestHead, SshAgent, WorktreeEntry,
+    PullRequestHead, SshAgent, WorktreeEntry, WorktreeScanner,
 };
 pub use provision::{ProvisionError, ProvisionReport, Provisioning};
 pub use queries::{DoctorCheck, RemoveWorktreeError};

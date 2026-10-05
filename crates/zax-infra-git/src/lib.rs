@@ -6,6 +6,8 @@ use zax_app::{GitRepo, PortError, WorktreeEntry};
 use zax_domain::{BranchName, RootRepoName};
 use zax_exec::{Exec, ExecError, Output};
 
+pub use scan::FsWorktreeScanner;
+
 const TOOL: &str = "git";
 
 pub struct GitCli<E: Exec> {
@@ -185,6 +187,7 @@ impl<E: Exec> GitRepo for GitCli<E> {
 
 pub mod argv;
 pub mod porcelain;
+pub mod scan;
 
 #[cfg(test)]
 mod tests {

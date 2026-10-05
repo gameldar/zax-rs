@@ -4,8 +4,13 @@
 //! becoming nested directories, so the path is the branch. A directory with a
 //! `.git` file is a worktree and is not searched further. A directory holding a
 //! `.git` directory is a full checkout, not a worktree, and is left alone.
+//!
+//! Each repository's worktrees come most recently modified first (by the
+//! worktree directory's mtime), so whoever takes the first of a ticket's
+//! worktrees gets the one most likely in use.
 
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 use zax_app::{PortError, WorktreeScanner};
 use zax_domain::{BranchName, RootRepoName, Worktree, WorktreeRoot};
@@ -26,7 +31,15 @@ impl WorktreeScanner for FsWorktreeScanner {
             else {
                 continue;
             };
-            walk(&repo_dir, &repo_dir, &repo, 1, &mut found);
+            let mut in_repo = Vec::new();
+            walk(&repo_dir, &repo_dir, &repo, 1, &mut in_repo);
+            // Newest first; an unreadable time sorts last, and the path
+            // breaks ties so the order does not depend on the directory
+            // listing.
+            in_repo.sort_by_cached_key(|w: &Worktree| {
+                (std::cmp::Reverse(modified(&w.path)), w.path.clone())
+            });
+            found.extend(in_repo);
         }
         Ok(found)
     }
@@ -60,6 +73,12 @@ fn walk(repo_dir: &Path, dir: &Path, repo: &RootRepoName, depth: usize, found: &
             Err(_) => walk(repo_dir, &child, repo, depth + 1, found),
         }
     }
+}
+
+fn modified(path: &Path) -> SystemTime {
+    std::fs::metadata(path)
+        .and_then(|m| m.modified())
+        .unwrap_or(SystemTime::UNIX_EPOCH)
 }
 
 /// The worktree root's own subdirectories. A root that does not exist has
@@ -129,6 +148,35 @@ mod tests {
                 ("omega".to_owned(), "OMEGA-1-a".to_owned()),
             ]
         );
+    }
+
+    fn touch(root: &Path, rel: &str, secs: u64) {
+        let at = std::time::UNIX_EPOCH + std::time::Duration::from_secs(secs);
+        fs::File::open(root.join(rel))
+            .unwrap()
+            .set_modified(at)
+            .unwrap();
+    }
+
+    #[test]
+    fn a_repos_worktrees_come_most_recently_modified_first() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Named so that path order is the opposite of the expected order.
+        worktree_at(tmp.path(), "omega/OMEGA-1-a");
+        worktree_at(tmp.path(), "omega/OMEGA-1-b");
+        worktree_at(tmp.path(), "omega/OMEGA-1-c");
+        touch(tmp.path(), "omega/OMEGA-1-a", 1_000);
+        touch(tmp.path(), "omega/OMEGA-1-b", 2_000);
+        touch(tmp.path(), "omega/OMEGA-1-c", 3_000);
+        let root = WorktreeRoot::new(tmp.path().to_owned()).unwrap();
+
+        let branches: Vec<String> = FsWorktreeScanner
+            .scan(&root)
+            .unwrap()
+            .iter()
+            .map(|w| w.branch.as_str().to_owned())
+            .collect();
+        assert_eq!(branches, ["OMEGA-1-c", "OMEGA-1-b", "OMEGA-1-a"]);
     }
 
     #[test]

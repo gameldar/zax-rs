@@ -32,6 +32,8 @@ pub struct WorkIndex {
 /// One ticket's share of the [`WorkIndex`].
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct TicketWork {
+    /// In the order the index lists them, which the scanner makes most
+    /// recently modified first, so the first is the one to open.
     pub worktrees: Vec<Worktree>,
     /// Sessions running in any of those worktrees.
     pub live_sessions: u8,

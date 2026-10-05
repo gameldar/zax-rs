@@ -7,6 +7,7 @@
             "number": 1963,
             "title": "Export reports as CSV",
             "url": "https://github.com/acme/omega/pull/1963",
+            "headRefName": "OMEGA-1963-stamp",
             "isDraft": false,
             "createdAt": "2026-09-15T09:12:33Z",
             "mergeable": "CONFLICTING",

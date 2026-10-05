@@ -268,6 +268,7 @@ mod tests {
                 review: ReviewState::ReviewRequired,
                 unresolved_threads: 2,
                 mergeable: Mergeable::Mergeable,
+                head: None,
             }),
             ..FakeForge::default()
         };
@@ -501,6 +502,7 @@ mod tests {
             review,
             unresolved_threads: threads,
             mergeable,
+            head: None,
         }
     }
 

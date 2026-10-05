@@ -126,6 +126,9 @@ pub struct PullRequestStatus {
     pub review: ReviewState,
     pub unresolved_threads: u32,
     pub mergeable: Mergeable,
+    /// The branch the pull request merges from, when the forge reported one
+    /// that parses. Tickets are joined to pull requests through it.
+    pub head: Option<BranchName>,
 }
 
 /// Why a pull request of yours is waiting on you.
@@ -488,6 +491,7 @@ mod tests {
             review: ReviewState::ChangesRequested,
             unresolved_threads: 3,
             mergeable: Mergeable::Conflicting,
+            head: None,
         };
         assert_eq!(status.unresolved_threads, 3);
         assert_eq!(status.pr.number, 1963);
@@ -515,6 +519,7 @@ mod tests {
             review: ReviewState::Approved,
             unresolved_threads: 0,
             mergeable: Mergeable::Mergeable,
+            head: None,
         };
         let view = BranchView::on_branch(
             BranchName::parse_local("OMEGA-1963-stamp").unwrap(),
@@ -536,6 +541,7 @@ mod tests {
             review,
             unresolved_threads: threads,
             mergeable,
+            head: None,
         }
     }
 

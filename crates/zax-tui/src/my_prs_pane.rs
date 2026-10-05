@@ -337,6 +337,7 @@ mod tests {
             review,
             unresolved_threads: threads,
             mergeable,
+            head: None,
         })
     }
 

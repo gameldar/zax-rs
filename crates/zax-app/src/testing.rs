@@ -49,6 +49,8 @@ pub struct FakeMultiplexer {
     sessions: RefCell<HashSet<String>>,
     /// The subset of `sessions` that a client is attached to.
     attached: HashSet<String>,
+    /// The directory each session was started in.
+    paths: RefCell<HashMap<String, PathBuf>>,
     /// `session_exists` and `list_sessions` answers "no" whatever the session set says.
     blind: bool,
     fail_at: Option<usize>,
@@ -71,6 +73,22 @@ impl FakeMultiplexer {
             attached: names,
             ..Self::default()
         }
+    }
+
+    /// One session with the directory it started in, as `list-sessions`
+    /// reports it.
+    pub fn with_session_at(name: SessionName, path: &str, attached: bool) -> Self {
+        Self::default().and_session_at(name, path, attached)
+    }
+
+    pub fn and_session_at(mut self, name: SessionName, path: &str, attached: bool) -> Self {
+        let key = name.as_str().to_owned();
+        self.sessions.borrow_mut().insert(key.clone());
+        if attached {
+            self.attached.insert(key.clone());
+        }
+        self.paths.borrow_mut().insert(key, PathBuf::from(path));
+        self
     }
 
     /// Fail the call at `index`, counting every recorded call from zero, the
@@ -146,6 +164,7 @@ impl Multiplexer for FakeMultiplexer {
                 SessionName::parse(n).ok().map(|name| LiveSession {
                     name,
                     attached: self.attached.contains(n),
+                    path: self.paths.borrow().get(n).cloned().unwrap_or_default(),
                 })
             })
             .collect())
@@ -175,6 +194,9 @@ impl Multiplexer for FakeMultiplexer {
             });
         }
         self.sessions.borrow_mut().insert(name.as_str().to_owned());
+        self.paths
+            .borrow_mut()
+            .insert(name.as_str().to_owned(), cwd.to_owned());
         self.record(call)
     }
 

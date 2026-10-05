@@ -228,6 +228,7 @@ mod tests {
             review: ReviewState::ChangesRequested,
             unresolved_threads: 2,
             mergeable: Mergeable::Conflicting,
+            head: None,
         }
     }
 

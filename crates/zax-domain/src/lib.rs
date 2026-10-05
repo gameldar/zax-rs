@@ -36,4 +36,6 @@ pub use settings::{
     ConfigView, LayerInfo, LayerSlot, Origin, PaneEdit, PaneField, PaneKindTag, PanesView, Pending,
     Saved, SettingKey, SettingRow, SettingShape, SettingValue,
 };
-pub use ticket::{TicketKey, TicketKeyError};
+pub use ticket::{
+    branch_slug, StatusCategory, Ticket, TicketKey, TicketKeyError, TicketStatus, Transition,
+};

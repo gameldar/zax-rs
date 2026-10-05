@@ -7,32 +7,37 @@ mod argv;
 mod config;
 mod dto;
 mod jira;
+mod misconfigured;
 
 use std::io::{stdin, stdout, BufReader};
 
 use config::JiraConfig;
+use misconfigured::Misconfigured;
+use zax_protocol::provider::Provider;
 
 fn main() {
-    let config = match JiraConfig::default_path().map(|p| JiraConfig::load(&p)) {
-        Some(Ok(config)) => config,
-        Some(Err(e)) => {
-            eprintln!("zax-jira: {e}");
-            std::process::exit(2);
+    match load_config() {
+        Ok(config) => serve(&mut jira::Jira::new(zax_exec::SystemExec, config)),
+        Err(message) => {
+            eprintln!("zax-jira: {message}");
+            // Serve anyway, so the pane shows what is wrong with the file
+            // rather than only that the provider exited.
+            serve(&mut Misconfigured::new(message));
         }
-        None => match JiraConfig::from_toml("") {
-            Ok(c) => c,
-            Err(e) => {
-                eprintln!("zax-jira: {e}");
-                std::process::exit(2);
-            }
-        },
-    };
-    let mut provider = jira::Jira::new(zax_exec::SystemExec, config);
-    if let Err(e) = zax_protocol::provider::serve(
-        BufReader::new(stdin().lock()),
-        stdout().lock(),
-        &mut provider,
-    ) {
+    }
+}
+
+fn load_config() -> Result<JiraConfig, String> {
+    match JiraConfig::default_path() {
+        Some(path) => JiraConfig::load(&path),
+        None => JiraConfig::from_toml(""),
+    }
+}
+
+fn serve<P: Provider>(provider: &mut P) {
+    if let Err(e) =
+        zax_protocol::provider::serve(BufReader::new(stdin().lock()), stdout().lock(), provider)
+    {
         eprintln!("zax-jira: {e}");
         std::process::exit(1);
     }

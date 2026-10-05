@@ -33,7 +33,7 @@ pub struct JiraConfig {
 
 impl JiraConfig {
     pub fn from_toml(text: &str) -> Result<Self, String> {
-        let raw: Raw = toml::from_str(text).map_err(|e| e.to_string())?;
+        let raw: Raw = toml::from_str(text).map_err(|e| one_line(text, &e))?;
         Ok(Self {
             jql: raw.jql.unwrap_or_else(|| DEFAULT_JQL.to_owned()),
             transitions: raw.transitions.unwrap_or_else(|| {
@@ -74,6 +74,22 @@ impl JiraConfig {
     }
 }
 
+/// toml's own rendering spans several lines with a source excerpt, which
+/// an error line in a pane cannot show; the line number and the message
+/// say the same in one line.
+fn one_line(text: &str, e: &toml::de::Error) -> String {
+    let message = e.message().trim().replace('\n', " ");
+    match e.span() {
+        Some(span) => {
+            let line = text
+                .get(..span.start)
+                .map_or(1, |before| before.matches('\n').count() + 1);
+            format!("line {line}: {message}")
+        }
+        None => message,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)]
@@ -97,6 +113,13 @@ mod tests {
         .unwrap();
         assert_eq!(c.transitions_for("OMEGA-1"), ["B", "C"]);
         assert_eq!(c.transitions_for("ACME-1"), ["A"]);
+    }
+
+    #[test]
+    fn a_parse_error_is_one_line_naming_the_line() {
+        let err = JiraConfig::from_toml("jql = \"x\"\ntransitions = [\n").unwrap_err();
+        assert!(!err.contains('\n'), "{err}");
+        assert!(err.starts_with("line 2: "), "{err}");
     }
 
     #[test]

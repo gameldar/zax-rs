@@ -55,7 +55,6 @@ impl SourceFactory for Factory {
         let delay = match key.topic.as_str() {
             "broken" => return Err("no such source".into()),
             "panics" => return Ok(Box::new(PanicsOnce(false))),
-            "slow" => Duration::from_millis(400),
             _ => Duration::from_millis(100),
         };
         Ok(Box::new(Counting {
@@ -200,25 +199,6 @@ fn a_panicking_source_is_an_error_and_recovers_on_refresh() {
         .call(topic("panics"), "x", json!({}), Duration::from_secs(5))
         .unwrap_err();
     assert_eq!(err, "panics source panicked");
-}
-
-#[test]
-fn a_late_result_from_a_dropped_worker_is_ignored() {
-    let dir = tempfile::tempdir().unwrap();
-    let (paths, fetches, _h) = start(dir.path(), 10);
-    let b = Client::connect_or_spawn(&paths, 10, &[]).unwrap();
-    {
-        let a = Client::connect_or_spawn(&paths, 10, &[]).unwrap();
-        a.subscribe(topic("slow")).unwrap();
-        // Let the first fetch start before the only subscriber leaves.
-        thread::sleep(Duration::from_millis(100));
-    }
-    // The key is orphaned and its worker dropped mid-fetch. Subscribing
-    // again starts a new worker; the old one's result must not land.
-    thread::sleep(Duration::from_millis(100));
-    b.subscribe(topic("slow")).unwrap();
-    assert_eq!(next_snapshot(&b).value, Some(json!(2)));
-    assert_eq!(fetches.load(Ordering::SeqCst), 2);
 }
 
 #[test]

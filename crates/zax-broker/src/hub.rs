@@ -27,6 +27,10 @@ struct Entry {
     in_flight: bool,
     /// A refresh arrived during a fetch: run once more when it lands.
     again: bool,
+    /// When the last subscriber left. An orphan keeps its cache and its
+    /// worker for a while, so a pane restarted by a session rebuild is
+    /// sent the cached snapshot at once instead of waiting on a new fetch.
+    orphaned_at: Option<Instant>,
 }
 
 impl Entry {
@@ -68,19 +72,23 @@ impl Hub {
                 due: now,
                 in_flight: false,
                 again: false,
+                orphaned_at: None,
             }
         });
         entry.subscribers.insert(client);
+        entry.orphaned_at = None;
         Subscribed {
             snapshot: entry.has_result().then(|| entry.snapshot(&key)),
             created,
         }
     }
 
-    pub fn disconnect(&mut self, client: ClientId) {
+    pub fn disconnect(&mut self, client: ClientId, now: Instant) {
         self.clients.remove(&client);
         for entry in self.entries.values_mut() {
-            entry.subscribers.remove(&client);
+            if entry.subscribers.remove(&client) && entry.subscribers.is_empty() {
+                entry.orphaned_at = Some(now);
+            }
         }
     }
 
@@ -162,12 +170,16 @@ impl Hub {
             .min()
     }
 
-    /// Keys with no subscribers left; the caller tears their workers down.
-    pub fn orphans(&mut self) -> Vec<SourceKey> {
+    /// Removes the keys that have had no subscribers for `linger` and
+    /// returns them; the caller tears their workers down.
+    pub fn orphans(&mut self, now: Instant, linger: Duration) -> Vec<SourceKey> {
         let orphans: Vec<SourceKey> = self
             .entries
             .iter()
-            .filter(|(_, e)| e.subscribers.is_empty())
+            .filter(|(_, e)| {
+                e.orphaned_at
+                    .is_some_and(|at| now.saturating_duration_since(at) >= linger)
+            })
             .map(|(k, _)| k.clone())
             .collect();
         for key in &orphans {
@@ -322,32 +334,75 @@ mod tests {
         assert_eq!(hub.due(t0 + MIN), vec![key("t")]);
     }
 
+    const LINGER: Duration = Duration::from_secs(30);
+
     #[test]
-    fn a_source_nobody_watches_is_an_orphan() {
+    fn a_source_nobody_watches_is_reaped_once_it_has_lingered() {
         let mut hub = Hub::new();
         let t0 = Instant::now();
         hub.subscribe(1, key("a"), t0);
         hub.subscribe(2, key("a"), t0);
         hub.subscribe(2, key("b"), t0);
-        hub.disconnect(2);
-        assert_eq!(hub.orphans(), vec![key("b")]);
+        hub.disconnect(2, t0);
         assert_eq!(hub.client_count(), 1);
-        hub.disconnect(1);
-        assert_eq!(hub.orphans(), vec![key("a")]);
-        assert!(hub.due(t0).is_empty());
+        assert!(
+            hub.orphans(t0 + LINGER - Duration::from_secs(1), LINGER)
+                .is_empty(),
+            "an orphan lingers"
+        );
+        assert_eq!(hub.orphans(t0 + LINGER, LINGER), vec![key("b")]);
+        let t1 = t0 + LINGER;
+        hub.disconnect(1, t1);
+        assert!(hub.due(t1).is_empty(), "an orphan is not polled");
+        assert_eq!(hub.orphans(t1 + LINGER, LINGER), vec![key("a")]);
     }
 
     #[test]
-    fn a_result_for_a_removed_source_is_dropped() {
+    fn a_resubscribe_within_the_linger_gets_the_cache_and_no_new_fetch() {
+        let mut hub = Hub::new();
+        let t0 = Instant::now();
+        hub.subscribe(1, key("t"), t0);
+        hub.due(t0);
+        hub.finish(&key("t"), Ok(json!("v")), SystemTime::now(), t0, MIN, 0.5);
+        hub.disconnect(1, t0);
+        let t1 = t0 + Duration::from_secs(5);
+        assert!(hub.orphans(t1, LINGER).is_empty());
+        let s = hub.subscribe(2, key("t"), t1);
+        assert!(!s.created, "the existing worker is reused");
+        assert_eq!(s.snapshot.unwrap().value, Some(json!("v")));
+        assert!(hub.due(t1).is_empty(), "the cache is fresh enough");
+        assert!(
+            hub.orphans(t1 + LINGER, LINGER).is_empty(),
+            "a watched source is never reaped"
+        );
+    }
+
+    #[test]
+    fn a_fetch_that_lands_while_orphaned_is_kept_for_the_next_subscriber() {
+        let mut hub = Hub::new();
+        let t0 = Instant::now();
+        hub.subscribe(1, key("t"), t0);
+        hub.due(t0);
+        hub.disconnect(1, t0);
+        let sent = hub.finish(&key("t"), Ok(json!("v")), SystemTime::now(), t0, MIN, 0.5);
+        assert!(sent.is_empty(), "nobody to send it to");
+        let s = hub.subscribe(2, key("t"), t0);
+        assert!(!s.created);
+        assert_eq!(s.snapshot.unwrap().value, Some(json!("v")));
+    }
+
+    #[test]
+    fn a_result_for_a_reaped_source_is_dropped() {
         let mut hub = Hub::new();
         let t0 = Instant::now();
         hub.subscribe(1, key("a"), t0);
         hub.due(t0);
-        hub.disconnect(1);
-        hub.orphans();
+        hub.disconnect(1, t0);
+        hub.orphans(t0 + LINGER, LINGER);
         assert!(hub
             .finish(&key("a"), Ok(json!(1)), SystemTime::now(), t0, MIN, 0.5)
             .is_empty());
+        assert!(hub.subscribe(2, key("a"), t0).created);
     }
 
     #[test]

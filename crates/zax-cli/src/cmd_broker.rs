@@ -22,8 +22,9 @@ use zax_protocol::SourceKey;
 
 use crate::wiring;
 
-/// How long a broker with no panes lingers, so a pane restarted by a session
-/// rebuild finds the cache still warm.
+/// How long a broker with no panes lingers, and a source with no subscribers
+/// keeps its cache and worker, so a pane restarted by a session rebuild finds
+/// the cache still warm.
 const IDLE_EXIT: Duration = Duration::from_secs(30);
 const WORK_INTERVAL: Duration = Duration::from_secs(60);
 

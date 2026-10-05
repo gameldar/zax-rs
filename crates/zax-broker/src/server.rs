@@ -42,9 +42,9 @@ pub struct ServerConfig {
     pub idle_exit: Duration,
 }
 
-/// Which incarnation of a key's worker sent a result. A key orphaned and
-/// then subscribed again gets a new worker, and the old one's late result
-/// must not land on the new entry.
+/// Which incarnation of a key's worker sent a result. A key reaped after
+/// lingering orphaned and then subscribed again gets a new worker, and the
+/// old one's late result must not land on the new entry.
 type Generation = u64;
 
 enum Ev {
@@ -81,13 +81,16 @@ struct Worker {
     work: Sender<Work>,
 }
 
+#[derive(Debug, PartialEq)]
 enum Exit {
     Idle,
     /// A newer client said hello; it is told so once the socket is gone.
     Restart(ClientId),
 }
 
-/// Everything the event loop owns.
+/// Everything the event loop owns. It is driven by [`Broker::handle`] and
+/// [`Broker::tick`] with the time passed in, so it can be tested with
+/// explicit events and no sleeps.
 struct Broker {
     hub: Hub,
     writers: BTreeMap<ClientId, UnixStream>,
@@ -95,6 +98,12 @@ struct Broker {
     next_generation: Generation,
     factory: Arc<dyn SourceFactory>,
     events: Sender<Ev>,
+    identity: u64,
+    /// How long the broker outlives its last connection, and how long a
+    /// source outlives its last subscriber: the same window, so whatever
+    /// keeps the broker warm for a restarted pane keeps its cache warm too.
+    idle_exit: Duration,
+    idle_since: Option<Instant>,
 }
 
 /// Serve until idle for `idle_exit` or until a newer client asks for a
@@ -113,121 +122,23 @@ pub fn run(config: ServerConfig, factory: Arc<dyn SourceFactory>) -> std::io::Re
         thread::spawn(move || accept_loop(listener, tx));
     }
 
-    let mut broker = Broker {
-        hub: Hub::new(),
-        writers: BTreeMap::new(),
-        workers: BTreeMap::new(),
-        next_generation: 0,
+    let mut broker = Broker::new(
+        config.identity,
+        config.idle_exit,
         factory,
-        events: tx,
-    };
-    let mut idle_since = Some(Instant::now());
+        tx,
+        Instant::now(),
+    );
 
     let exit = loop {
         let now = Instant::now();
-        for key in broker.hub.due(now) {
-            broker.dispatch(&key);
+        if let Some(exit) = broker.tick(now) {
+            break exit;
         }
-        if idle_since.is_some_and(|since| now.duration_since(since) >= config.idle_exit) {
-            break Exit::Idle;
-        }
-        let wait = broker
-            .hub
-            .next_due()
-            .map_or(Duration::from_secs(1), |at| {
-                at.saturating_duration_since(now)
-            })
-            .min(Duration::from_millis(250));
-
-        match rx.recv_timeout(wait) {
-            Ok(Ev::Connected(client, stream)) => {
-                let _ = stream.set_write_timeout(Some(WRITE_WAIT));
-                broker.writers.insert(client, stream);
-                // A connection mid-handshake keeps the broker up, so a pane
-                // that connects just as the idle timer runs out is not
-                // dropped before its hello is read.
-                idle_since = None;
-            }
-            Ok(Ev::Message(client, ClientMessage::Hello { identity })) => {
-                if identity > config.identity {
-                    break Exit::Restart(client);
-                }
-                broker.send(client, &BrokerMessage::Welcome);
-            }
-            Ok(Ev::Message(client, ClientMessage::Subscribe { key })) => {
-                let subscribed = broker.hub.subscribe(client, key.clone(), Instant::now());
-                if let Some(snapshot) = subscribed.snapshot {
-                    broker.send(client, &BrokerMessage::Snapshot(snapshot));
-                }
-                // Fetch a new source now rather than on the next turn; the
-                // refresh marks it in flight, as dispatching requires.
-                if subscribed.created && broker.hub.refresh(&key) {
-                    broker.dispatch(&key);
-                }
-            }
-            Ok(Ev::Message(_, ClientMessage::Refresh { key })) => {
-                if broker.hub.refresh(&key) {
-                    broker.dispatch(&key);
-                }
-            }
-            Ok(Ev::Message(
-                client,
-                ClientMessage::Call {
-                    id,
-                    key,
-                    method,
-                    params,
-                },
-            )) => broker.call(client, id, &key, method, params),
-            Ok(Ev::Gone(client)) => {
-                broker.writers.remove(&client);
-                broker.hub.disconnect(client);
-                for key in broker.hub.orphans() {
-                    // Dropping the sender ends the worker, and the source
-                    // (and any provider child) with it.
-                    broker.workers.remove(&key);
-                }
-                // Connections, not subscriptions: a pane that has said hello
-                // but not yet subscribed still keeps the broker alive.
-                if broker.writers.is_empty() {
-                    idle_since = Some(Instant::now());
-                }
-            }
-            Ok(Ev::Fetched {
-                key,
-                generation,
-                result,
-                interval,
-            }) => {
-                if broker.is_current(&key, generation) {
-                    let sent = broker.hub.finish(
-                        &key,
-                        result,
-                        SystemTime::now(),
-                        Instant::now(),
-                        interval,
-                        roll(),
-                    );
-                    broker.fan_out(sent);
-                }
-            }
-            Ok(Ev::Called {
-                client,
-                id,
-                key,
-                generation,
-                result,
-            }) => {
-                let ok = result.is_ok();
-                let (result, error) = match result {
-                    Ok(v) => (Some(v), None),
-                    Err(e) => (None, Some(e)),
-                };
-                // The caller is answered whichever worker served it.
-                broker.send(client, &BrokerMessage::Reply { id, result, error });
-                // A write changes what everyone should see.
-                if ok && broker.is_current(&key, generation) && broker.hub.refresh(&key) {
-                    broker.dispatch(&key);
+        match rx.recv_timeout(broker.wait(now)) {
+            Ok(ev) => {
+                if let Some(exit) = broker.handle(ev, Instant::now()) {
+                    break exit;
                 }
             }
             Err(RecvTimeoutError::Timeout) => {}
@@ -256,10 +167,146 @@ pub fn run(config: ServerConfig, factory: Arc<dyn SourceFactory>) -> std::io::Re
 }
 
 impl Broker {
+    fn new(
+        identity: u64,
+        idle_exit: Duration,
+        factory: Arc<dyn SourceFactory>,
+        events: Sender<Ev>,
+        now: Instant,
+    ) -> Self {
+        Self {
+            hub: Hub::new(),
+            writers: BTreeMap::new(),
+            workers: BTreeMap::new(),
+            next_generation: 0,
+            factory,
+            events,
+            identity,
+            idle_exit,
+            idle_since: Some(now),
+        }
+    }
+
+    /// The loop's timer: start what is due, reap sources that have lingered
+    /// unwatched, and say whether the broker has been idle long enough to go.
+    fn tick(&mut self, now: Instant) -> Option<Exit> {
+        for key in self.hub.due(now) {
+            self.dispatch(&key, now);
+        }
+        for key in self.hub.orphans(now, self.idle_exit) {
+            // Dropping the sender ends the worker, and the source (and any
+            // provider child) with it.
+            self.workers.remove(&key);
+        }
+        self.idle_since
+            .is_some_and(|since| now.duration_since(since) >= self.idle_exit)
+            .then_some(Exit::Idle)
+    }
+
+    /// How long the loop may sleep before the next tick. It is capped so
+    /// lingering orphans and the idle timer are checked often enough.
+    fn wait(&self, now: Instant) -> Duration {
+        self.hub
+            .next_due()
+            .map_or(Duration::from_secs(1), |at| {
+                at.saturating_duration_since(now)
+            })
+            .min(Duration::from_millis(250))
+    }
+
+    /// One event from a reader or a worker.
+    fn handle(&mut self, ev: Ev, now: Instant) -> Option<Exit> {
+        match ev {
+            Ev::Connected(client, stream) => {
+                let _ = stream.set_write_timeout(Some(WRITE_WAIT));
+                self.writers.insert(client, stream);
+                // A connection mid-handshake keeps the broker up, so a pane
+                // that connects just as the idle timer runs out is not
+                // dropped before its hello is read.
+                self.idle_since = None;
+            }
+            Ev::Message(client, ClientMessage::Hello { identity }) => {
+                if identity > self.identity {
+                    return Some(Exit::Restart(client));
+                }
+                self.send(client, &BrokerMessage::Welcome);
+            }
+            Ev::Message(client, ClientMessage::Subscribe { key }) => {
+                let subscribed = self.hub.subscribe(client, key.clone(), now);
+                if let Some(snapshot) = subscribed.snapshot {
+                    self.send(client, &BrokerMessage::Snapshot(snapshot));
+                }
+                // Fetch a new source now rather than on the next turn; the
+                // refresh marks it in flight, as dispatching requires. A
+                // source still lingering keeps its worker and its cache.
+                if subscribed.created && self.hub.refresh(&key) {
+                    self.dispatch(&key, now);
+                }
+            }
+            Ev::Message(_, ClientMessage::Refresh { key }) => {
+                if self.hub.refresh(&key) {
+                    self.dispatch(&key, now);
+                }
+            }
+            Ev::Message(
+                client,
+                ClientMessage::Call {
+                    id,
+                    key,
+                    method,
+                    params,
+                },
+            ) => self.call(client, id, &key, method, params),
+            Ev::Gone(client) => {
+                self.writers.remove(&client);
+                // Its sources linger orphaned; the timer reaps them.
+                self.hub.disconnect(client, now);
+                // Connections, not subscriptions: a pane that has said hello
+                // but not yet subscribed still keeps the broker alive.
+                if self.writers.is_empty() {
+                    self.idle_since = Some(now);
+                }
+            }
+            Ev::Fetched {
+                key,
+                generation,
+                result,
+                interval,
+            } => {
+                if self.is_current(&key, generation) {
+                    let sent =
+                        self.hub
+                            .finish(&key, result, SystemTime::now(), now, interval, roll());
+                    self.fan_out(sent);
+                }
+            }
+            Ev::Called {
+                client,
+                id,
+                key,
+                generation,
+                result,
+            } => {
+                let ok = result.is_ok();
+                let (result, error) = match result {
+                    Ok(v) => (Some(v), None),
+                    Err(e) => (None, Some(e)),
+                };
+                // The caller is answered whichever worker served it.
+                self.send(client, &BrokerMessage::Reply { id, result, error });
+                // A write changes what everyone should see.
+                if ok && self.is_current(&key, generation) && self.hub.refresh(&key) {
+                    self.dispatch(&key, now);
+                }
+            }
+        }
+        None
+    }
+
     /// Start a fetch of a key the hub has just marked in flight. Every path
     /// out of here either hands the fetch to a worker or finishes it, since
     /// only `finish` clears the in-flight flag.
-    fn dispatch(&mut self, key: &SourceKey) {
+    fn dispatch(&mut self, key: &SourceKey, now: Instant) {
         if !self.workers.contains_key(key) {
             match self.factory.create(key) {
                 Ok(source) => {
@@ -269,7 +316,7 @@ impl Broker {
                     self.workers
                         .insert(key.clone(), Worker { generation, work });
                 }
-                Err(error) => return self.fail(key, error, CREATE_RETRY),
+                Err(error) => return self.fail(key, error, CREATE_RETRY, now),
             }
         }
         let sent = self
@@ -283,19 +330,15 @@ impl Broker {
                 key,
                 format!("the {} source stopped", key.topic),
                 PANIC_RETRY,
+                now,
             );
         }
     }
 
-    fn fail(&mut self, key: &SourceKey, error: String, retry: Duration) {
-        let sent = self.hub.finish(
-            key,
-            Err(error),
-            SystemTime::now(),
-            Instant::now(),
-            retry,
-            0.5,
-        );
+    fn fail(&mut self, key: &SourceKey, error: String, retry: Duration, now: Instant) {
+        let sent = self
+            .hub
+            .finish(key, Err(error), SystemTime::now(), now, retry, 0.5);
         self.fan_out(sent);
     }
 
@@ -430,4 +473,133 @@ fn roll() -> f64 {
         .map(|d| d.subsec_nanos())
         .unwrap_or(0);
     f64::from(nanos) / 1_000_000_000.0
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)]
+    use std::sync::mpsc::Receiver;
+
+    use serde_json::json;
+    use zax_protocol::read_message;
+
+    use super::*;
+
+    const LINGER: Duration = Duration::from_secs(30);
+
+    /// Answers at once. Its worker's own results land on a channel these
+    /// tests never drain; every result the broker sees is fed in by hand.
+    struct Quiet;
+
+    impl Source for Quiet {
+        fn fetch(&mut self) -> Result<Value, String> {
+            Ok(json!("from the worker"))
+        }
+        fn call(&mut self, _method: &str, _params: Value) -> Result<Value, String> {
+            Ok(json!({}))
+        }
+        fn interval(&self) -> Duration {
+            Duration::from_secs(3600)
+        }
+    }
+
+    struct QuietFactory;
+
+    impl SourceFactory for QuietFactory {
+        fn create(&self, _key: &SourceKey) -> Result<Box<dyn Source>, String> {
+            Ok(Box::new(Quiet))
+        }
+    }
+
+    fn broker(now: Instant) -> (Broker, Receiver<Ev>) {
+        let (tx, rx) = mpsc::channel();
+        (Broker::new(10, LINGER, Arc::new(QuietFactory), tx, now), rx)
+    }
+
+    fn key() -> SourceKey {
+        SourceKey {
+            topic: "tickets".into(),
+            source: "{}".into(),
+        }
+    }
+
+    /// Connects a client and returns the pane's end of its socket. Writes
+    /// happen inside `handle`, so whatever the broker sent is already there.
+    fn connect(broker: &mut Broker, client: ClientId, now: Instant) -> BufReader<UnixStream> {
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        // Nothing to read is a failure now, not a wait: it can only mean
+        // the broker sent nothing.
+        theirs.set_nonblocking(true).unwrap();
+        assert_eq!(broker.handle(Ev::Connected(client, ours), now), None);
+        BufReader::new(theirs)
+    }
+
+    fn subscribe(broker: &mut Broker, client: ClientId, now: Instant) {
+        let ev = Ev::Message(client, ClientMessage::Subscribe { key: key() });
+        assert_eq!(broker.handle(ev, now), None);
+    }
+
+    fn fetched(generation: Generation, value: &str) -> Ev {
+        Ev::Fetched {
+            key: key(),
+            generation,
+            result: Ok(json!(value)),
+            interval: Duration::from_secs(3600),
+        }
+    }
+
+    fn next_value(pane: &mut BufReader<UnixStream>) -> Option<Value> {
+        match read_message::<_, BrokerMessage>(pane).unwrap() {
+            Some(BrokerMessage::Snapshot(snapshot)) => snapshot.value,
+            other => panic!("expected a snapshot, got {other:?}"),
+        }
+    }
+
+    fn generation(broker: &Broker) -> Generation {
+        broker.workers[&key()].generation
+    }
+
+    #[test]
+    fn a_late_result_from_a_reaped_worker_is_ignored() {
+        let t0 = Instant::now();
+        let (mut broker, _results) = broker(t0);
+        let _a = connect(&mut broker, 1, t0);
+        subscribe(&mut broker, 1, t0);
+        let old = generation(&broker);
+        broker.handle(Ev::Gone(1), t0);
+        let t1 = t0 + LINGER;
+        assert_eq!(broker.tick(t1), Some(Exit::Idle));
+        assert!(broker.workers.is_empty(), "the orphan was reaped");
+
+        let mut b = connect(&mut broker, 2, t1);
+        subscribe(&mut broker, 2, t1);
+        let new = generation(&broker);
+        assert_ne!(old, new, "a reaped key gets a new worker");
+        broker.handle(fetched(old, "stale"), t1);
+        broker.handle(fetched(new, "fresh"), t1);
+        assert_eq!(
+            next_value(&mut b),
+            Some(json!("fresh")),
+            "the old worker's result never reached the pane"
+        );
+    }
+
+    #[test]
+    fn a_resubscribe_within_the_linger_is_served_the_cache_by_the_same_worker() {
+        let t0 = Instant::now();
+        let (mut broker, _results) = broker(t0);
+        let mut a = connect(&mut broker, 1, t0);
+        subscribe(&mut broker, 1, t0);
+        let first = generation(&broker);
+        broker.handle(fetched(first, "cached"), t0);
+        assert_eq!(next_value(&mut a), Some(json!("cached")));
+        broker.handle(Ev::Gone(1), t0);
+
+        let t1 = t0 + Duration::from_secs(5);
+        assert_eq!(broker.tick(t1), None);
+        let mut b = connect(&mut broker, 2, t1);
+        subscribe(&mut broker, 2, t1);
+        assert_eq!(next_value(&mut b), Some(json!("cached")), "sent at once");
+        assert_eq!(generation(&broker), first, "the worker was kept");
+    }
 }

@@ -113,4 +113,72 @@ mod tests {
         assert!(text.starts_with(r#"{"type":"snapshot""#), "got {text}");
         assert_eq!(serde_json::from_str::<BrokerMessage>(&text).unwrap(), m);
     }
+
+    fn key() -> SourceKey {
+        SourceKey {
+            topic: "t".into(),
+            source: "{}".into(),
+        }
+    }
+
+    #[test]
+    fn every_client_message_on_the_wire() {
+        let k = r#"{"topic":"t","source":"{}"}"#;
+        let cases = [
+            (
+                ClientMessage::Subscribe { key: key() },
+                format!(r#"{{"type":"subscribe","key":{k}}}"#),
+            ),
+            (
+                ClientMessage::Refresh { key: key() },
+                format!(r#"{{"type":"refresh","key":{k}}}"#),
+            ),
+            (
+                ClientMessage::Call {
+                    id: 2,
+                    key: key(),
+                    method: "m".into(),
+                    params: serde_json::json!({"a": 1}),
+                },
+                format!(r#"{{"type":"call","id":2,"key":{k},"method":"m","params":{{"a":1}}}}"#),
+            ),
+        ];
+        for (message, text) in cases {
+            assert_eq!(serde_json::to_string(&message).unwrap(), text);
+        }
+    }
+
+    #[test]
+    fn every_broker_message_on_the_wire() {
+        let k = r#"{"topic":"t","source":"{}"}"#;
+        let cases = [
+            (BrokerMessage::Welcome, r#"{"type":"welcome"}"#.to_owned()),
+            (
+                BrokerMessage::RestartRequired,
+                r#"{"type":"restart_required"}"#.to_owned(),
+            ),
+            (
+                BrokerMessage::Reply {
+                    id: 3,
+                    result: Some(serde_json::json!(true)),
+                    error: None,
+                },
+                r#"{"type":"reply","id":3,"result":true,"error":null}"#.to_owned(),
+            ),
+            (
+                BrokerMessage::Snapshot(Snapshot {
+                    key: key(),
+                    value: Some(serde_json::json!([1])),
+                    fetched_at: Some(10),
+                    error: Some("e".into()),
+                }),
+                format!(
+                    r#"{{"type":"snapshot","key":{k},"value":[1],"fetched_at":10,"error":"e"}}"#
+                ),
+            ),
+        ];
+        for (message, text) in cases {
+            assert_eq!(serde_json::to_string(&message).unwrap(), text);
+        }
+    }
 }

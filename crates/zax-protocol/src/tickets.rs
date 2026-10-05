@@ -122,4 +122,76 @@ mod tests {
         assert_eq!(r.poll, None);
         assert!(r.capabilities.transitions);
     }
+
+    #[test]
+    fn method_names_and_constants_are_pinned() {
+        assert_eq!(PROTOCOL_VERSION, 1);
+        assert_eq!(method::INITIALIZE, "initialize");
+        assert_eq!(method::ASSIGNED, "tickets/assigned");
+        assert_eq!(method::TRANSITIONS, "tickets/transitions");
+        assert_eq!(method::TRANSITION, "tickets/transition");
+        assert_eq!(method::CHANGED, "tickets/changed");
+        assert_eq!(method::SHUTDOWN, "shutdown");
+        assert_eq!(category::TO_DO, "to_do");
+        assert_eq!(category::IN_PROGRESS, "in_progress");
+        assert_eq!(category::DONE, "done");
+    }
+
+    #[test]
+    fn initialize_result_on_the_wire() {
+        let mut r = InitializeResult {
+            protocol: 1,
+            name: "Jira".into(),
+            capabilities: Capabilities { transitions: true },
+            poll: None,
+        };
+        assert_eq!(
+            serde_json::to_string(&r).unwrap(),
+            r#"{"protocol":1,"name":"Jira","capabilities":{"transitions":true}}"#
+        );
+        r.poll = Some("5m".into());
+        assert_eq!(
+            serde_json::to_string(&r).unwrap(),
+            r#"{"protocol":1,"name":"Jira","capabilities":{"transitions":true},"poll":"5m"}"#
+        );
+    }
+
+    #[test]
+    fn list_and_transition_payloads_on_the_wire() {
+        let assigned = AssignedResult {
+            tickets: vec![WireTicket {
+                key: "A-1".into(),
+                summary: "s".into(),
+                status: WireStatus {
+                    category: category::DONE.into(),
+                    name: "Done".into(),
+                },
+                priority: None,
+                kind: Some("Bug".into()),
+                url: "u".into(),
+            }],
+        };
+        assert_eq!(
+            serde_json::to_string(&assigned).unwrap(),
+            r#"{"tickets":[{"key":"A-1","summary":"s","status":{"category":"done","name":"Done"},"kind":"Bug","url":"u"}]}"#
+        );
+        let transitions = TransitionsResult {
+            transitions: vec![WireTransition {
+                id: "31".into(),
+                name: "Done".into(),
+            }],
+        };
+        assert_eq!(
+            serde_json::to_string(&transitions).unwrap(),
+            r#"{"transitions":[{"id":"31","name":"Done"}]}"#
+        );
+        let params = TransitionParams {
+            key: "A-1".into(),
+            id: "31".into(),
+        };
+        assert_eq!(
+            serde_json::to_string(&params).unwrap(),
+            r#"{"key":"A-1","id":"31"}"#
+        );
+    }
 }

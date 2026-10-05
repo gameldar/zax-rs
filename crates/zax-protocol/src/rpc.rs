@@ -26,6 +26,7 @@ impl Request {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Response {
     pub jsonrpc: String,
     pub id: u64,
@@ -178,5 +179,57 @@ mod tests {
     fn into_result_surfaces_the_error() {
         let err = Response::err(1, RpcError::new(ErrorKind::Unavailable, "down")).into_result();
         assert_eq!(err.unwrap_err().kind(), Some(ErrorKind::Unavailable));
+    }
+
+    #[test]
+    fn a_request_shaped_line_is_not_a_response() {
+        let line = r#"{"jsonrpc":"2.0","id":4,"method":"x","params":{}}"#;
+        let parsed: FromProvider = serde_json::from_str(line).unwrap();
+        assert!(!matches!(parsed, FromProvider::Response(_)));
+    }
+
+    #[test]
+    fn a_response_with_neither_field_is_an_empty_success() {
+        let parsed: FromProvider = serde_json::from_str(r#"{"jsonrpc":"2.0","id":1}"#).unwrap();
+        let FromProvider::Response(response) = parsed else {
+            panic!("not a response")
+        };
+        assert_eq!(response.into_result().unwrap(), serde_json::Value::Null);
+    }
+
+    #[test]
+    fn a_success_response_on_the_wire() {
+        let r = Response::ok(1, serde_json::json!({"a": 1}));
+        assert_eq!(
+            serde_json::to_string(&r).unwrap(),
+            r#"{"jsonrpc":"2.0","id":1,"result":{"a":1}}"#
+        );
+    }
+
+    #[test]
+    fn a_notification_on_the_wire() {
+        let n = Notification {
+            jsonrpc: JSONRPC.to_owned(),
+            method: "tickets/changed".to_owned(),
+            params: serde_json::json!({}),
+        };
+        assert_eq!(
+            serde_json::to_string(&n).unwrap(),
+            r#"{"jsonrpc":"2.0","method":"tickets/changed","params":{}}"#
+        );
+    }
+
+    #[test]
+    fn every_error_kind_has_its_snake_case_name() {
+        let names = [
+            (ErrorKind::NotAuthenticated, r#""not_authenticated""#),
+            (ErrorKind::MissingTool, r#""missing_tool""#),
+            (ErrorKind::Unavailable, r#""unavailable""#),
+            (ErrorKind::InvalidRequest, r#""invalid_request""#),
+            (ErrorKind::Unsupported, r#""unsupported""#),
+        ];
+        for (kind, name) in names {
+            assert_eq!(serde_json::to_string(&kind).unwrap(), name);
+        }
     }
 }

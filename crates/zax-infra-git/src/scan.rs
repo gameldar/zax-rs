@@ -2,7 +2,8 @@
 //!
 //! zax puts every worktree at `<root>/<repo>/<branch>`, with a slashed branch
 //! becoming nested directories, so the path is the branch. A directory with a
-//! `.git` entry is a worktree and is not searched further.
+//! `.git` file is a worktree and is not searched further. A directory holding a
+//! `.git` directory is a full checkout, not a worktree, and is left alone.
 
 use std::path::{Path, PathBuf};
 
@@ -25,64 +26,69 @@ impl WorktreeScanner for FsWorktreeScanner {
             else {
                 continue;
             };
-            walk(&repo_dir, &repo_dir, &repo, 1, &mut found)?;
+            walk(&repo_dir, &repo_dir, &repo, 1, &mut found);
         }
         Ok(found)
     }
 }
 
-fn walk(
-    repo_dir: &Path,
-    dir: &Path,
-    repo: &RootRepoName,
-    depth: usize,
-    found: &mut Vec<Worktree>,
-) -> Result<(), PortError> {
+fn walk(repo_dir: &Path, dir: &Path, repo: &RootRepoName, depth: usize, found: &mut Vec<Worktree>) {
     if depth > MAX_DEPTH {
-        return Ok(());
+        return;
     }
-    for child in subdirectories(dir)? {
-        if child.join(".git").exists() {
-            let branch = child
-                .strip_prefix(repo_dir)
-                .ok()
-                .map(|rel| {
-                    rel.to_string_lossy()
-                        .replace(std::path::MAIN_SEPARATOR, "/")
-                })
-                .and_then(|raw| BranchName::parse_foreign(&raw).ok());
-            if let Some(branch) = branch {
-                found.push(Worktree {
-                    repo: repo.clone(),
-                    branch,
-                    path: child,
-                });
+    for child in readable_subdirectories(dir) {
+        match std::fs::metadata(child.join(".git")) {
+            Ok(git) if git.is_file() => {
+                let branch = child
+                    .strip_prefix(repo_dir)
+                    .ok()
+                    .map(|rel| {
+                        rel.to_string_lossy()
+                            .replace(std::path::MAIN_SEPARATOR, "/")
+                    })
+                    .and_then(|raw| BranchName::parse_foreign(&raw).ok());
+                if let Some(branch) = branch {
+                    found.push(Worktree {
+                        repo: repo.clone(),
+                        branch,
+                        path: child,
+                    });
+                }
             }
-        } else {
-            walk(repo_dir, &child, repo, depth + 1, found)?;
+            // A `.git` directory is a full checkout, which owns its own tree.
+            Ok(_) => {}
+            Err(_) => walk(repo_dir, &child, repo, depth + 1, found),
         }
     }
-    Ok(())
 }
 
-/// A directory that does not exist has no subdirectories.
+/// The worktree root's own subdirectories. A root that does not exist has
+/// none, but one that exists and cannot be read is a real problem the user
+/// should hear about, so only this read reports its failure.
 fn subdirectories(dir: &Path) -> Result<Vec<PathBuf>, PortError> {
-    let entries = match std::fs::read_dir(dir) {
-        Ok(entries) => entries,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(e) => {
-            return Err(PortError::Io {
-                operation: "scan worktrees",
-                path: dir.to_owned(),
-                detail: e.to_string(),
-            })
-        }
-    };
-    Ok(entries
+    match std::fs::read_dir(dir) {
+        Ok(entries) => Ok(directories(entries)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(e) => Err(PortError::Io {
+            operation: "scan worktrees",
+            path: dir.to_owned(),
+            detail: e.to_string(),
+        }),
+    }
+}
+
+/// Below the root, a directory that cannot be read is skipped with its
+/// subtree: one unreadable folder must not blank every other worktree.
+fn readable_subdirectories(dir: &Path) -> Vec<PathBuf> {
+    std::fs::read_dir(dir).map(directories).unwrap_or_default()
+}
+
+fn directories(entries: std::fs::ReadDir) -> Vec<PathBuf> {
+    entries
         .filter_map(Result::ok)
         .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
         .map(|e| e.path())
-        .collect())
+        .collect()
 }
 
 #[cfg(test)]
@@ -138,5 +144,38 @@ mod tests {
         worktree_at(tmp.path(), "omega/OMEGA-1-a/vendor/sub");
         let root = WorktreeRoot::new(tmp.path().to_owned()).unwrap();
         assert_eq!(FsWorktreeScanner.scan(&root).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_checkout_with_a_git_directory_is_not_a_worktree() {
+        let tmp = tempfile::tempdir().unwrap();
+        worktree_at(tmp.path(), "omega/OMEGA-1-a");
+        fs::create_dir_all(tmp.path().join("omega/full/.git")).unwrap();
+        worktree_at(tmp.path(), "omega/full/inner");
+        let root = WorktreeRoot::new(tmp.path().to_owned()).unwrap();
+        let found = FsWorktreeScanner.scan(&root).unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].branch.as_str(), "OMEGA-1-a");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_unreadable_directory_is_skipped_not_fatal() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        worktree_at(tmp.path(), "omega/OMEGA-1-a");
+        let locked = tmp.path().join("omega/locked");
+        fs::create_dir_all(&locked).unwrap();
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+        let root = WorktreeRoot::new(tmp.path().to_owned()).unwrap();
+
+        let result = FsWorktreeScanner.scan(&root);
+        let still_readable = fs::read_dir(&locked).is_ok();
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+
+        if !still_readable {
+            assert_eq!(result.unwrap().len(), 1);
+        }
     }
 }

@@ -13,7 +13,7 @@ use zax_domain::{
 
 use crate::ports::{
     Clock, Editor, FileSystem, Forge, GitRepo, Multiplexer, PortError, ProcessRunner,
-    PullRequestHead, WorktreeEntry,
+    PullRequestHead, SshAgent, WorktreeEntry,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -238,6 +238,8 @@ pub struct FakeGitRepo {
     pub added: RefCell<Vec<AddedWorktreeCall>>,
     pub removed: RefCell<Vec<(PathBuf, bool)>>,
     pub fetched: RefCell<Vec<(String, String)>>,
+    /// What `git remote get-url` would answer, by remote name.
+    remotes: RefCell<HashMap<String, String>>,
 }
 
 impl FakeGitRepo {
@@ -252,6 +254,7 @@ impl FakeGitRepo {
             added: RefCell::new(Vec::new()),
             removed: RefCell::new(Vec::new()),
             fetched: RefCell::new(Vec::new()),
+            remotes: RefCell::new(HashMap::new()),
         }
     }
 
@@ -273,6 +276,15 @@ impl FakeGitRepo {
         self.commits
             .borrow_mut()
             .insert(rev.to_owned(), commit.to_owned());
+        self
+    }
+
+    /// The URL a remote answers with, which decides the credential a fetch
+    /// from it needs.
+    pub fn with_remote(self, remote: &str, url: &str) -> Self {
+        self.remotes
+            .borrow_mut()
+            .insert(remote.to_owned(), url.to_owned());
         self
     }
 
@@ -359,6 +371,10 @@ impl GitRepo for FakeGitRepo {
             .borrow_mut()
             .push((remote.to_owned(), refspec.to_owned()));
         Ok(())
+    }
+
+    fn remote_url(&self, remote: &str) -> Result<Option<String>, PortError> {
+        Ok(self.remotes.borrow().get(remote).cloned())
     }
 
     fn resolve_commit(&self, rev: &str) -> Result<String, PortError> {
@@ -734,6 +750,29 @@ mod tests {
     fn the_clock_fake_does_not_move() {
         let clock = FixedClock::at_unix_seconds(1_700_000_000);
         assert_eq!(clock.now(), clock.now());
+    }
+}
+
+/// An ssh agent that is holding keys, or a reason it is not.
+#[derive(Default)]
+pub struct FakeSshAgent {
+    failure: Option<PortError>,
+}
+
+impl FakeSshAgent {
+    pub fn locked(error: PortError) -> Self {
+        Self {
+            failure: Some(error),
+        }
+    }
+}
+
+impl SshAgent for FakeSshAgent {
+    fn probe(&self) -> Result<String, PortError> {
+        match &self.failure {
+            Some(error) => Err(error.clone()),
+            None => Ok("1 key(s) loaded".to_owned()),
+        }
     }
 }
 

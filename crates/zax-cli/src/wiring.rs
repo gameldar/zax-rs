@@ -10,12 +10,14 @@ use zax_exec::{InteractiveExec, SystemExec, SystemHandover};
 use zax_infra_editor::EditorCli;
 use zax_infra_git::GitCli;
 use zax_infra_github::GhCli;
+use zax_infra_ssh::SshAddCli;
 use zax_infra_tmux::{conf, TmuxCli, SOCKET_DEFAULT};
 
 pub type Git = GitCli<SystemExec>;
 pub type Gh = GhCli<SystemExec>;
 pub type Tmux = TmuxCli<SystemExec, SystemHandover>;
 pub type EditorAdapter = EditorCli<InteractiveExec>;
+pub type SshAdapter = SshAddCli<SystemExec>;
 
 pub struct Resolved {
     pub cwd: PathBuf,
@@ -94,6 +96,11 @@ pub fn tmux(config: &Config) -> Result<Tmux> {
         SOCKET_DEFAULT.to_owned(),
         conf_path,
     ))
+}
+
+/// The ssh agent, which zax only ever asks what it is holding.
+pub fn ssh() -> SshAdapter {
+    SshAddCli::new(SystemExec)
 }
 
 /// The editor `[editor] command` names, which may be no editor at all.

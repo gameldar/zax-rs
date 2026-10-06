@@ -88,6 +88,13 @@ pub fn remove_worktree(path: &Path, force: bool) -> Vec<String> {
     argv
 }
 
+/// `get-url` rather than reading the config key, so an `insteadOf` rewrite is
+/// applied: what matters is the URL git will actually dial, not the one
+/// written down.
+pub fn remote_url(remote: &str) -> Vec<String> {
+    vec![s("remote"), s("get-url"), s(remote)]
+}
+
 pub fn fetch(remote: &str, refspec: &str) -> Vec<String> {
     vec![s("fetch"), s(remote), s(refspec)]
 }

@@ -125,6 +125,9 @@ pub trait GitRepo {
     fn remove_worktree(&self, path: &Path, force: bool) -> Result<(), PortError>;
     fn fetch(&self, remote: &str, refspec: &str) -> Result<(), PortError>;
     /// The commit a revision names, as a full object name.
+    /// The URL of `remote`, or `None` when the repository has no such remote.
+    /// Its transport is what decides which credential a fetch will need.
+    fn remote_url(&self, remote: &str) -> Result<Option<String>, PortError>;
     fn resolve_commit(&self, rev: &str) -> Result<String, PortError>;
     /// Is `ancestor` reachable from `descendant`? A branch update is a
     /// fast-forward exactly when its current tip is.
@@ -191,6 +194,17 @@ pub trait Editor {
     /// been closed.
     fn open(&self, path: &Path) -> Result<(), PortError>;
     /// For `zax doctor`: can the configured editor be started at all?
+    fn probe(&self) -> Result<String, PortError>;
+}
+
+/// The ssh agent, which is the only thing that can hold an unlocked key.
+///
+/// zax runs git with every prompt moved off the terminal, so a passphrase has
+/// to have been given to something beforehand. That makes the agent as much a
+/// credential as `gh auth` is, and just as worth checking.
+pub trait SshAgent {
+    /// For `zax doctor`: what the agent holds, or why a key will not be
+    /// available when a fetch needs one.
     fn probe(&self) -> Result<String, PortError>;
 }
 

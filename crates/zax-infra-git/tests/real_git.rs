@@ -227,3 +227,23 @@ fn a_fetch_that_would_prompt_fails_with_a_line_instead_of_waiting() {
         "the fetch should have been refused, not asked: {error}"
     );
 }
+
+#[test]
+fn real_git_reports_the_origin_url_and_its_absence() {
+    let (_tmp, repo) = fixture();
+    let cli = GitCli::new(SystemExec, repo.clone());
+
+    // The gate on the doctor's ssh check reads this, so "no origin" has to be
+    // an answer rather than an error.
+    assert_eq!(cli.remote_url("origin").unwrap(), None);
+
+    git(
+        &repo,
+        &["remote", "add", "origin", "git@github.com:gameldar/zax.git"],
+    );
+
+    assert_eq!(
+        cli.remote_url("origin").unwrap(),
+        Some("git@github.com:gameldar/zax.git".to_owned())
+    );
+}

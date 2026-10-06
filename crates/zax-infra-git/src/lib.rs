@@ -139,6 +139,17 @@ impl<E: Exec> GitRepo for GitCli<E> {
         self.run_ok(argv::remove_worktree(path, force)).map(|_| ())
     }
 
+    fn remote_url(&self, remote: &str) -> Result<Option<String>, PortError> {
+        let out = self.run(argv::remote_url(remote))?;
+        // A remote that is not configured is an answer, not a failure: a fresh
+        // repository with no origin simply needs no credential for one.
+        if !out.ok() {
+            return Ok(None);
+        }
+        let url = out.trimmed_stdout().trim();
+        Ok(Some(url.to_owned()).filter(|url| !url.is_empty()))
+    }
+
     fn fetch(&self, remote: &str, refspec: &str) -> Result<(), PortError> {
         self.run_ok(argv::fetch(remote, refspec)).map(|_| ())
     }
@@ -190,6 +201,32 @@ mod tests {
             exec,
             PathBuf::from("/Users/me/src/worktrees/acme/topic"),
         )
+    }
+
+    #[test]
+    fn the_remote_url_is_asked_for_the_way_git_resolves_it() {
+        let git = cli(RecordingExec::returning(
+            "git@github.com:acme/omega.git\n",
+        ));
+
+        assert_eq!(
+            git.remote_url("origin").unwrap(),
+            Some("git@github.com:acme/omega.git".to_owned())
+        );
+        assert_eq!(git.exec_ref().args(0), ["remote", "get-url", "origin"]);
+    }
+
+    #[test]
+    fn a_remote_that_is_not_configured_is_none_rather_than_an_error() {
+        // A fresh repository with no origin needs no credential for one, which
+        // is an answer the doctor can use rather than a failure to report.
+        let git = cli(RecordingExec::with_responses(vec![Output {
+            status: 2,
+            stdout: String::new(),
+            stderr: "error: No such remote 'origin'".to_owned(),
+        }]));
+
+        assert_eq!(git.remote_url("origin").unwrap(), None);
     }
 
     #[test]

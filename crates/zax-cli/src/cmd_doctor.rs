@@ -12,7 +12,7 @@ pub fn run() -> Result<()> {
 
     let editor = wiring::editor(&ctx.config);
 
-    let checks = queries::doctor(&tmux, &ctx.git, &ctx.gh, &editor);
+    let checks = queries::doctor(&tmux, &ctx.git, &ctx.gh, &editor, &wiring::ssh());
     let mut all_ok = true;
 
     for check in &checks {
@@ -24,12 +24,12 @@ pub fn run() -> Result<()> {
             // particular prints an account dump nobody asked to see.
             Ok(detail) => {
                 let first = detail.lines().next().unwrap_or("");
-                println!("ok    {:<8} {}", check.name, first);
+                println!("ok    {:<9} {}", check.name, first);
                 // A working tmux can still be too old for the config popup,
                 // which is a note about one binding rather than a failure.
                 if check.name == "tmux" {
                     if let Some(hint) = diagnostics::popup_hint(first) {
-                        println!("note           {hint}");
+                        println!("note            {hint}");
                     }
                 }
             }
@@ -51,8 +51,8 @@ pub fn run() -> Result<()> {
 /// that says what to do about it, so it is never truncated.
 fn print_failure(name: &str, detail: &str) {
     let mut lines = detail.lines();
-    println!("FAIL  {name:<8} {}", lines.next().unwrap_or(""));
+    println!("FAIL  {name:<9} {}", lines.next().unwrap_or(""));
     for line in lines {
-        println!("               {}", line.trim_start());
+        println!("                {}", line.trim_start());
     }
 }

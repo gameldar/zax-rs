@@ -7,6 +7,7 @@ pub mod branch;
 pub mod forge;
 pub mod layout;
 pub mod prs_filter;
+pub mod remote;
 pub mod repo;
 pub mod session;
 pub mod settings;
@@ -22,6 +23,7 @@ pub use layout::{
     DurationError, LayoutSpec, PaneKind, PaneSize, PaneSizeError, PaneSpec,
 };
 pub use prs_filter::{PrFilter, RepoPattern, RepoPatternError};
+pub use remote::Transport;
 pub use repo::{
     RootRepoName, RootRepoNameError, WorktreePath, WorktreePathError, WorktreeRoot,
     WorktreeRootError,

@@ -430,10 +430,11 @@ real answer in a credential helper - `gh auth setup-git` writes one - and a
 dialog zax went looking for would be answering a question that should not have
 been asked. An explicit `$GIT_ASKPASS` is still respected.
 
-`ssh-add -l` is how to see what an agent is holding; if it reports an error
-rather than a list, the agent behind `$SSH_AUTH_SOCK` is the thing to fix.
-GNOME's `gcr-ssh-agent` is a known offender, and pointing `IdentityAgent` at
-the real agent it proxies is the usual cure:
+`zax doctor` checks the agent whenever `origin` is reached over ssh, telling an
+agent that holds no keys apart from no agent at all; an https remote is never
+asked about keys, because a token is what it needs. GNOME's `gcr-ssh-agent` is
+a known offender behind an agent that cannot be reached, and pointing
+`IdentityAgent` at the real agent it proxies is the usual cure:
 
 ```sshconfig
 Host github.com

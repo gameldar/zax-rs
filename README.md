@@ -405,15 +405,32 @@ everything else zax runs is told not to ask.
 
 ### Credentials
 
-zax captures the output of every tool it runs, which leaves those tools no way
-to ask for anything: a prompt would be painted over a pane's interface, and the
-keystrokes meant for it would be read by that pane instead. So git and ssh are
-told to fail rather than prompt, and a fetch with no usable credentials comes
-back as a line in the pane header - usually `Permission denied (publickey)` -
-instead of a command that never returns.
+zax captures the output of every tool it runs, so no tool it runs may ask a
+question on the terminal: that terminal belongs to a pane's interface, which
+would paint over the question and read the keystrokes meant for it. A prompt
+there is not a question but a hang. So `GIT_TERMINAL_PROMPT=0` and
+`SSH_ASKPASS_REQUIRE=force` move every question off it.
 
-That makes a working ssh agent a requirement for `w` and for `zax worktree
-review` on an ssh remote. `ssh-add -l` is the check; if it reports an error
+Off the terminal is not the same as unanswerable, and a locked ssh key is the
+case that makes the difference. Moving that question somewhere it can still be
+answered means an askpass helper, so zax uses the one you have: `$SSH_ASKPASS`
+if you set it, otherwise whichever of the usual packaged paths exists
+(`/usr/lib/openssh/ssh-askpass` and friends) as long as `$DISPLAY` or
+`$WAYLAND_DISPLAY` says there is somewhere to draw it. A passphrase then
+arrives as a dialog, and `w` works on a cold boot.
+
+With no helper and no display - over plain ssh, say - there is nothing to ask
+through, and the fetch fails rather than hanging: `Permission denied
+(publickey)` in the pane header instead of a command that never returns. An
+agent holding the key avoids the question altogether, which is the other way
+to arrive at a working `w`.
+
+`git`'s own credential prompts are not searched for a helper. Those have a
+real answer in a credential helper - `gh auth setup-git` writes one - and a
+dialog zax went looking for would be answering a question that should not have
+been asked. An explicit `$GIT_ASKPASS` is still respected.
+
+`ssh-add -l` is how to see what an agent is holding; if it reports an error
 rather than a list, the agent behind `$SSH_AUTH_SOCK` is the thing to fix.
 GNOME's `gcr-ssh-agent` is a known offender, and pointing `IdentityAgent` at
 the real agent it proxies is the usual cure:

@@ -185,11 +185,16 @@ fn an_unknown_revision_is_an_error_not_an_echo() {
 }
 
 /// Stands in for ssh, which is the program that actually prompts. It fails the
-/// way OpenSSH fails when it has been denied every way of asking, and says so
-/// plainly when it has not been: a test that hangs waiting for a passphrase
+/// way OpenSSH fails when the question has been kept off the terminal, and says
+/// so plainly when it has not been: a test that hangs waiting for a passphrase
 /// reports nothing, and that silence is the bug itself.
+///
+/// Only `SSH_ASKPASS_REQUIRE` is inspected, because that is the part of the
+/// policy that does not depend on the machine. Whether `SSH_ASKPASS` names a
+/// real helper is a question about what is installed, and a test that asserted
+/// an answer would pass here and fail on a desktop.
 const STUB_SSH: &str = "#!/bin/sh\n\
-    if [ \"$SSH_ASKPASS_REQUIRE\" = force ] && [ ! -x \"$SSH_ASKPASS\" ]; then\n\
+    if [ \"$SSH_ASKPASS_REQUIRE\" = force ]; then\n\
     \techo 'git@github.com: Permission denied (publickey).' >&2\n\
     \texit 255\n\
     fi\n\

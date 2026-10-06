@@ -10,6 +10,8 @@ use std::process::Command as StdCommand;
 
 use thiserror::Error;
 
+pub mod askpass;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Output {
     pub status: i32,
@@ -45,11 +47,7 @@ pub trait Exec {
     ) -> Result<Output, ExecError>;
 }
 
-/// Named rather than installed, because it has to be a program that cannot be
-/// run. An askpass that might exist one day is a prompt waiting to come back.
-const NO_ASKPASS: &str = "/nonexistent/zax-has-nobody-to-ask";
-
-/// What a captured child is told, so that it fails rather than asks.
+/// What a captured child is told, so that it never asks on the terminal.
 ///
 /// Capturing a child's output means `/dev/null` for its stdin, but it does not
 /// take away the terminal: a program that wants an answer opens `/dev/tty` and
@@ -58,18 +56,54 @@ const NO_ASKPASS: &str = "/nonexistent/zax-has-nobody-to-ask";
 /// meant for it, so a prompt there is not a question at all - it is a hang with
 /// no way out and nothing on stderr to say why.
 ///
-/// `GIT_TERMINAL_PROMPT` covers git's own credential prompts. ssh is the harder
-/// one, because it reads from `/dev/tty` whether or not an askpass program
-/// exists: only `SSH_ASKPASS_REQUIRE=force` moves it off the terminal, and
-/// pointing it at a helper that cannot run is what leaves it nowhere to ask at
-/// all. It then fails the way an unusable key always fails, which is a line the
-/// adapters already know how to report.
-const NON_INTERACTIVE: [(&str, &str); 4] = [
-    ("GIT_TERMINAL_PROMPT", "0"),
-    ("GIT_ASKPASS", NO_ASKPASS),
-    ("SSH_ASKPASS", NO_ASKPASS),
-    ("SSH_ASKPASS_REQUIRE", "force"),
-];
+/// `GIT_TERMINAL_PROMPT` and `SSH_ASKPASS_REQUIRE=force` are what move the
+/// question off that terminal. Where it goes instead is `askpass`'s decision,
+/// and the two are not the same thing: a locked ssh key with a helper to ask
+/// through is a dialog, while one with nothing to ask through fails fast.
+fn non_interactive() -> [(String, String); 4] {
+    let display = has_display();
+    let ssh = askpass::for_ssh(
+        &askpass::Environment {
+            configured: var("SSH_ASKPASS"),
+            has_display: display,
+        },
+        &runnable,
+    );
+    let git = askpass::for_git(&askpass::Environment {
+        configured: var("GIT_ASKPASS"),
+        has_display: display,
+    });
+
+    [
+        ("GIT_TERMINAL_PROMPT".to_owned(), "0".to_owned()),
+        ("GIT_ASKPASS".to_owned(), git.program().to_owned()),
+        ("SSH_ASKPASS".to_owned(), ssh.program().to_owned()),
+        ("SSH_ASKPASS_REQUIRE".to_owned(), "force".to_owned()),
+    ]
+}
+
+/// An environment variable the user set, where exported-but-empty counts as
+/// unset: `askpass` treats both as "no choice made".
+fn var(key: &str) -> Option<String> {
+    std::env::var(key).ok().filter(|value| !value.is_empty())
+}
+
+/// Whether there is anywhere to draw a dialog. Without this an askpass found
+/// on disk is a prompt that cannot appear, which is the hang all over again.
+fn has_display() -> bool {
+    ["DISPLAY", "WAYLAND_DISPLAY"]
+        .iter()
+        .any(|key| var(key).is_some())
+}
+
+/// A path that exists and can be executed. The distribution packages are
+/// symlinks, so this follows them rather than asking about the link.
+fn runnable(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+
+    std::fs::metadata(path)
+        .is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
+}
 
 /// A tool zax is asking a question of: git, gh, tmux, or another zax.
 pub struct SystemExec;
@@ -86,7 +120,7 @@ impl Exec for SystemExec {
         // Before the caller's own entries, so a call with an opinion about one
         // of these still has it: this is the default for the calls that have
         // none, not a rule the adapters cannot get out of.
-        for (key, value) in NON_INTERACTIVE {
+        for (key, value) in non_interactive() {
             command.env(key, value);
         }
         capture(configure(command, args, cwd, env), program)
@@ -334,25 +368,52 @@ mod tests {
     }
 
     #[test]
-    fn a_captured_child_is_told_that_nobody_can_answer_a_prompt() {
-        // The whole point of the policy: git must fail rather than ask, and
-        // ssh must be kept off the terminal even though it can still open it.
+    fn a_captured_child_is_told_never_to_ask_on_the_terminal() {
+        // The whole point of the policy: git must fail rather than ask there,
+        // and ssh must be kept off the terminal even though it can open it.
         assert_eq!(sees(&SystemExec, "GIT_TERMINAL_PROMPT"), "0");
         assert_eq!(sees(&SystemExec, "SSH_ASKPASS_REQUIRE"), "force");
     }
 
     #[test]
-    fn the_askpass_a_captured_child_is_given_cannot_be_run() {
-        // `SSH_ASKPASS_REQUIRE=force` only moves the question off the terminal;
-        // it is an unrunnable helper that leaves it with nowhere to go at all.
+    fn a_helper_counts_as_installed_only_when_it_can_actually_run() {
+        // The bridge between the pure choice and the real filesystem: a path
+        // that is merely present is not a helper, and a missing one is not
+        // either.
+        assert!(runnable(Path::new("/bin/sh")), "/bin/sh should be runnable");
+        assert!(
+            !runnable(Path::new("/etc/hostname")),
+            "a plain file is not a helper"
+        );
+        assert!(!runnable(Path::new("/nonexistent/ssh-askpass")));
+        assert!(!runnable(Path::new("/usr")), "a directory is not a helper");
+    }
+
+    #[test]
+    fn a_captured_child_is_always_given_an_askpass_to_name() {
+        // Which helper it is depends on the machine, so the invariant is only
+        // that there is one: an unset `SSH_ASKPASS` is what sends ssh back to
+        // the terminal, whatever `SSH_ASKPASS_REQUIRE` says.
         for variable in ["SSH_ASKPASS", "GIT_ASKPASS"] {
-            let path = sees(&SystemExec, variable);
-            assert!(!path.is_empty(), "{variable} was not set");
             assert!(
-                !Path::new(&path).exists(),
-                "{variable} names something that exists: {path}"
+                !sees(&SystemExec, variable).is_empty(),
+                "{variable} was not set"
             );
         }
+    }
+
+    #[test]
+    fn a_captured_child_is_never_left_to_ask_on_the_terminal() {
+        // The askpass either runs or cannot exist; either way the question
+        // does not land on the terminal a pane's TUI is holding.
+        let path = sees(&SystemExec, "SSH_ASKPASS");
+        let path = Path::new(&path);
+
+        assert!(
+            runnable(path) || !path.exists(),
+            "SSH_ASKPASS names something that exists but cannot run: {}",
+            path.display()
+        );
     }
 
     #[test]

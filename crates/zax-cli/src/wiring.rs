@@ -6,7 +6,7 @@ use anyhow::{Context, Result};
 use zax_app::{FileSystem, PortError};
 use zax_config::Config;
 use zax_domain::RootRepoName;
-use zax_exec::{SystemExec, SystemHandover};
+use zax_exec::{InteractiveExec, SystemExec, SystemHandover};
 use zax_infra_editor::EditorCli;
 use zax_infra_git::GitCli;
 use zax_infra_github::GhCli;
@@ -15,7 +15,7 @@ use zax_infra_tmux::{conf, TmuxCli, SOCKET_DEFAULT};
 pub type Git = GitCli<SystemExec>;
 pub type Gh = GhCli<SystemExec>;
 pub type Tmux = TmuxCli<SystemExec, SystemHandover>;
-pub type EditorAdapter = EditorCli<SystemExec>;
+pub type EditorAdapter = EditorCli<InteractiveExec>;
 
 pub struct Resolved {
     pub cwd: PathBuf,
@@ -97,8 +97,11 @@ pub fn tmux(config: &Config) -> Result<Tmux> {
 }
 
 /// The editor `[editor] command` names, which may be no editor at all.
+///
+/// The one adapter not on `SystemExec`: an editor is handed to the user rather
+/// than questioned by zax, so it keeps whatever way of asking it came with.
 pub fn editor(config: &Config) -> EditorAdapter {
-    EditorCli::new(SystemExec, config.editor.command.clone())
+    EditorCli::new(InteractiveExec, config.editor.command.clone())
 }
 
 /// The absolute path of the running binary, so panes re-invoke this build.

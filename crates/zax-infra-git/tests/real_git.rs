@@ -183,3 +183,42 @@ fn an_unknown_revision_is_an_error_not_an_echo() {
     let cli = GitCli::new(SystemExec, repo);
     assert!(cli.resolve_commit("refs/heads/nope").is_err());
 }
+
+/// Stands in for ssh, which is the program that actually prompts. It fails the
+/// way OpenSSH fails when it has been denied every way of asking, and says so
+/// plainly when it has not been: a test that hangs waiting for a passphrase
+/// reports nothing, and that silence is the bug itself.
+const STUB_SSH: &str = "#!/bin/sh\n\
+    if [ \"$SSH_ASKPASS_REQUIRE\" = force ] && [ ! -x \"$SSH_ASKPASS\" ]; then\n\
+    \techo 'git@github.com: Permission denied (publickey).' >&2\n\
+    \texit 255\n\
+    fi\n\
+    echo 'nothing stopped this from prompting on the terminal' >&2\n\
+    exit 1\n";
+
+#[test]
+fn a_fetch_that_would_prompt_fails_with_a_line_instead_of_waiting() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let (tmp, repo) = fixture();
+    let ssh = tmp.path().join("ssh");
+    std::fs::write(&ssh, STUB_SSH).unwrap();
+    std::fs::set_permissions(&ssh, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    git(
+        &repo,
+        &["remote", "add", "origin", "git@github.com:gameldar/zax.git"],
+    );
+    git(&repo, &["config", "core.sshCommand", ssh.to_str().unwrap()]);
+
+    let cli = GitCli::new(SystemExec, repo);
+    let error = cli
+        .fetch("origin", "refs/pull/1963/head")
+        .unwrap_err()
+        .to_string();
+
+    assert!(
+        error.contains("Permission denied"),
+        "the fetch should have been refused, not asked: {error}"
+    );
+}

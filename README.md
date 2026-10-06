@@ -397,7 +397,30 @@ open anything. An editor that will not start is a warning and not a failed
 command: the worktree was made either way. The command is run with its output
 captured and is waited on, which suits an editor that hands the path to a
 running application and returns - `zed`, `code`, `nvim --remote` - rather than
-a terminal editor expecting this terminal.
+a terminal editor expecting this terminal. The editor is the one program zax
+starts that keeps its own way of asking the user a question; everything else
+zax runs is told not to ask.
+
+### Credentials
+
+zax captures the output of every tool it runs, which leaves those tools no way
+to ask for anything: a prompt would be painted over a pane's interface, and the
+keystrokes meant for it would be read by that pane instead. So git and ssh are
+told to fail rather than prompt, and a fetch with no usable credentials comes
+back as a line in the pane header - usually `Permission denied (publickey)` -
+instead of a command that never returns.
+
+That makes a working ssh agent a requirement for `w` and for `zax worktree
+review` on an ssh remote. `ssh-add -l` is the check; if it reports an error
+rather than a list, the agent behind `$SSH_AUTH_SOCK` is the thing to fix.
+GNOME's `gcr-ssh-agent` is a known offender, and pointing `IdentityAgent` at
+the real agent it proxies is the usual cure:
+
+```sshconfig
+Host github.com
+  IdentityAgent /run/user/1000/gcr/.ssh
+  AddKeysToAgent yes
+```
 
 ## Sessions
 

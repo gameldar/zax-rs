@@ -10,6 +10,7 @@ use zax_app::{
 use zax_domain::{BranchName, PrRef};
 
 use crate::cli::WorktreeCommand;
+use crate::warning;
 use crate::wiring::{self, RealFs, RealRunner};
 
 pub fn run(command: WorktreeCommand) -> Result<()> {
@@ -104,18 +105,13 @@ fn open_in_editor<E: Editor>(editor: &E, path: &Path, open: bool) -> Option<Stri
     editor.open(path).err().map(|e| e.to_string())
 }
 
-/// A missing editor carries the advice for getting it on a second line, so the
-/// continuation is indented under the warning rather than reading as a new one.
+/// Marked as zax's own, because the review pane runs this command as a
+/// subprocess and an unmarked line is indistinguishable from a hook's chatter.
 fn warn(message: Option<String>) {
     let Some(message) = message else { return };
-    let mut lines = message.lines();
-    eprintln!(
-        "warning: could not open the worktree in the editor: {}",
-        lines.next().unwrap_or_default()
-    );
-    for line in lines {
-        eprintln!("  {}", line.trim_start());
-    }
+    warning::print(&format!(
+        "could not open the worktree in the editor: {message}"
+    ));
 }
 
 fn report(outcome: &zax_app::CreateWorktreeOutcome) {

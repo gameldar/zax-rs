@@ -394,12 +394,14 @@ editor window on the branch.
 
 Pass `--no-open` to skip it for one command, or set `command = []` to never
 open anything. An editor that will not start is a warning and not a failed
-command: the worktree was made either way. The command is run with its output
-captured and is waited on, which suits an editor that hands the path to a
-running application and returns - `zed`, `code`, `nvim --remote` - rather than
-a terminal editor expecting this terminal. The editor is the one program zax
-starts that keeps its own way of asking the user a question; everything else
-zax runs is told not to ask.
+command: the worktree was made either way. A pane that pressed `w` shows that
+warning in its header, because from there a worktree with no editor window on
+it looks exactly like a keystroke that did nothing. The command is run with
+its output captured and is waited on, which suits an editor that hands the
+path to a running application and returns - `zed`, `code`, `nvim --remote` -
+rather than a terminal editor expecting this terminal. The editor is the one
+program zax starts that keeps its own way of asking the user a question;
+everything else zax runs is told not to ask.
 
 ### Credentials
 

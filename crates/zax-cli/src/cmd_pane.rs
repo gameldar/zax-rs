@@ -17,6 +17,7 @@ use zax_tui::{refresh, BranchStatusPane, ExecPane, MyPrsPane, PaneAction, PrsFor
 
 use crate::cli::PaneCommand;
 use crate::screen::Screen;
+use crate::warning;
 use crate::wiring;
 
 const JITTER: f64 = 0.15;
@@ -240,13 +241,17 @@ fn perform_with<E: Exec>(exec: &E, action: PaneAction) -> Result<Option<String>>
 
 /// What a finished `zax worktree review` should tell the pane.
 ///
-/// zax prints its whole error chain as the last line of stderr, so that line is
-/// the message. Anything else (a tool that wrote nothing, a status with no
-/// explanation) still produces a line, because the point is that a failed `w`
-/// is never silent.
+/// Two outcomes have something to say, and neither of them is silence. A
+/// refused review exits non-zero, and zax prints its whole error chain as the
+/// last line of stderr, so that line is the message; anything else (a tool
+/// that wrote nothing, a status with no explanation) still produces a line,
+/// because the point is that a failed `w` is never silent. A worktree that was
+/// made but could not be opened exits zero and warns, and that warning is just
+/// as invisible to the user as a refusal would be: the editor never appeared
+/// either way.
 fn review_message(result: Result<zax_exec::Output, zax_exec::ExecError>) -> Option<String> {
     let detail = match result {
-        Ok(out) if out.ok() => return None,
+        Ok(out) if out.ok() => warning::find(&out.stderr)?,
         Ok(out) => out
             .stderr
             .lines()
@@ -383,6 +388,28 @@ mod tests {
             number: 42,
         };
         assert_eq!(perform_with(&exec, action).unwrap(), None);
+    }
+
+    #[test]
+    fn a_worktree_that_was_made_but_not_opened_still_says_so() {
+        // The editor failing is a warning and an exit of zero, because the
+        // worktree is there. The keystroke still looks like a no-op unless the
+        // part that did not happen reaches the pane.
+        let stderr = "zax: warning: could not open the worktree in the editor: \
+                      zed is not installed or not on PATH\n  if Zed is installed, \
+                      open it and run `cli: install`\n";
+
+        let message = review_message(out(0, stderr)).unwrap();
+
+        assert!(message.contains("could not open"), "got: {message}");
+        assert!(message.contains("zed"), "got: {message}");
+    }
+
+    #[test]
+    fn a_hook_writing_to_stderr_is_not_mistaken_for_a_warning() {
+        // Setup hooks inherit zax's stderr, so a chatty one lands in the same
+        // place; only zax's own marked line is something to show.
+        assert_eq!(review_message(out(0, "npm warn deprecated glob@7\n")), None);
     }
 
     #[test]

@@ -8,6 +8,7 @@ mod cmd_session;
 mod cmd_worktree;
 mod guard;
 mod screen;
+mod warning;
 mod wiring;
 
 use anyhow::Result;

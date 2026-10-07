@@ -4,6 +4,7 @@
 //! conventions are type constructors, not advisory documentation.
 
 pub mod branch;
+pub mod date;
 pub mod forge;
 pub mod layout;
 pub mod prs_filter;
@@ -15,6 +16,7 @@ pub mod ticket;
 pub mod work;
 
 pub use branch::{BranchName, BranchNameError, BranchOrigin};
+pub use date::{Date, DateError, Weekday};
 pub use forge::{
     Attention, BranchView, CheckState, Mergeable, MyPullRequest, PrRef, PrRefError, PullRequest,
     PullRequestStatus, RepoSlug, RepoSlugError, ReviewState,

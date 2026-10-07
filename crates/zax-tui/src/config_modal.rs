@@ -57,7 +57,7 @@ enum Row {
 
 impl Row {
     /// Grouped as the TOML is, with the layout where a reader expects it.
-    const ALL: [Row; 12] = [
+    const ALL: [Row; 13] = [
         Row::Setting(SettingKey::AgentCommand),
         Row::Panes,
         Row::Setting(SettingKey::WorktreeRoot),
@@ -65,6 +65,7 @@ impl Row {
         Row::Setting(SettingKey::WorktreeHooks),
         Row::Setting(SettingKey::EditorCommand),
         Row::Setting(SettingKey::TicketsProvider),
+        Row::Setting(SettingKey::TodoFile),
         Row::Setting(SettingKey::TmuxPrefix),
         Row::Setting(SettingKey::PrsInclude),
         Row::Setting(SettingKey::PrsExclude),

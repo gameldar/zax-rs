@@ -102,6 +102,7 @@ pub enum SettingKey {
     WorktreeHooks,
     EditorCommand,
     TicketsProvider,
+    TodoFile,
     TmuxPrefix,
     PrsInclude,
     PrsExclude,
@@ -112,13 +113,14 @@ pub enum SettingKey {
 impl SettingKey {
     /// Display order: grouped as the TOML is, with the repo key last because it
     /// is the one setting that is about zax's own bookkeeping.
-    pub const ALL: [SettingKey; 11] = [
+    pub const ALL: [SettingKey; 12] = [
         SettingKey::AgentCommand,
         SettingKey::WorktreeRoot,
         SettingKey::WorktreeCopy,
         SettingKey::WorktreeHooks,
         SettingKey::EditorCommand,
         SettingKey::TicketsProvider,
+        SettingKey::TodoFile,
         SettingKey::TmuxPrefix,
         SettingKey::PrsInclude,
         SettingKey::PrsExclude,
@@ -133,6 +135,7 @@ impl SettingKey {
             Self::WorktreeRoot | Self::WorktreeCopy | Self::WorktreeHooks => Some("worktree"),
             Self::EditorCommand => Some("editor"),
             Self::TicketsProvider => Some("tickets"),
+            Self::TodoFile => Some("todo"),
             Self::TmuxPrefix => Some("tmux"),
             Self::PrsInclude | Self::PrsExclude | Self::PrsMaxAge => Some("prs"),
             Self::RepoKeyName => None,
@@ -147,6 +150,7 @@ impl SettingKey {
             Self::WorktreeCopy => "copy",
             Self::WorktreeHooks => "hooks",
             Self::TicketsProvider => "provider",
+            Self::TodoFile => "file",
             Self::TmuxPrefix => "prefix",
             Self::PrsInclude => "include",
             Self::PrsExclude => "exclude",
@@ -164,6 +168,7 @@ impl SettingKey {
             Self::WorktreeHooks => "worktree.hooks",
             Self::EditorCommand => "editor.command",
             Self::TicketsProvider => "tickets.provider",
+            Self::TodoFile => "todo.file",
             Self::TmuxPrefix => "tmux.prefix",
             Self::PrsInclude => "prs.include",
             Self::PrsExclude => "prs.exclude",
@@ -191,9 +196,11 @@ impl SettingKey {
             | Self::TicketsProvider
             | Self::PrsInclude
             | Self::PrsExclude => SettingShape::List,
-            Self::WorktreeRoot | Self::TmuxPrefix | Self::PrsMaxAge | Self::RepoKeyName => {
-                SettingShape::Scalar
-            }
+            Self::WorktreeRoot
+            | Self::TodoFile
+            | Self::TmuxPrefix
+            | Self::PrsMaxAge
+            | Self::RepoKeyName => SettingShape::Scalar,
         }
     }
 
@@ -208,6 +215,7 @@ impl SettingKey {
             Self::TicketsProvider => {
                 "the ticket provider command, such as zax-jira; empty means none"
             }
+            Self::TodoFile => "the markdown file the todo pane reads and writes",
             Self::TmuxPrefix => "the tmux prefix key, such as C-Space or C-a",
             Self::PrsInclude => "only these repositories; empty means every repository",
             Self::PrsExclude => "never these repositories, even when included",
@@ -224,6 +232,7 @@ impl SettingKey {
             Self::WorktreeCopy | Self::WorktreeHooks | Self::PrsExclude => "[]",
             Self::EditorCommand => "zed -e",
             Self::TicketsProvider => "[] (none)",
+            Self::TodoFile => "~/.local/share/zax/todo.md",
             Self::TmuxPrefix => "C-Space",
             Self::PrsInclude => "[] (every repository)",
             Self::PrsMaxAge => "(no limit)",
@@ -578,6 +587,14 @@ mod tests {
         assert_eq!(SettingKey::EditorCommand.list_separator(), " ");
         let row = SettingRow::new(SettingKey::EditorCommand, [None, None, None]);
         assert_eq!(row.display_effective(), "zed -e");
+    }
+
+    #[test]
+    fn the_todo_file_is_a_scalar_with_a_documented_default() {
+        assert_eq!(SettingKey::TodoFile.full_name(), "todo.file");
+        assert_eq!(SettingKey::TodoFile.shape(), SettingShape::Scalar);
+        let row = SettingRow::new(SettingKey::TodoFile, [None, None, None]);
+        assert_eq!(row.display_effective(), "~/.local/share/zax/todo.md");
     }
 
     #[test]

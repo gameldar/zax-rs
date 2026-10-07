@@ -113,6 +113,8 @@ pub enum PaneCommand {
     MyPrs,
     /// Your assigned tickets and the work behind each.
     Tickets,
+    /// Your todo list, from a markdown file shared by every session.
+    Todo,
     /// Wrap any command's stdout in a header, refresh loop and scrollback.
     Exec {
         #[arg(long)]

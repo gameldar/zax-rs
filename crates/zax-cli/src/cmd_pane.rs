@@ -30,6 +30,7 @@ pub fn run(command: PaneCommand) -> Result<()> {
         PaneCommand::BranchStatus => run_branch_pane(),
         PaneCommand::MyPrs => run_my_prs_pane(),
         PaneCommand::Tickets => crate::cmd_tickets::run(),
+        PaneCommand::Todo => anyhow::bail!("the todo pane is not wired yet"),
         PaneCommand::Exec {
             title,
             every,

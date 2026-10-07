@@ -1,7 +1,7 @@
 //! Layer merging. Your layer wins; arrays replace.
 
 use crate::raw::{
-    RawAgent, RawConfig, RawEditor, RawLayout, RawPrs, RawTickets, RawTmux, RawWorktree,
+    RawAgent, RawConfig, RawEditor, RawLayout, RawPrs, RawTickets, RawTmux, RawTodo, RawWorktree,
 };
 
 /// Fold the layers in order, lowest precedence first.
@@ -18,6 +18,7 @@ fn fold_one(mut base: RawConfig, over: RawConfig) -> RawConfig {
     base.prs = merge_prs(base.prs, over.prs);
     base.editor = merge_editor(base.editor, over.editor);
     base.tickets = merge_tickets(base.tickets, over.tickets);
+    base.todo = merge_todo(base.todo, over.todo);
     base
 }
 
@@ -38,6 +39,17 @@ fn merge_tickets(base: Option<RawTickets>, over: Option<RawTickets>) -> Option<R
         (None, o) => o,
         (Some(mut b), Some(o)) => {
             b.provider = o.provider.or(b.provider);
+            Some(b)
+        }
+    }
+}
+
+fn merge_todo(base: Option<RawTodo>, over: Option<RawTodo>) -> Option<RawTodo> {
+    match (base, over) {
+        (b, None) => b,
+        (None, o) => o,
+        (Some(mut b), Some(o)) => {
+            b.file = o.file.or(b.file);
             Some(b)
         }
     }
@@ -124,6 +136,15 @@ mod tests {
             merged.agent.unwrap().command.unwrap(),
             vec!["claude", "--dangerously-skip-permissions"]
         );
+    }
+
+    #[test]
+    fn a_later_layer_replaces_the_todo_file() {
+        let merged = merge(vec![
+            parse("[todo]\nfile = \"/a.md\""),
+            parse("[todo]\nfile = \"/b.md\""),
+        ]);
+        assert_eq!(merged.todo.unwrap().file.unwrap(), "/b.md");
     }
 
     #[test]

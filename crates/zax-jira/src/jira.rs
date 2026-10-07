@@ -188,7 +188,7 @@ mod tests {
                 program: &str,
                 _: &[String],
                 _: Option<&std::path::Path>,
-                _: &[(String, String)],
+                _: &[zax_exec::EnvVar],
             ) -> Result<Output, ExecError> {
                 Err(ExecError::NotFound {
                     program: program.into(),

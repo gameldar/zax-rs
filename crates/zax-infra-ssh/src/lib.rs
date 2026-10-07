@@ -129,7 +129,7 @@ mod tests {
                 program: &str,
                 _args: &[String],
                 _cwd: Option<&Path>,
-                _env: &[(String, String)],
+                _env: &[zax_exec::EnvVar],
             ) -> Result<Output, ExecError> {
                 Err(ExecError::NotFound {
                     program: program.to_owned(),

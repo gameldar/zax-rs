@@ -11,6 +11,7 @@ use std::fs;
 use std::io::{self, Write};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use serde_json::{json, Value};
@@ -22,6 +23,19 @@ use crate::topics::{decode_todo_edit, encode_todo};
 pub const TODO_INTERVAL: Duration = Duration::from_secs(2);
 /// As the kernel's own limit on symlink hops.
 const MAX_LINKS: usize = 40;
+/// Makes every temporary file name unique within the process, so two sources
+/// writing one file through different spellings never share one.
+static TEMPORARY: AtomicU64 = AtomicU64::new(0);
+
+/// A name beside `name` that no earlier call in this process has returned.
+fn temporary_path(dir: &Path, name: &std::ffi::OsStr) -> PathBuf {
+    let n = TEMPORARY.fetch_add(1, Ordering::Relaxed);
+    dir.join(format!(
+        ".{}.zax-{}-{n}",
+        name.to_string_lossy(),
+        std::process::id()
+    ))
+}
 
 /// Enough of a file's metadata to tell that it changed: a rename gives a
 /// new inode, an in-place write a new length or modification time.
@@ -105,15 +119,14 @@ impl TodoSource {
             )));
         };
         fs::create_dir_all(dir).map_err(|e| io_error(dir, e))?;
-        let temporary = dir.join(format!(
-            ".{}.zax-{}",
-            name.to_string_lossy(),
-            std::process::id()
-        ));
+        let temporary = temporary_path(dir, name);
 
         let hook = &mut self.before_rename;
         let attempt = (|| -> io::Result<bool> {
-            let mut file = fs::File::create(&temporary)?;
+            let mut file = fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&temporary)?;
             file.write_all(text.as_bytes())?;
             file.sync_all()?;
             if let Ok(meta) = fs::metadata(&target) {
@@ -369,6 +382,65 @@ mod tests {
         );
         // The hand edit wins; the broker's edit was not written.
         assert_eq!(fs::read_to_string(&file).unwrap(), "- [ ] edit 2\n");
+    }
+
+    #[test]
+    fn temporary_names_are_unique_and_never_reuse_an_existing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let name = std::ffi::OsStr::new("todo.md");
+        assert_ne!(
+            temporary_path(dir.path(), name),
+            temporary_path(dir.path(), name)
+        );
+
+        // A file planted at the next name is refused, not truncated.
+        let planted = temporary_path(dir.path(), name);
+        let next = dir.path().join(
+            planted
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .rsplit_once('-')
+                .map(|(head, n)| format!("{head}-{}", n.parse::<u64>().unwrap() + 1))
+                .unwrap(),
+        );
+        fs::write(&next, "keep").unwrap();
+        let err = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&next)
+            .unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(fs::read_to_string(&next).unwrap(), "keep");
+    }
+
+    #[test]
+    fn two_sources_on_one_file_do_not_share_a_temporary() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real.md");
+        fs::write(&real, "- [ ] a\n").unwrap();
+        let link = dir.path().join("link.md");
+        std::os::unix::fs::symlink("real.md", &link).unwrap();
+
+        let mut other = TodoSource::new(real.clone());
+        let mut first = true;
+        let mut source = TodoSource::new(link).with_hook(move |_| {
+            if first {
+                first = false;
+                other.call("todo/add", json!({"text": "c"})).unwrap();
+            }
+        });
+        source.call("todo/add", json!({"text": "b"})).unwrap();
+        assert_eq!(
+            fs::read_to_string(&real).unwrap(),
+            "- [ ] a\n- [ ] c\n- [ ] b\n"
+        );
+        let mut names: Vec<String> = fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        names.sort();
+        assert_eq!(names, ["link.md", "real.md"]);
     }
 
     #[test]

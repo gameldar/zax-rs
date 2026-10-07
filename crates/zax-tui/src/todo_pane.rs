@@ -155,13 +155,20 @@ impl TodoPane {
     /// Rebuild the rows and keep the selection on the same item: a hand edit
     /// or another pane's add must not move the cursor onto a different todo.
     fn regroup(&mut self) {
-        let keep = self.rows.get(self.selected).map(|i| i.raw.clone());
+        let keep = self.rows.get(self.selected).map(TodoItem::at);
         self.rows = self
             .list
             .value()
             .map(|items| todo_rows(items, self.today, self.show_all_done))
             .unwrap_or_default();
-        let found = keep.and_then(|raw| self.rows.iter().position(|i| i.raw == raw));
+        // Identical lines share `raw`, so the line number breaks the tie; a
+        // line that moved is found by its text alone.
+        let found = keep.and_then(|at| {
+            self.rows
+                .iter()
+                .position(|i| i.line == at.line && i.raw == at.raw)
+                .or_else(|| self.rows.iter().position(|i| i.raw == at.raw))
+        });
         self.selected = found
             .unwrap_or(self.selected)
             .min(self.rows.len().saturating_sub(1));
@@ -265,6 +272,16 @@ impl TodoPane {
             _ => {}
         }
         PaneAction::None
+    }
+
+    /// Pasted text goes into the open prompt as one line; with no prompt
+    /// open it is ignored, so a paste can never run as pane keys.
+    pub fn on_paste(&mut self, text: &str) {
+        if let Some(prompt) = self.prompt.as_mut() {
+            for c in text.chars() {
+                prompt.insert(if matches!(c, '\r' | '\n') { ' ' } else { c });
+            }
+        }
     }
 
     /// A prompt that does not parse stays open with the reason; nothing is
@@ -862,6 +879,43 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn the_selection_stays_on_the_second_of_two_identical_lines() {
+        let mut pane = pane_with("- [ ] same\n- [ ] same\n");
+        pane.on_key(key(KeyCode::Char('j')));
+        let again = TodoDocument::parse("- [ ] same\n- [ ] same\n").items();
+        pane.apply(Some(again), Some(t(110)), None);
+        assert!(matches!(
+            pane.on_key(key(KeyCode::Char('x'))),
+            PaneAction::Todo(TodoEdit::Toggle {
+                at: LineRef { line: 1, .. },
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn a_paste_with_a_newline_stays_in_the_prompt_as_one_line() {
+        let mut pane = pane_with(FILE);
+        pane.on_key(key(KeyCode::Char('a')));
+        pane.on_paste("call\r\nbank\nnow");
+        assert!(pane.prompt_open());
+        assert_eq!(
+            pane.prompt.as_ref().map(|p| p.text()),
+            Some("call  bank now".to_owned())
+        );
+    }
+
+    #[test]
+    fn a_paste_with_no_prompt_open_changes_nothing() {
+        let mut pane = pane_with(FILE);
+        let rows = pane.rows().to_vec();
+        pane.on_paste("d\nd\n");
+        assert!(!pane.prompt_open());
+        assert_eq!(pane.rows(), rows.as_slice());
+        assert!(!pane.confirm_delete);
     }
 
     #[test]

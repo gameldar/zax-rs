@@ -548,6 +548,9 @@ checked off; `.` shows every done item in the file.
 
 | Key | Action |
 | --- | --- |
+| `j` / `k`, arrows | Move the selection |
+| `q` / `esc` | Close the pane |
+| `r` | Refresh now |
 | `a` | Add: type `call bank due:mon` and press `enter` |
 | `e` / `enter` | Edit the selected item, prefilled |
 | `x` / `space` | Check / uncheck |
@@ -563,10 +566,12 @@ In the prompt, `due:` takes `today`, `tom`, a weekday (`fri`, the next one),
 ### Who writes the file
 
 The shared broker does, for every pane, so two panes can never write at once.
-An edit names the line it is about as the pane last saw it. If the file
-changed underneath - you saved it by hand meanwhile - the edit is refused
-with `the todo file changed - refreshed` rather than applied to the wrong
-line, and the pane shows the file as it is now.
+An edit names the line it is about as the pane last saw it. If that line
+moved or changed - you saved the file by hand meanwhile - the edit is
+refused with `the todo file changed - refreshed` rather than applied to the
+wrong line, and the pane shows the file as it is now. It is refused the same
+way if the file changes during both write attempts. Any other hand edit
+leaves the line alone, and the edit is applied on top of it.
 
 ## Writing a ticket provider
 

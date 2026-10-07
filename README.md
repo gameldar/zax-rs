@@ -30,7 +30,8 @@ scrollback intact.
 `zax doctor` checks tmux, git, gh, gh's auth and the editor, and reports each
 separately, so one missing tool never hides the state of the others. Once a
 `[tickets] provider` is configured it also starts that provider and reports its
-name and protocol.
+name and protocol. It also reports where the todo file is and how many
+items are open, or that there is no file yet.
 
 ## Install
 
@@ -91,11 +92,11 @@ title is what drives Zed's in-progress indicator for a thread. tmux's own
 | `zax worktree review <pr\|url> [--force] [--no-hooks] [--no-open]` | A pull request's head branch in a worktree, then copy, hooks and the editor |
 | `zax worktree list` | The worktrees zax manages for this repository |
 | `zax worktree rm <branch> [--force]` | Remove one |
-| `zax pane prs-for-review \| branch-status \| my-prs \| tickets` | Built-in pane processes, normally launched by `session start` |
+| `zax pane prs-for-review \| branch-status \| my-prs \| tickets \| todo` | Built-in pane processes, normally launched by `session start` |
 | `zax pane exec --title <t> --every <dur> -- <cmd>` | Wrap any command's stdout in a header and refresh loop |
 | `zax config` | View and edit the three config layers, in a popup over the session. It shows every key, including `editor.command` and `tickets.provider` |
 | `zax config show` | The same view, printed: every setting, its effective value and its origin |
-| `zax doctor` | Verify tmux, git, gh and the editor are present and authenticated, and the ticket provider answers when one is configured |
+| `zax doctor` | Verify tmux, git, gh and the editor are present and authenticated, the ticket provider answers when one is configured, and the todo file is readable |
 
 ## Configuration
 
@@ -216,6 +217,7 @@ max_age = "14d"
 | `prs.max_age` | none | Hide pull requests older than this, in `prs-for-review` only |
 | `editor.command` | `["zed", "-e"]` | What opens a worktree, with the path as its last argument. `[]` opens nothing |
 | `tickets.provider` | none | The ticket provider command, such as `["zax-jira"]`. Without one the `tickets` pane says so and does nothing |
+| `todo.file` | `~/.local/share/zax/todo.md` | The markdown file the `todo` pane reads and writes. `$XDG_DATA_HOME` replaces `~/.local/share` |
 
 Durations are written `30s`, `5m`, `2h` or `14d`; a bare number means
 seconds.
@@ -235,9 +237,10 @@ Three kinds, and the built-ins are privileged instances of the same
 mechanism:
 
 - **`builtin`** - a Rust pane shipped with zax. Takes `name`:
-  `prs-for-review`, `branch-status`, `my-prs` or `tickets`. The `tickets` pane is
-  not in the default layout; add it to `[[layout.panes]]` once a provider is
-  configured.
+  `prs-for-review`, `branch-status`, `my-prs`, `tickets` or `todo`. The
+  `tickets` pane is not in the default layout; add it to `[[layout.panes]]`
+  once a provider is configured. The `todo` pane is not in the default layout
+  either; it needs no config.
 - **`exec`** - runs a command on a loop and wraps its stdout in a styled
   header with a last-updated time, stale and error marking, and scrollback.
   Takes `title`, `every` and `command`.
@@ -490,6 +493,81 @@ on the pane's error line. Unknown keys in the file are errors, and a file
 that cannot be read is reported on the pane's error line with its path and
 line.
 
+## Todo
+
+`todo` is the fifth built-in pane: a todo list you keep by hand, with
+optional due dates, shared by every pane in every session.
+
+```toml
+[[layout.panes]]
+kind = "builtin"
+name = "todo"
+size = "40%"
+```
+
+```
+Todo (4 · 1 late)        ⟳ 2s
+☐ renew TLS cert       -2d
+☐ standup notes      today
+☐ review RFC           Fri
+☐ call bank         Oct 20
+☐ tidy dotfiles
+☑ book flights
+renew TLS cert · due Mon 5 Oct · 2 days late
+```
+
+### The file
+
+The list is a markdown file, `~/.local/share/zax/todo.md` unless `[todo]
+file` says otherwise, written as GitHub task-list lines with
+[Obsidian Tasks](https://publish.obsidian.md/tasks/) Dataview fields, so it
+reads well anywhere and works in Obsidian as it is:
+
+```markdown
+# Todo
+
+- [ ] renew TLS cert [due:: 2026-10-10]
+- [ ] review RFC on retries
+- [x] book flights [due:: 2026-10-06] [completion:: 2026-10-07]
+```
+
+- Edit it by hand whenever you like, with the pane open. The pane picks the
+  change up within two seconds.
+- Any line that is not a task - headings, notes, blank lines - is left
+  exactly as it is, and an edit from the pane rewrites only its own line.
+- zax reads and writes `due` and `completion`. Any other field, such as
+  `[priority:: high]`, is kept as written. A `due` that is not a
+  `YYYY-MM-DD` date shows `?` and is quoted on the detail line.
+- A file that is a symlink stays one: zax writes the file it points to.
+
+### Rows and keys
+
+Overdue items first (oldest first), then today, then upcoming by date, then
+undated. Done items are dimmed and stay until the end of the day they were
+checked off; `.` shows every done item in the file.
+
+| Key | Action |
+| --- | --- |
+| `a` | Add: type `call bank due:mon` and press `enter` |
+| `e` / `enter` | Edit the selected item, prefilled |
+| `x` / `space` | Check / uncheck |
+| `+` | Snooze: one day later, or tomorrow when it has no due date or is overdue |
+| `d` `d` | Delete |
+| `o` | Open the file in `[editor] command` |
+| `.` | Show / hide older done items |
+
+In the prompt, `due:` takes `today`, `tom`, a weekday (`fri`, the next one),
+`+3d`, `+2w` or `2026-10-20`, and is written to the file as a date.
+`ctrl-u` clears, `ctrl-w` deletes a word, `esc` cancels.
+
+### Who writes the file
+
+The shared broker does, for every pane, so two panes can never write at once.
+An edit names the line it is about as the pane last saw it. If the file
+changed underneath - you saved it by hand meanwhile - the edit is refused
+with `the todo file changed - refreshed` rather than applied to the wrong
+line, and the pane shows the file as it is now.
+
 ## Writing a ticket provider
 
 A provider is any executable that speaks protocol version 1 on stdin and
@@ -651,7 +729,7 @@ zax-config  zax-infra-tmux  zax-infra-git  zax-infra-github  zax-tui
 zax-cli      clap + composition root
 
 zax-protocol  wire types for the broker and providers (serde, serde_json)
-zax-broker    shared per-user broker: socket, sources, fan-out
+zax-broker    shared per-user broker: socket, sources (tickets, work, todo), fan-out
               (zax-domain, zax-protocol)
 zax-jira      the Jira ticket provider, a separate binary
               (zax-exec, zax-protocol)

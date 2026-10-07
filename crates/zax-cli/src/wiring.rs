@@ -35,9 +35,15 @@ pub fn home() -> Result<PathBuf> {
 
 /// `$XDG_DATA_HOME`, or `~/.local/share`.
 pub fn data_home() -> Result<PathBuf> {
-    match std::env::var_os("XDG_DATA_HOME") {
-        Some(value) if !value.is_empty() => Ok(PathBuf::from(value)),
-        _ => Ok(home()?.join(".local").join("share")),
+    Ok(data_home_from(std::env::var_os("XDG_DATA_HOME"), &home()?))
+}
+
+/// The XDG base-directory spec says a relative value is invalid and is to be
+/// ignored, as is an empty one.
+fn data_home_from(value: Option<std::ffi::OsString>, home: &Path) -> PathBuf {
+    match value.map(PathBuf::from) {
+        Some(path) if path.is_absolute() => path,
+        _ => home.join(".local").join("share"),
     }
 }
 
@@ -199,6 +205,29 @@ impl zax_app::ProcessRunner for RealRunner {
                 status: status.code().unwrap_or(-1),
                 stderr: format!("`{program}` exited with a non-zero status"),
             })
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_absolute_data_home_is_used() {
+        assert_eq!(
+            data_home_from(Some("/x/data".into()), Path::new("/h")),
+            PathBuf::from("/x/data")
+        );
+    }
+
+    #[test]
+    fn an_unset_empty_or_relative_data_home_falls_back_to_the_home() {
+        for value in [None, Some("".into()), Some("data".into())] {
+            assert_eq!(
+                data_home_from(value, Path::new("/h")),
+                PathBuf::from("/h/.local/share")
+            );
         }
     }
 }

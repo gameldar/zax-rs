@@ -44,6 +44,7 @@ pub use ticket::{
     branch_slug, StatusCategory, Ticket, TicketKey, TicketKeyError, TicketStatus, Transition,
 };
 pub use todo::{
-    Due, LineRef, TodoDocument, TodoFile, TodoFileError, TodoItem, TodoList, COMPLETION, DUE,
+    Due, LineRef, TodoDocument, TodoEdit, TodoError, TodoFile, TodoFileError, TodoItem, TodoList,
+    COMPLETION, DUE,
 };
 pub use work::{join, TicketRank, TicketRow, TicketWork, WorkIndex, Worktree};

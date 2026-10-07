@@ -111,11 +111,55 @@ pub struct TodoList {
     pub items: Vec<TodoItem>,
 }
 
+/// One change to the todo file, as a pane asks for it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TodoEdit {
+    Add {
+        text: String,
+        due: Option<Date>,
+    },
+    Toggle {
+        at: LineRef,
+        today: Date,
+    },
+    Set {
+        at: LineRef,
+        text: String,
+        due: Option<Date>,
+    },
+    Delete {
+        at: LineRef,
+    },
+    Snooze {
+        at: LineRef,
+        today: Date,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum TodoError {
+    #[error("the todo file changed - refreshed")]
+    Stale,
+    #[error("a todo needs some text")]
+    EmptyText,
+    #[error("a todo is a single line")]
+    Multiline,
+}
+
+fn checked_text(text: &str) -> Result<String, TodoError> {
+    let text = text.trim();
+    if text.is_empty() {
+        Err(TodoError::EmptyText)
+    } else if text.contains(['\n', '\r']) {
+        Err(TodoError::Multiline)
+    } else {
+        Ok(text.to_owned())
+    }
+}
+
 /// A task line split into what an edit keeps and what it changes.
 pub(crate) struct TaskLine<'a> {
     /// The indent and the list marker with its space: `"  - "`.
-    // The edits use it.
-    #[expect(dead_code)]
     pub(crate) prefix: &'a str,
     pub(crate) done: bool,
     /// Everything after `[ ] `.
@@ -148,8 +192,6 @@ pub(crate) fn split_task(raw: &str) -> Option<TaskLine<'_>> {
     })
 }
 
-// The edits use it.
-#[expect(dead_code)]
 pub(crate) fn render_task(prefix: &str, done: bool, body: &str) -> String {
     let mark = if done { 'x' } else { ' ' };
     if body.is_empty() {
@@ -192,8 +234,6 @@ pub(crate) fn without_field(body: &str, key: &str) -> String {
 
 /// `body` with its `key` field set to `value`: replaced where it is, or
 /// appended when there is none.
-// The edits use it.
-#[expect(dead_code)]
 pub(crate) fn with_field(body: &str, key: &str, value: &str) -> String {
     let field = format!("[{key}:: {value}]");
     match find_field(body, key) {
@@ -260,6 +300,124 @@ impl TodoDocument {
             .enumerate()
             .filter_map(|(i, line)| TodoItem::parse(i, &line.content))
             .collect()
+    }
+
+    pub fn apply(&mut self, edit: &TodoEdit) -> Result<(), TodoError> {
+        match edit {
+            TodoEdit::Add { text, due } => {
+                let text = checked_text(text)?;
+                let body = match due {
+                    Some(d) => with_field(&text, DUE, &d.to_string()),
+                    None => text,
+                };
+                let at = self
+                    .lines
+                    .iter()
+                    .rposition(|l| split_task(&l.content).is_some())
+                    .map_or(self.lines.len(), |i| i + 1);
+                self.insert_line(at, render_task("- ", false, &body));
+                Ok(())
+            }
+            TodoEdit::Toggle { at, today } => self.rewrite(at, |task| {
+                let body = without_field(task.body, COMPLETION);
+                if task.done {
+                    render_task(task.prefix, false, &body)
+                } else {
+                    render_task(
+                        task.prefix,
+                        true,
+                        &with_field(&body, COMPLETION, &today.to_string()),
+                    )
+                }
+            }),
+            TodoEdit::Set { at, text, due } => {
+                let text = checked_text(text)?;
+                self.rewrite(at, |task| {
+                    let mut body = text;
+                    if let Some(d) = due {
+                        body = with_field(&body, DUE, &d.to_string());
+                    }
+                    if find_field(&body, COMPLETION).is_none() {
+                        if let Some((_, value)) = find_field(task.body, COMPLETION) {
+                            body = with_field(&body, COMPLETION, value);
+                        }
+                    }
+                    render_task(task.prefix, task.done, &body)
+                })
+            }
+            TodoEdit::Snooze { at, today } => self.rewrite(at, |task| {
+                let current = find_field(task.body, DUE).and_then(|(_, v)| Date::parse_iso(v).ok());
+                let next = match current {
+                    Some(d) if d >= *today => d.add_days(1),
+                    _ => today.add_days(1),
+                };
+                render_task(
+                    task.prefix,
+                    task.done,
+                    &with_field(task.body, DUE, &next.to_string()),
+                )
+            }),
+            TodoEdit::Delete { at } => {
+                self.task_at(at)?;
+                let removed = self.lines.remove(at.line);
+                if removed.ending.is_empty() {
+                    if let Some(previous) =
+                        at.line.checked_sub(1).and_then(|i| self.lines.get_mut(i))
+                    {
+                        previous.ending = "";
+                    }
+                }
+                Ok(())
+            }
+        }
+    }
+
+    /// `\r\n` when any line uses it, else `\n`.
+    fn ending(&self) -> &'static str {
+        if self.lines.iter().any(|l| l.ending == "\r\n") {
+            "\r\n"
+        } else {
+            "\n"
+        }
+    }
+
+    /// The new line takes the ending of the line before it, which takes the
+    /// document's own ending if it had none, so a file with no final newline
+    /// still has none and no two lines are glued together.
+    fn insert_line(&mut self, at: usize, content: String) {
+        let document = self.ending();
+        let ending = match at.checked_sub(1).and_then(|i| self.lines.get_mut(i)) {
+            Some(previous) if previous.ending.is_empty() => {
+                previous.ending = document;
+                ""
+            }
+            Some(previous) => previous.ending,
+            None => document,
+        };
+        self.lines
+            .insert(at.min(self.lines.len()), Line { content, ending });
+    }
+
+    fn task_at(&self, at: &LineRef) -> Result<(), TodoError> {
+        match self.lines.get(at.line) {
+            Some(line) if line.content == at.raw && split_task(&line.content).is_some() => Ok(()),
+            _ => Err(TodoError::Stale),
+        }
+    }
+
+    fn rewrite(
+        &mut self,
+        at: &LineRef,
+        edit: impl FnOnce(TaskLine<'_>) -> String,
+    ) -> Result<(), TodoError> {
+        self.task_at(at)?;
+        let line = self.lines.get_mut(at.line).ok_or(TodoError::Stale)?;
+        let new = {
+            let task = split_task(&line.content).ok_or(TodoError::Stale)?;
+            edit(task)
+        };
+        line.content = new;
+        Ok(())
     }
 }
 
@@ -426,5 +584,338 @@ mod tests {
         assert!(TodoFile::new(PathBuf::from("/home/k/todo.md")).is_ok());
         assert!(TodoFile::new(PathBuf::from("todo.md")).is_err());
         assert!(TodoFile::new(PathBuf::from("")).is_err());
+    }
+
+    fn applied(text: &str, edit: TodoEdit) -> String {
+        let mut doc = TodoDocument::parse(text);
+        doc.apply(&edit).unwrap();
+        doc.render()
+    }
+
+    fn at(line: usize, raw: &str) -> LineRef {
+        LineRef {
+            line,
+            raw: raw.into(),
+        }
+    }
+
+    const TODAY: &str = "2026-10-07";
+
+    #[test]
+    fn adding_goes_after_the_last_task() {
+        let out = applied(
+            "# Todo\n\n- [ ] a\n\nnotes\n",
+            TodoEdit::Add {
+                text: "b".into(),
+                due: Some(date("2026-10-12")),
+            },
+        );
+        assert_eq!(
+            out,
+            "# Todo\n\n- [ ] a\n- [ ] b [due:: 2026-10-12]\n\nnotes\n"
+        );
+    }
+
+    #[test]
+    fn adding_to_a_file_with_no_tasks_appends() {
+        assert_eq!(
+            applied(
+                "# Todo\n",
+                TodoEdit::Add {
+                    text: "a".into(),
+                    due: None
+                }
+            ),
+            "# Todo\n- [ ] a\n"
+        );
+        assert_eq!(
+            applied(
+                "",
+                TodoEdit::Add {
+                    text: "a".into(),
+                    due: None
+                }
+            ),
+            "- [ ] a\n"
+        );
+    }
+
+    #[test]
+    fn adding_after_a_last_line_without_a_newline_keeps_the_file_unterminated() {
+        assert_eq!(
+            applied(
+                "- [ ] a",
+                TodoEdit::Add {
+                    text: "b".into(),
+                    due: None
+                }
+            ),
+            "- [ ] a\n- [ ] b"
+        );
+    }
+
+    #[test]
+    fn a_new_line_in_a_crlf_file_ends_in_crlf() {
+        assert_eq!(
+            applied(
+                "- [ ] a\r\nnote",
+                TodoEdit::Add {
+                    text: "b".into(),
+                    due: None
+                }
+            ),
+            "- [ ] a\r\n- [ ] b\r\nnote"
+        );
+    }
+
+    #[test]
+    fn adding_trims_and_refuses_empty_or_multiline_text() {
+        assert_eq!(
+            applied(
+                "",
+                TodoEdit::Add {
+                    text: "  a  ".into(),
+                    due: None
+                }
+            ),
+            "- [ ] a\n"
+        );
+        let mut doc = TodoDocument::default();
+        assert_eq!(
+            doc.apply(&TodoEdit::Add {
+                text: "  ".into(),
+                due: None
+            }),
+            Err(TodoError::EmptyText)
+        );
+        assert_eq!(
+            doc.apply(&TodoEdit::Add {
+                text: "a\nb".into(),
+                due: None
+            }),
+            Err(TodoError::Multiline)
+        );
+    }
+
+    #[test]
+    fn toggling_an_open_todo_completes_it_today() {
+        assert_eq!(
+            applied(
+                "- [ ] a [due:: 2026-10-06]\n",
+                TodoEdit::Toggle {
+                    at: at(0, "- [ ] a [due:: 2026-10-06]"),
+                    today: date(TODAY)
+                },
+            ),
+            "- [x] a [due:: 2026-10-06] [completion:: 2026-10-07]\n"
+        );
+    }
+
+    #[test]
+    fn toggling_a_done_todo_reopens_it_and_drops_the_completion() {
+        let raw = "  * [X] a [completion:: 2026-10-01] [priority:: high]";
+        assert_eq!(
+            applied(
+                raw,
+                TodoEdit::Toggle {
+                    at: at(0, raw),
+                    today: date(TODAY)
+                }
+            ),
+            "  * [ ] a [priority:: high]"
+        );
+    }
+
+    #[test]
+    fn setting_rebuilds_the_text_and_due_and_keeps_the_completion() {
+        let raw = "- [x] old [due:: 2026-10-01] [completion:: 2026-10-02]";
+        assert_eq!(
+            applied(
+                raw,
+                TodoEdit::Set {
+                    at: at(0, raw),
+                    text: "new [priority:: low]".into(),
+                    due: Some(date("2026-10-20")),
+                }
+            ),
+            "- [x] new [priority:: low] [due:: 2026-10-20] [completion:: 2026-10-02]"
+        );
+    }
+
+    #[test]
+    fn setting_with_no_due_clears_it() {
+        let raw = "- [ ] a [due:: someday]";
+        assert_eq!(
+            applied(
+                raw,
+                TodoEdit::Set {
+                    at: at(0, raw),
+                    text: "a".into(),
+                    due: None
+                }
+            ),
+            "- [ ] a"
+        );
+    }
+
+    #[test]
+    fn snoozing_moves_a_future_due_by_a_day_in_place() {
+        let raw = "- [ ] a [due:: 2026-10-09] [priority:: high]";
+        assert_eq!(
+            applied(
+                raw,
+                TodoEdit::Snooze {
+                    at: at(0, raw),
+                    today: date(TODAY)
+                }
+            ),
+            "- [ ] a [due:: 2026-10-10] [priority:: high]"
+        );
+        let raw = "- [ ] a [due:: 2026-10-07]";
+        assert_eq!(
+            applied(
+                raw,
+                TodoEdit::Snooze {
+                    at: at(0, raw),
+                    today: date(TODAY)
+                }
+            ),
+            "- [ ] a [due:: 2026-10-08]"
+        );
+    }
+
+    #[test]
+    fn snoozing_an_overdue_undated_or_unparsed_todo_makes_it_due_tomorrow() {
+        for raw in [
+            "- [ ] a [due:: 2026-10-01]",
+            "- [ ] a",
+            "- [ ] a [due:: someday]",
+        ] {
+            assert_eq!(
+                applied(
+                    raw,
+                    TodoEdit::Snooze {
+                        at: at(0, raw),
+                        today: date(TODAY)
+                    }
+                ),
+                "- [ ] a [due:: 2026-10-08]",
+                "{raw:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn deleting_removes_only_that_line() {
+        assert_eq!(
+            applied(
+                "a\n- [ ] b\nc\n",
+                TodoEdit::Delete {
+                    at: at(1, "- [ ] b")
+                }
+            ),
+            "a\nc\n"
+        );
+    }
+
+    #[test]
+    fn deleting_the_unterminated_last_line_leaves_the_new_last_line_unterminated() {
+        assert_eq!(
+            applied(
+                "- [ ] a\n- [ ] b",
+                TodoEdit::Delete {
+                    at: at(1, "- [ ] b")
+                }
+            ),
+            "- [ ] a"
+        );
+    }
+
+    #[test]
+    fn an_edit_naming_a_moved_line_is_stale() {
+        let mut doc = TodoDocument::parse("- [ ] new\n- [ ] a\n");
+        for edit in [
+            TodoEdit::Toggle {
+                at: at(0, "- [ ] a"),
+                today: date(TODAY),
+            },
+            TodoEdit::Set {
+                at: at(0, "- [ ] a"),
+                text: "b".into(),
+                due: None,
+            },
+            TodoEdit::Delete {
+                at: at(0, "- [ ] a"),
+            },
+            TodoEdit::Snooze {
+                at: at(0, "- [ ] a"),
+                today: date(TODAY),
+            },
+            TodoEdit::Delete {
+                at: at(9, "- [ ] a"),
+            },
+        ] {
+            assert_eq!(doc.apply(&edit), Err(TodoError::Stale), "{edit:?}");
+        }
+        assert_eq!(doc.render(), "- [ ] new\n- [ ] a\n");
+    }
+
+    #[test]
+    fn an_edit_naming_a_line_that_is_no_longer_a_task_is_stale() {
+        let mut doc = TodoDocument::parse("note\n");
+        assert_eq!(
+            doc.apply(&TodoEdit::Delete { at: at(0, "note") }),
+            Err(TodoError::Stale)
+        );
+    }
+
+    #[test]
+    fn a_duplicate_line_is_edited_by_its_own_line_number() {
+        assert_eq!(
+            applied(
+                "- [ ] a\n- [ ] a\n",
+                TodoEdit::Toggle {
+                    at: at(1, "- [ ] a"),
+                    today: date(TODAY)
+                },
+            ),
+            "- [ ] a\n- [x] a [completion:: 2026-10-07]\n"
+        );
+    }
+
+    #[test]
+    fn an_edit_changes_no_other_line() {
+        let text = "# H\r\n\n- [ ] a [x:: 1]\n  notes  \n- [x] b\n\n";
+        let edits = [
+            TodoEdit::Toggle {
+                at: at(2, "- [ ] a [x:: 1]"),
+                today: date(TODAY),
+            },
+            TodoEdit::Set {
+                at: at(2, "- [ ] a [x:: 1]"),
+                text: "z".into(),
+                due: None,
+            },
+            TodoEdit::Snooze {
+                at: at(4, "- [x] b"),
+                today: date(TODAY),
+            },
+        ];
+        let before: Vec<&str> = text.split_inclusive('\n').collect();
+        for edit in edits {
+            let out = applied(text, edit.clone());
+            let after: Vec<&str> = out.split_inclusive('\n').collect();
+            assert_eq!(before.len(), after.len(), "{edit:?}");
+            let changed = before.iter().zip(&after).filter(|(b, a)| b != a).count();
+            assert_eq!(changed, 1, "{edit:?}: {out:?}");
+        }
+    }
+
+    #[test]
+    fn a_stale_edit_says_so_in_the_words_the_pane_shows() {
+        assert_eq!(
+            TodoError::Stale.to_string(),
+            "the todo file changed - refreshed"
+        );
     }
 }

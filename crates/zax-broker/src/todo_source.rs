@@ -9,7 +9,7 @@
 
 use std::fs;
 use std::io::{self, Write};
-use std::os::unix::fs::MetadataExt;
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
@@ -123,13 +123,20 @@ impl TodoSource {
 
         let hook = &mut self.before_rename;
         let attempt = (|| -> io::Result<bool> {
+            // An existing file's contents are written into a 0600 temporary
+            // and only then given the target's mode, so they are never
+            // readable more widely than the target allows, even briefly. A
+            // new file has no target to copy: 0o666 is the ordinary create
+            // default, which the umask narrows as for any new file.
+            let existing = fs::metadata(&target).ok();
             let mut file = fs::OpenOptions::new()
                 .write(true)
                 .create_new(true)
+                .mode(if existing.is_some() { 0o600 } else { 0o666 })
                 .open(&temporary)?;
             file.write_all(text.as_bytes())?;
             file.sync_all()?;
-            if let Ok(meta) = fs::metadata(&target) {
+            if let Some(meta) = existing {
                 fs::set_permissions(&temporary, meta.permissions())?;
             }
             hook(&target);
@@ -311,6 +318,20 @@ mod tests {
         assert_eq!(
             fs::metadata(&file).unwrap().permissions().mode() & 0o777,
             0o600
+        );
+    }
+
+    #[test]
+    fn a_new_file_is_created_with_the_ordinary_default_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("todo.md");
+        let (method, params) = add("b");
+        TodoSource::new(file.clone()).call(method, params).unwrap();
+        let reference = dir.path().join("reference");
+        fs::write(&reference, "").unwrap();
+        assert_eq!(
+            fs::metadata(&file).unwrap().permissions().mode() & 0o777,
+            fs::metadata(&reference).unwrap().permissions().mode() & 0o777
         );
     }
 

@@ -127,6 +127,22 @@ impl Exec for SystemExec {
     }
 }
 
+/// The askpass variables holding a helper zax invented, which are the only
+/// ones it may take back.
+///
+/// Not setting a variable is not the same as the child not having it. A pane
+/// runs `zax worktree review` through `SystemExec`, so that zax's own
+/// environment carries the suppressions - and the editor it then launches
+/// inherits them, which is the exception failing in exactly the place it was
+/// written for. Only zax's invented path is removed: a helper the user chose,
+/// or one found on this machine, is a real way of asking and stays.
+fn fabricated(env: impl Fn(&str) -> Option<String>) -> Vec<&'static str> {
+    ["GIT_ASKPASS", "SSH_ASKPASS"]
+        .into_iter()
+        .filter(|key| env(key).is_some_and(|value| askpass::is_nobody(&value)))
+        .collect()
+}
+
 /// A program started on the user's behalf rather than questioned by zax, and
 /// so one with a user of its own to ask.
 ///
@@ -144,7 +160,11 @@ impl Exec for InteractiveExec {
         cwd: Option<&Path>,
         env: &[(String, String)],
     ) -> Result<Output, ExecError> {
-        capture(configure(StdCommand::new(program), args, cwd, env), program)
+        let mut command = StdCommand::new(program);
+        for key in fabricated(var) {
+            command.env_remove(key);
+        }
+        capture(configure(command, args, cwd, env), program)
     }
 }
 
@@ -435,16 +455,58 @@ mod tests {
     }
 
     #[test]
-    fn a_program_launched_for_the_user_is_left_to_ask_its_own_way() {
-        // An editor is handed to the user, not interrogated by zax: suppressing
-        // its prompts would disable the credential dialog it has of its own.
-        for variable in ["GIT_TERMINAL_PROMPT", "SSH_ASKPASS_REQUIRE", "SSH_ASKPASS"] {
+    fn a_program_launched_for_the_user_never_holds_the_invented_askpass() {
+        // The property the old test missed: "inherited unchanged" is true of a
+        // poisoned value too, so it passed for a parent zax that a pane had
+        // captured. What matters is that the editor is never the one left
+        // holding the helper that cannot run.
+        for variable in ["GIT_ASKPASS", "SSH_ASKPASS"] {
+            assert!(
+                !askpass::is_nobody(&sees(&InteractiveExec, variable)),
+                "{variable} still names the helper zax invented"
+            );
+        }
+    }
+
+    #[test]
+    fn a_program_launched_for_the_user_is_given_no_suppressions_of_its_own() {
+        // Taking zax's fabrication back is not licence to invent settings
+        // either: everything else reaches the editor as it stands.
+        for variable in ["GIT_TERMINAL_PROMPT", "SSH_ASKPASS_REQUIRE"] {
             assert_eq!(
                 sees(&InteractiveExec, variable),
                 std::env::var(variable).unwrap_or_default(),
                 "{variable} was not inherited unchanged"
             );
         }
+    }
+
+    #[test]
+    fn a_fabricated_askpass_is_taken_back_before_launching_for_the_user() {
+        let nobody = askpass::Askpass::Nobody.program().to_owned();
+        let env = |key: &str| match key {
+            "GIT_ASKPASS" | "SSH_ASKPASS" => Some(nobody.clone()),
+            _ => None,
+        };
+
+        assert_eq!(fabricated(env), ["GIT_ASKPASS", "SSH_ASKPASS"]);
+    }
+
+    #[test]
+    fn a_helper_the_user_chose_is_never_taken_back() {
+        // Indistinguishable from zax having set it, by value - which is why
+        // only the invented path counts as zax's own.
+        let env = |key: &str| match key {
+            "SSH_ASKPASS" => Some("/usr/lib/openssh/ssh-askpass".to_owned()),
+            _ => None,
+        };
+
+        assert!(fabricated(env).is_empty());
+    }
+
+    #[test]
+    fn a_clean_environment_has_nothing_to_take_back() {
+        assert!(fabricated(|_| None).is_empty());
     }
 
     #[test]

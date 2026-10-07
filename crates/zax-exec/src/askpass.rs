@@ -37,6 +37,15 @@ impl Askpass {
     }
 }
 
+/// Whether `value` is the helper zax invents when nobody can ask.
+///
+/// The path is one zax made up, so a program holding it was handed it by zax
+/// and by nothing else. That makes it the one askpass setting zax may take
+/// back without wondering whether the user chose it.
+pub fn is_nobody(value: &str) -> bool {
+    value == NO_ASKPASS
+}
+
 /// Where OpenSSH's askpass helper lives, which is nowhere in particular: the
 /// path is a packaging decision and every distribution made a different one.
 const CANDIDATES: [&str; 7] = [

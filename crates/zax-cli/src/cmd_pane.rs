@@ -16,8 +16,8 @@ use zax_exec::{Exec, SystemExec};
 use zax_tui::{refresh, BranchStatusPane, ExecPane, MyPrsPane, PaneAction, PrsForReviewPane};
 
 use crate::cli::PaneCommand;
+use crate::marked;
 use crate::screen::Screen;
-use crate::warning;
 use crate::wiring;
 
 const JITTER: f64 = 0.15;
@@ -251,17 +251,19 @@ fn perform_with<E: Exec>(exec: &E, action: PaneAction) -> Result<Option<String>>
 /// either way.
 fn review_message(result: Result<zax_exec::Output, zax_exec::ExecError>) -> Option<String> {
     let detail = match result {
-        Ok(out) if out.ok() => warning::find(&out.stderr)?,
-        Ok(out) => out
-            .stderr
-            .lines()
-            .rev()
-            .map(str::trim)
-            // zax prefixes its own errors; the pane header says which command
-            // this came from already.
-            .map(|line| line.strip_prefix("zax: ").unwrap_or(line))
-            .find(|line| !line.is_empty())
-            .map(str::to_owned)
+        Ok(out) if out.ok() => marked::find_warning(&out.stderr)?,
+        // zax's own line, which names the reason. Only when it never got to
+        // write one does the tool's own last word stand in, because a failed
+        // `w` falling silent is the thing being prevented.
+        Ok(out) => marked::find_error(&out.stderr)
+            .or_else(|| {
+                out.stderr
+                    .lines()
+                    .rev()
+                    .map(str::trim)
+                    .find(|line| !line.is_empty())
+                    .map(str::to_owned)
+            })
             .unwrap_or_else(|| format!("exited with status {}", out.status)),
         Err(error) => error.to_string(),
     };
@@ -410,6 +412,33 @@ mod tests {
         // Setup hooks inherit zax's stderr, so a chatty one lands in the same
         // place; only zax's own marked line is something to show.
         assert_eq!(review_message(out(0, "npm warn deprecated glob@7\n")), None);
+    }
+
+    #[test]
+    fn a_refused_review_shows_the_cause_and_not_gits_closing_advice() {
+        // git's remote failure ends with boilerplate, every time, so the last
+        // line of stderr is the one line guaranteed not to be the reason.
+        let stderr = "zax: git exited with status 128: git@github.com: Permission denied \
+                      (publickey).\nfatal: Could not read from remote repository.\n\n\
+                      Please make sure you have the correct access rights\nand the \
+                      repository exists.\n";
+
+        let message = review_message(out(128, stderr)).unwrap();
+
+        assert!(message.contains("Permission denied"), "got: {message}");
+        assert!(
+            !message.contains("repository exists"),
+            "the pane showed git's closing advice: {message}"
+        );
+    }
+
+    #[test]
+    fn a_tool_that_failed_without_zax_having_a_say_still_reports_something() {
+        // Nothing marked means zax never got to describe it - a pane must
+        // still show a line rather than fall silent.
+        let message = review_message(out(1, "some tool fell over\n")).unwrap();
+
+        assert!(message.contains("some tool fell over"), "got: {message}");
     }
 
     #[test]

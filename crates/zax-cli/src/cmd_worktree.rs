@@ -10,7 +10,7 @@ use zax_app::{
 use zax_domain::{BranchName, PrRef};
 
 use crate::cli::WorktreeCommand;
-use crate::warning;
+use crate::marked;
 use crate::wiring::{self, RealFs, RealRunner};
 
 pub fn run(command: WorktreeCommand) -> Result<()> {
@@ -109,7 +109,7 @@ fn open_in_editor<E: Editor>(editor: &E, path: &Path, open: bool) -> Option<Stri
 /// subprocess and an unmarked line is indistinguishable from a hook's chatter.
 fn warn(message: Option<String>) {
     let Some(message) = message else { return };
-    warning::print(&format!(
+    marked::warn(&format!(
         "could not open the worktree in the editor: {message}"
     ));
 }

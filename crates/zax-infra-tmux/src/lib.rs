@@ -230,6 +230,26 @@ fn no_server(stderr: &str) -> bool {
     stderr.contains("no such file or directory") || stderr.contains("no server running")
 }
 
+/// No server left to answer a question about sessions.
+///
+/// Wider than `no_server`, by the one spelling tmux uses for a server that was
+/// there a moment ago: killing the last session makes the server exit, and a
+/// query that arrives while it is shutting down has its connection dropped
+/// rather than being told there is no server. The session the caller asked
+/// about is gone in every one of those cases.
+///
+/// Deliberately not used by `socket_health`. tmux says the same thing when a
+/// client meets a server of another build, and that server is still there
+/// holding the socket - reading it as "no server yet" would be how `zax
+/// doctor` stopped reporting the mismatch it exists to catch. A query can
+/// answer "no sessions" and be right either way; the doctor cannot.
+fn no_server_to_query(stderr: &str) -> bool {
+    no_server(stderr)
+        || stderr
+            .to_ascii_lowercase()
+            .contains("server exited unexpectedly")
+}
+
 /// One `list-sessions` line. Someone else's session on this socket is not ours
 /// to report, so it is skipped rather than parsed.
 fn parse_listed_session(line: &str) -> Option<Result<LiveSession, PortError>> {
@@ -274,7 +294,7 @@ impl<E: Exec, H: Handover> Multiplexer for TmuxCli<E, H> {
             .stderr
             .to_ascii_lowercase()
             .contains("can't find session")
-            || no_server(&out.stderr);
+            || no_server_to_query(&out.stderr);
         if absent {
             return Ok(false);
         }
@@ -287,7 +307,7 @@ impl<E: Exec, H: Handover> Multiplexer for TmuxCli<E, H> {
         if !out.ok() {
             // No server, or no socket file at all, means no sessions rather
             // than a failure.
-            if no_server(&out.stderr) {
+            if no_server_to_query(&out.stderr) {
                 return Ok(Vec::new());
             }
             return Err(self.failure("list-sessions", &args, &out));
@@ -563,6 +583,40 @@ mod tests {
             ),
             "got: {err:?}"
         );
+    }
+
+    #[test]
+    fn a_server_going_down_with_its_last_session_answers_no_rather_than_failing() {
+        // Killing the only session makes the server exit, and a query that
+        // lands while it is on the way out has its connection dropped. tmux
+        // spells that the same way it spells a version mismatch, but the
+        // answer to "is that session there" is no either way.
+        let tmux = cli(vec![failed(1, "server exited unexpectedly")]);
+
+        assert!(!tmux.session_exists(&name()).unwrap());
+    }
+
+    #[test]
+    fn a_server_going_down_lists_no_sessions_rather_than_failing() {
+        let tmux = cli(vec![failed(1, "server exited unexpectedly")]);
+
+        assert!(tmux.list_sessions().unwrap().is_empty());
+    }
+
+    #[test]
+    fn the_doctor_still_reports_a_server_it_cannot_talk_to() {
+        // The reason a query's "no server" is wider than the doctor's: a
+        // mismatched server is still holding the socket and says exactly what
+        // a shutting-down one says. A query may answer "no sessions" and be
+        // right; the doctor calling it "no server yet" would hide the fault.
+        let tmux = cli(vec![
+            ok("tmux 3.7c\n"),
+            failed(1, "server exited unexpectedly"),
+        ]);
+
+        let err = tmux.probe().unwrap_err().to_string();
+
+        assert!(err.contains("different tmux build"), "got:\n{err}");
     }
 
     #[test]

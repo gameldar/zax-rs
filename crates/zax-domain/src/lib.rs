@@ -14,6 +14,7 @@ pub mod session;
 pub mod settings;
 pub mod ticket;
 pub mod todo;
+pub mod todo_view;
 pub mod work;
 
 pub use branch::{BranchName, BranchNameError, BranchOrigin};
@@ -46,5 +47,9 @@ pub use ticket::{
 pub use todo::{
     Due, LineRef, TodoDocument, TodoEdit, TodoError, TodoFile, TodoFileError, TodoItem, TodoList,
     COMPLETION, DUE,
+};
+pub use todo_view::{
+    due_state, is_late, parse_due_spec, parse_prompt, prompt_text, todo_rows, DueError, DueState,
+    PromptEntry, PromptError,
 };
 pub use work::{join, TicketRank, TicketRow, TicketWork, WorkIndex, Worktree};

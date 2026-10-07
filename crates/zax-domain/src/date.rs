@@ -61,9 +61,7 @@ impl Weekday {
         }
     }
 
-    /// Monday is 0. Nothing in this crate calls it yet; it is for weekday
-    /// arithmetic on top of `Date`.
-    #[allow(dead_code)]
+    /// Monday is 0.
     pub(crate) fn index(self) -> i64 {
         match self {
             Self::Mon => 0,

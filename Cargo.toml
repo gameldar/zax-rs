@@ -9,6 +9,7 @@ rust-version = "1.97"
 license = "MIT"
 
 [workspace.dependencies]
+jiff = "0.2"
 zax-domain = { path = "crates/zax-domain" }
 zax-app = { path = "crates/zax-app" }
 zax-config = { path = "crates/zax-config" }

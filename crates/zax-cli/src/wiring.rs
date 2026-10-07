@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use zax_app::{FileSystem, PortError};
 use zax_config::Config;
-use zax_domain::RootRepoName;
+use zax_domain::{RootRepoName, TodoFile};
 use zax_exec::{InteractiveExec, SystemExec, SystemHandover};
 use zax_infra_editor::EditorCli;
 use zax_infra_git::GitCli;
@@ -31,6 +31,24 @@ pub fn home() -> Result<PathBuf> {
     std::env::var_os("HOME")
         .map(PathBuf::from)
         .context("HOME is not set")
+}
+
+/// `$XDG_DATA_HOME`, or `~/.local/share`.
+pub fn data_home() -> Result<PathBuf> {
+    match std::env::var_os("XDG_DATA_HOME") {
+        Some(value) if !value.is_empty() => Ok(PathBuf::from(value)),
+        _ => Ok(home()?.join(".local").join("share")),
+    }
+}
+
+/// The todo file config names, or `todo.md` under the data home.
+pub fn todo_file(config: &Config) -> Result<TodoFile> {
+    match &config.todo.file {
+        Some(file) => Ok(file.clone()),
+        None => {
+            TodoFile::new(data_home()?.join("zax").join("todo.md")).map_err(|e| anyhow::anyhow!(e))
+        }
+    }
 }
 
 /// `$XDG_CONFIG_HOME`, or `~/.config`.

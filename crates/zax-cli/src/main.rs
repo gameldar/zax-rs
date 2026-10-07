@@ -7,6 +7,7 @@ mod cmd_doctor;
 mod cmd_pane;
 mod cmd_session;
 mod cmd_tickets;
+mod cmd_todo;
 mod cmd_worktree;
 mod guard;
 mod marked;

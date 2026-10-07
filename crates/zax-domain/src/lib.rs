@@ -13,6 +13,7 @@ pub mod repo;
 pub mod session;
 pub mod settings;
 pub mod ticket;
+pub mod todo;
 pub mod work;
 
 pub use branch::{BranchName, BranchNameError, BranchOrigin};
@@ -41,5 +42,8 @@ pub use settings::{
 };
 pub use ticket::{
     branch_slug, StatusCategory, Ticket, TicketKey, TicketKeyError, TicketStatus, Transition,
+};
+pub use todo::{
+    Due, LineRef, TodoDocument, TodoFile, TodoFileError, TodoItem, TodoList, COMPLETION, DUE,
 };
 pub use work::{join, TicketRank, TicketRow, TicketWork, WorkIndex, Worktree};

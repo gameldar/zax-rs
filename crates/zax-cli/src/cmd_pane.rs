@@ -16,6 +16,7 @@ use zax_exec::{Exec, SystemExec};
 use zax_tui::{refresh, BranchStatusPane, ExecPane, MyPrsPane, PaneAction, PrsForReviewPane};
 
 use crate::cli::PaneCommand;
+use crate::marked;
 use crate::screen::Screen;
 use crate::wiring;
 
@@ -240,23 +241,29 @@ fn perform_with<E: Exec>(exec: &E, action: PaneAction) -> Result<Option<String>>
 
 /// What a finished `zax worktree review` should tell the pane.
 ///
-/// zax prints its whole error chain as the last line of stderr, so that line is
-/// the message. Anything else (a tool that wrote nothing, a status with no
-/// explanation) still produces a line, because the point is that a failed `w`
-/// is never silent.
+/// Two outcomes have something to say, and neither of them is silence. A
+/// refused review exits non-zero, and zax prints its whole error chain as the
+/// last line of stderr, so that line is the message; anything else (a tool
+/// that wrote nothing, a status with no explanation) still produces a line,
+/// because the point is that a failed `w` is never silent. A worktree that was
+/// made but could not be opened exits zero and warns, and that warning is just
+/// as invisible to the user as a refusal would be: the editor never appeared
+/// either way.
 fn review_message(result: Result<zax_exec::Output, zax_exec::ExecError>) -> Option<String> {
     let detail = match result {
-        Ok(out) if out.ok() => return None,
-        Ok(out) => out
-            .stderr
-            .lines()
-            .rev()
-            .map(str::trim)
-            // zax prefixes its own errors; the pane header says which command
-            // this came from already.
-            .map(|line| line.strip_prefix("zax: ").unwrap_or(line))
-            .find(|line| !line.is_empty())
-            .map(str::to_owned)
+        Ok(out) if out.ok() => marked::find_warning(&out.stderr)?,
+        // zax's own line, which names the reason. Only when it never got to
+        // write one does the tool's own last word stand in, because a failed
+        // `w` falling silent is the thing being prevented.
+        Ok(out) => marked::find_error(&out.stderr)
+            .or_else(|| {
+                out.stderr
+                    .lines()
+                    .rev()
+                    .map(str::trim)
+                    .find(|line| !line.is_empty())
+                    .map(str::to_owned)
+            })
             .unwrap_or_else(|| format!("exited with status {}", out.status)),
         Err(error) => error.to_string(),
     };
@@ -383,6 +390,55 @@ mod tests {
             number: 42,
         };
         assert_eq!(perform_with(&exec, action).unwrap(), None);
+    }
+
+    #[test]
+    fn a_worktree_that_was_made_but_not_opened_still_says_so() {
+        // The editor failing is a warning and an exit of zero, because the
+        // worktree is there. The keystroke still looks like a no-op unless the
+        // part that did not happen reaches the pane.
+        let stderr = "zax: warning: could not open the worktree in the editor: \
+                      zed is not installed or not on PATH\n  if Zed is installed, \
+                      open it and run `cli: install`\n";
+
+        let message = review_message(out(0, stderr)).unwrap();
+
+        assert!(message.contains("could not open"), "got: {message}");
+        assert!(message.contains("zed"), "got: {message}");
+    }
+
+    #[test]
+    fn a_hook_writing_to_stderr_is_not_mistaken_for_a_warning() {
+        // Setup hooks inherit zax's stderr, so a chatty one lands in the same
+        // place; only zax's own marked line is something to show.
+        assert_eq!(review_message(out(0, "npm warn deprecated glob@7\n")), None);
+    }
+
+    #[test]
+    fn a_refused_review_shows_the_cause_and_not_gits_closing_advice() {
+        // git's remote failure ends with boilerplate, every time, so the last
+        // line of stderr is the one line guaranteed not to be the reason.
+        let stderr = "zax: git exited with status 128: git@github.com: Permission denied \
+                      (publickey).\nfatal: Could not read from remote repository.\n\n\
+                      Please make sure you have the correct access rights\nand the \
+                      repository exists.\n";
+
+        let message = review_message(out(128, stderr)).unwrap();
+
+        assert!(message.contains("Permission denied"), "got: {message}");
+        assert!(
+            !message.contains("repository exists"),
+            "the pane showed git's closing advice: {message}"
+        );
+    }
+
+    #[test]
+    fn a_tool_that_failed_without_zax_having_a_say_still_reports_something() {
+        // Nothing marked means zax never got to describe it - a pane must
+        // still show a line rather than fall silent.
+        let message = review_message(out(1, "some tool fell over\n")).unwrap();
+
+        assert!(message.contains("some tool fell over"), "got: {message}");
     }
 
     #[test]

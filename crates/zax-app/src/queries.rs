@@ -5,11 +5,13 @@ use std::time::SystemTime;
 
 use thiserror::Error;
 use zax_domain::{
-    BranchName, BranchView, MyPullRequest, PrFilter, PullRequest, RootRepoName, WorktreePath,
-    WorktreePathError, WorktreeRoot,
+    BranchName, BranchView, MyPullRequest, PrFilter, PullRequest, RootRepoName, Transport,
+    WorktreePath, WorktreePathError, WorktreeRoot,
 };
 
-use crate::ports::{FileSystem, Forge, GitRepo, Multiplexer, PortError, WorktreeEntry};
+use crate::ports::{
+    Editor, FileSystem, Forge, GitRepo, Multiplexer, PortError, SshAgent, WorktreeEntry,
+};
 
 /// The `prs-for-review` pane's data source.
 ///
@@ -118,12 +120,20 @@ impl DoctorCheck {
 }
 
 /// Every check runs, so one missing tool does not hide the next.
-pub fn doctor<M: Multiplexer, G: GitRepo, Fg: Forge>(
+///
+/// The ssh agent is the one conditional check. It belongs with `gh auth`
+/// rather than with the tools, because both are credentials zax cannot supply
+/// for itself - but a key is only needed when `origin` is reached over ssh,
+/// and a doctor that fails on a check the reader cannot act on is a doctor
+/// they learn to ignore.
+pub fn doctor<M: Multiplexer, G: GitRepo, Fg: Forge, E: Editor, S: SshAgent>(
     mux: &M,
     git: &G,
     forge: &Fg,
+    editor: &E,
+    ssh: &S,
 ) -> Vec<DoctorCheck> {
-    vec![
+    let mut checks = vec![
         DoctorCheck {
             name: "tmux",
             result: mux.probe(),
@@ -140,7 +150,32 @@ pub fn doctor<M: Multiplexer, G: GitRepo, Fg: Forge>(
             name: "gh auth",
             result: forge.auth_status(),
         },
-    ]
+    ];
+
+    if origin_needs_ssh_key(git) {
+        checks.push(DoctorCheck {
+            name: "ssh agent",
+            result: ssh.probe(),
+        });
+    }
+
+    checks.push(DoctorCheck {
+        name: "editor",
+        result: editor.probe(),
+    });
+    checks
+}
+
+/// Whether a fetch from `origin` would need an ssh key.
+///
+/// A remote that cannot be read is not claimed to need one: that failure is
+/// the git check's to report, and guessing here would turn one broken thing
+/// into two.
+fn origin_needs_ssh_key<G: GitRepo>(git: &G) -> bool {
+    git.remote_url("origin")
+        .ok()
+        .flatten()
+        .is_some_and(|url| Transport::of(&url).needs_ssh_key())
 }
 
 #[cfg(test)]
@@ -156,7 +191,9 @@ mod tests {
 
     use super::*;
     use crate::ports::{PortError, WorktreeEntry};
-    use crate::testing::{FakeForge, FakeFs, FakeGitRepo, FakeMultiplexer};
+    use crate::testing::{
+        FakeEditor, FakeForge, FakeFs, FakeGitRepo, FakeMultiplexer, FakeSshAgent,
+    };
 
     fn pr(number: u32) -> PullRequest {
         PullRequest {
@@ -332,16 +369,73 @@ mod tests {
     }
 
     #[test]
+    fn an_ssh_origin_gets_its_agent_checked() {
+        // A locked key stops `w` as surely as a missing gh does, and until the
+        // doctor says so the only symptom is a keystroke that did nothing.
+        let mux = FakeMultiplexer::default();
+        let git = FakeGitRepo::new("/Users/me/src/acme", "main")
+            .with_remote("origin", "git@github.com:acme/omega.git");
+        let forge = FakeForge::default();
+        let editor = FakeEditor::default();
+        let agent = FakeSshAgent::locked(PortError::NotAuthenticated {
+            tool: "ssh agent",
+            detail: "the agent is running but holds no keys".to_owned(),
+        });
+
+        let checks = doctor(&mux, &git, &forge, &editor, &agent);
+
+        let ssh = checks
+            .iter()
+            .find(|c| c.name == "ssh agent")
+            .expect("an ssh remote needs a key, so the agent is part of the diagnosis");
+        assert!(!ssh.is_ok());
+    }
+
+    #[test]
+    fn an_https_origin_is_not_asked_about_ssh_keys() {
+        // The check would always fail for someone who never uses ssh, and a
+        // doctor that fails on an irrelevant check teaches you to ignore it.
+        let mux = FakeMultiplexer::default();
+        let git = FakeGitRepo::new("/Users/me/src/acme", "main")
+            .with_remote("origin", "https://github.com/acme/omega.git");
+        let forge = FakeForge::default();
+        let editor = FakeEditor::default();
+        let agent = FakeSshAgent::locked(PortError::MissingTool { tool: "ssh-add" });
+
+        let checks = doctor(&mux, &git, &forge, &editor, &agent);
+
+        assert!(
+            !checks.iter().any(|c| c.name == "ssh agent"),
+            "an https remote needs a token, not a key"
+        );
+        assert!(checks.iter().all(DoctorCheck::is_ok));
+    }
+
+    #[test]
+    fn a_repository_with_no_origin_is_not_asked_about_ssh_keys() {
+        let mux = FakeMultiplexer::default();
+        let git = FakeGitRepo::new("/Users/me/src/acme", "main");
+        let forge = FakeForge::default();
+        let editor = FakeEditor::default();
+        let agent = FakeSshAgent::locked(PortError::MissingTool { tool: "ssh-add" });
+
+        let checks = doctor(&mux, &git, &forge, &editor, &agent);
+
+        assert!(!checks.iter().any(|c| c.name == "ssh agent"));
+    }
+
+    #[test]
     fn doctor_reports_one_check_per_tool() {
         let mux = FakeMultiplexer::default();
         let git = FakeGitRepo::new("/Users/me/src/acme", "main");
         let forge = FakeForge::default();
+        let editor = FakeEditor::default();
 
-        let checks = doctor(&mux, &git, &forge);
+        let checks = doctor(&mux, &git, &forge, &editor, &FakeSshAgent::default());
 
         assert_eq!(
             checks.iter().map(|c| c.name).collect::<Vec<_>>(),
-            vec!["tmux", "git", "gh", "gh auth"]
+            vec!["tmux", "git", "gh", "gh auth", "editor"]
         );
         assert!(checks.iter().all(DoctorCheck::is_ok));
     }
@@ -351,8 +445,9 @@ mod tests {
         let mux = FakeMultiplexer::default();
         let git = FakeGitRepo::new("/Users/me/src/acme", "main");
         let forge = FakeForge::failing(PortError::MissingTool { tool: "gh" });
+        let editor = FakeEditor::default();
 
-        let checks = doctor(&mux, &git, &forge);
+        let checks = doctor(&mux, &git, &forge, &editor, &FakeSshAgent::default());
 
         // One missing tool must not hide the state of the others: every check
         // still runs, and each reports its own verdict.
@@ -365,9 +460,31 @@ mod tests {
                 ("tmux", true),
                 ("git", true),
                 ("gh", false),
-                ("gh auth", false)
+                ("gh auth", false),
+                ("editor", true)
             ]
         );
+    }
+
+    #[test]
+    fn doctor_reports_an_editor_that_is_not_installed() {
+        // The `w` row action ends in an editor window, so an editor zax cannot
+        // start is exactly the kind of thing doctor exists to find before the
+        // keystroke does.
+        let mux = FakeMultiplexer::default();
+        let git = FakeGitRepo::new("/Users/me/src/acme", "main");
+        let forge = FakeForge::default();
+        let editor = FakeEditor::failing(PortError::MissingProgram {
+            program: "zed".to_owned(),
+            hint: "install the CLI from the app".to_owned(),
+        });
+
+        let checks = doctor(&mux, &git, &forge, &editor, &FakeSshAgent::default());
+
+        let editor_check = checks.iter().find(|c| c.name == "editor").unwrap();
+        let message = editor_check.result.as_ref().unwrap_err().to_string();
+        assert!(message.contains("zed"), "got: {message}");
+        assert!(message.contains("install the CLI"), "got: {message}");
     }
 
     fn authored(

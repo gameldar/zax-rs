@@ -7,6 +7,7 @@ mod cmd_pane;
 mod cmd_session;
 mod cmd_worktree;
 mod guard;
+mod marked;
 mod screen;
 mod wiring;
 
@@ -18,7 +19,7 @@ use crate::cli::{Cli, Commands};
 fn main() {
     if let Err(error) = run() {
         // `{error:#}` prints the whole anyhow chain on one line.
-        eprintln!("zax: {error:#}");
+        marked::fail(&format!("{error:#}"));
         std::process::exit(1);
     }
 }

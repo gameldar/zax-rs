@@ -14,6 +14,12 @@ use zax_domain::{
 pub enum PortError {
     #[error("{tool} is not installed or not on PATH")]
     MissingTool { tool: &'static str },
+    /// A program the config named, rather than one of zax's own fixed
+    /// dependencies: which program it is cannot be known at compile time, and
+    /// the way to get it depends on which one it is, so the advice travels
+    /// with the error.
+    #[error("{program} is not installed or not on PATH\n{hint}")]
+    MissingProgram { program: String, hint: String },
     #[error("not authenticated with {tool}: {detail}")]
     NotAuthenticated { tool: &'static str, detail: String },
     #[error("{tool} exited with status {status}: {stderr}")]
@@ -119,6 +125,9 @@ pub trait GitRepo {
     fn remove_worktree(&self, path: &Path, force: bool) -> Result<(), PortError>;
     fn fetch(&self, remote: &str, refspec: &str) -> Result<(), PortError>;
     /// The commit a revision names, as a full object name.
+    /// The URL of `remote`, or `None` when the repository has no such remote.
+    /// Its transport is what decides which credential a fetch will need.
+    fn remote_url(&self, remote: &str) -> Result<Option<String>, PortError>;
     fn resolve_commit(&self, rev: &str) -> Result<String, PortError>;
     /// Is `ancestor` reachable from `descendant`? A branch update is a
     /// fast-forward exactly when its current tip is.
@@ -177,6 +186,26 @@ pub trait FileSystem {
     fn exists(&self, path: &Path) -> bool;
     fn create_dir_all(&self, path: &Path) -> Result<(), PortError>;
     fn copy_file(&self, from: &Path, to: &Path) -> Result<(), PortError>;
+}
+
+/// The editor a finished worktree is handed to.
+pub trait Editor {
+    /// Open `path`. Returns once the editor has been asked, not once it has
+    /// been closed.
+    fn open(&self, path: &Path) -> Result<(), PortError>;
+    /// For `zax doctor`: can the configured editor be started at all?
+    fn probe(&self) -> Result<String, PortError>;
+}
+
+/// The ssh agent, which is the only thing that can hold an unlocked key.
+///
+/// zax runs git with every prompt moved off the terminal, so a passphrase has
+/// to have been given to something beforehand. That makes the agent as much a
+/// credential as `gh auth` is, and just as worth checking.
+pub trait SshAgent {
+    /// For `zax doctor`: what the agent holds, or why a key will not be
+    /// available when a fetch needs one.
+    fn probe(&self) -> Result<String, PortError>;
 }
 
 pub trait Clock {

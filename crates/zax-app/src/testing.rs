@@ -12,8 +12,8 @@ use zax_domain::{
 };
 
 use crate::ports::{
-    Clock, FileSystem, Forge, GitRepo, Multiplexer, PortError, ProcessRunner, PullRequestHead,
-    WorktreeEntry,
+    Clock, Editor, FileSystem, Forge, GitRepo, Multiplexer, PortError, ProcessRunner,
+    PullRequestHead, SshAgent, WorktreeEntry,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -238,6 +238,8 @@ pub struct FakeGitRepo {
     pub added: RefCell<Vec<AddedWorktreeCall>>,
     pub removed: RefCell<Vec<(PathBuf, bool)>>,
     pub fetched: RefCell<Vec<(String, String)>>,
+    /// What `git remote get-url` would answer, by remote name.
+    remotes: RefCell<HashMap<String, String>>,
 }
 
 impl FakeGitRepo {
@@ -252,6 +254,7 @@ impl FakeGitRepo {
             added: RefCell::new(Vec::new()),
             removed: RefCell::new(Vec::new()),
             fetched: RefCell::new(Vec::new()),
+            remotes: RefCell::new(HashMap::new()),
         }
     }
 
@@ -273,6 +276,15 @@ impl FakeGitRepo {
         self.commits
             .borrow_mut()
             .insert(rev.to_owned(), commit.to_owned());
+        self
+    }
+
+    /// The URL a remote answers with, which decides the credential a fetch
+    /// from it needs.
+    pub fn with_remote(self, remote: &str, url: &str) -> Self {
+        self.remotes
+            .borrow_mut()
+            .insert(remote.to_owned(), url.to_owned());
         self
     }
 
@@ -359,6 +371,10 @@ impl GitRepo for FakeGitRepo {
             .borrow_mut()
             .push((remote.to_owned(), refspec.to_owned()));
         Ok(())
+    }
+
+    fn remote_url(&self, remote: &str) -> Result<Option<String>, PortError> {
+        Ok(self.remotes.borrow().get(remote).cloned())
     }
 
     fn resolve_commit(&self, rev: &str) -> Result<String, PortError> {
@@ -734,5 +750,63 @@ mod tests {
     fn the_clock_fake_does_not_move() {
         let clock = FixedClock::at_unix_seconds(1_700_000_000);
         assert_eq!(clock.now(), clock.now());
+    }
+}
+
+/// An ssh agent that is holding keys, or a reason it is not.
+#[derive(Default)]
+pub struct FakeSshAgent {
+    failure: Option<PortError>,
+}
+
+impl FakeSshAgent {
+    pub fn locked(error: PortError) -> Self {
+        Self {
+            failure: Some(error),
+        }
+    }
+}
+
+impl SshAgent for FakeSshAgent {
+    fn probe(&self) -> Result<String, PortError> {
+        match &self.failure {
+            Some(error) => Err(error.clone()),
+            None => Ok("1 key(s) loaded".to_owned()),
+        }
+    }
+}
+
+/// An editor that records what it was asked to open.
+#[derive(Debug, Default)]
+pub struct FakeEditor {
+    pub opened: RefCell<Vec<PathBuf>>,
+    failure: Option<PortError>,
+}
+
+impl FakeEditor {
+    /// An editor that cannot be started. The attempt is still recorded, so a
+    /// test can assert what was asked for before it failed.
+    pub fn failing(error: PortError) -> Self {
+        Self {
+            failure: Some(error),
+            ..Self::default()
+        }
+    }
+}
+
+impl Editor for FakeEditor {
+    fn open(&self, path: &Path) -> Result<(), PortError> {
+        self.opened.borrow_mut().push(path.to_owned());
+        match &self.failure {
+            Some(error) => Err(error.clone()),
+            None => Ok(()),
+        }
+    }
+
+    fn probe(&self) -> Result<String, PortError> {
+        match &self.failure {
+            Some(error) => Err(error.clone()),
+            None => Ok("zed 0.0.0".to_owned()),
+        }
     }
 }

@@ -1006,8 +1006,10 @@ dependencies = [
  "zax-config",
  "zax-domain",
  "zax-exec",
+ "zax-infra-editor",
  "zax-infra-git",
  "zax-infra-github",
+ "zax-infra-ssh",
  "zax-infra-tmux",
  "zax-tui",
 ]
@@ -1039,6 +1041,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "zax-infra-editor"
+version = "0.1.0"
+dependencies = [
+ "zax-app",
+ "zax-domain",
+ "zax-exec",
+]
+
+[[package]]
 name = "zax-infra-git"
 version = "0.1.0"
 dependencies = [
@@ -1057,6 +1068,14 @@ dependencies = [
  "time",
  "zax-app",
  "zax-domain",
+ "zax-exec",
+]
+
+[[package]]
+name = "zax-infra-ssh"
+version = "0.1.0"
+dependencies = [
+ "zax-app",
  "zax-exec",
 ]
 

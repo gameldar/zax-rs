@@ -35,7 +35,7 @@ pub enum Commands {
         #[command(subcommand)]
         command: Option<ConfigCommand>,
     },
-    /// Verify that tmux, git and gh are present and authenticated.
+    /// Verify that tmux, git, gh and the editor are present and authenticated.
     Doctor,
 }
 
@@ -71,6 +71,9 @@ pub enum WorktreeCommand {
         /// Create the worktree but do not run the repo's setup hooks.
         #[arg(long)]
         no_hooks: bool,
+        /// Create the worktree but do not open it in the editor.
+        #[arg(long)]
+        no_open: bool,
     },
     /// Put a pull request's head branch in a worktree, then copy and hooks.
     Review {
@@ -82,6 +85,9 @@ pub enum WorktreeCommand {
         /// head even when that discards commits only the branch has.
         #[arg(long)]
         force: bool,
+        /// Create the worktree but do not open it in the editor.
+        #[arg(long)]
+        no_open: bool,
     },
     /// List the worktrees zax manages for this repository.
     List,
@@ -173,13 +179,26 @@ mod tests {
                         branch,
                         from,
                         no_hooks,
+                        no_open,
                     },
             } => {
                 assert_eq!(branch, "OMEGA-1963-stamp");
                 assert_eq!(from.as_deref(), Some("origin/main"));
                 assert!(no_hooks);
+                assert!(!no_open, "a new worktree opens in the editor by default");
             }
             other => panic!("expected worktree new, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn worktree_review_can_be_told_not_to_open_the_editor() {
+        let cli = Cli::try_parse_from(["zax", "worktree", "review", "1963", "--no-open"]).unwrap();
+        match cli.command {
+            Commands::Worktree {
+                command: WorktreeCommand::Review { no_open, .. },
+            } => assert!(no_open),
+            other => panic!("expected worktree review, got {other:?}"),
         }
     }
 

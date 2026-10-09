@@ -4,6 +4,7 @@
 //! conventions are type constructors, not advisory documentation.
 
 pub mod branch;
+pub mod date;
 pub mod forge;
 pub mod layout;
 pub mod prs_filter;
@@ -12,9 +13,12 @@ pub mod repo;
 pub mod session;
 pub mod settings;
 pub mod ticket;
+pub mod todo;
+pub mod todo_view;
 pub mod work;
 
 pub use branch::{BranchName, BranchNameError, BranchOrigin};
+pub use date::{Date, DateError, Weekday};
 pub use forge::{
     Attention, BranchView, CheckState, Mergeable, MyPullRequest, PrRef, PrRefError, PullRequest,
     PullRequestStatus, RepoSlug, RepoSlugError, ReviewState,
@@ -39,5 +43,13 @@ pub use settings::{
 };
 pub use ticket::{
     branch_slug, StatusCategory, Ticket, TicketKey, TicketKeyError, TicketStatus, Transition,
+};
+pub use todo::{
+    Due, LineRef, TodoDocument, TodoEdit, TodoError, TodoFile, TodoFileError, TodoItem, TodoList,
+    COMPLETION, DUE,
+};
+pub use todo_view::{
+    due_state, is_late, parse_due_spec, parse_prompt, prompt_text, todo_rows, DueError, DueState,
+    PromptEntry, PromptError,
 };
 pub use work::{join, TicketRank, TicketRow, TicketWork, WorkIndex, Worktree};

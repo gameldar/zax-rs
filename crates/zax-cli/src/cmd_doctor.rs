@@ -61,6 +61,18 @@ pub fn run() -> Result<()> {
         }
     }
 
+    // The todo file needs no config, so its line is always there.
+    match wiring::todo_file(&ctx.config)
+        .map_err(|e| e.to_string())
+        .and_then(|f| crate::cmd_todo::probe(&f))
+    {
+        Ok(detail) => println!("ok    {:<8} {detail}", "todo"),
+        Err(error) => {
+            all_ok = false;
+            print_failure("todo", &error);
+        }
+    }
+
     if all_ok {
         Ok(())
     } else {

@@ -10,6 +10,7 @@ pub mod paths;
 pub mod provider_source;
 pub mod server;
 pub mod source;
+pub mod todo_source;
 pub mod topics;
 
 pub use hub::{ClientId, Hub};

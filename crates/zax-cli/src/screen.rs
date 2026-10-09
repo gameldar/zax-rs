@@ -3,7 +3,9 @@
 use std::io::stdout;
 
 use anyhow::{Context, Result};
-use ratatui::crossterm::event::{DisableFocusChange, EnableFocusChange};
+use ratatui::crossterm::event::{
+    DisableBracketedPaste, DisableFocusChange, EnableBracketedPaste, EnableFocusChange,
+};
 use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
@@ -21,7 +23,14 @@ impl Screen {
         // `EnableFocusChange` is what makes `Event::FocusGained` arrive, which is
         // how a pane refreshes on focus. tmux forwards it because our conf sets
         // `focus-events on`.
-        execute!(stdout(), EnterAlternateScreen, EnableFocusChange)?;
+        // `EnableBracketedPaste` delivers a paste as one `Event::Paste`, so a
+        // pasted newline is not mistaken for `enter`.
+        execute!(
+            stdout(),
+            EnterAlternateScreen,
+            EnableFocusChange,
+            EnableBracketedPaste
+        )?;
         Ok(Self {
             terminal: Terminal::new(CrosstermBackend::new(stdout()))?,
         })
@@ -31,6 +40,11 @@ impl Screen {
 impl Drop for Screen {
     fn drop(&mut self) {
         let _ = disable_raw_mode();
-        let _ = execute!(stdout(), DisableFocusChange, LeaveAlternateScreen);
+        let _ = execute!(
+            stdout(),
+            DisableBracketedPaste,
+            DisableFocusChange,
+            LeaveAlternateScreen
+        );
     }
 }

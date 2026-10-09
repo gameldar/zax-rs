@@ -1,7 +1,7 @@
 //! `zax broker`: the composition root for the shared broker.
 //!
-//! The broker crate is generic; this is where `tickets` and `work` keys are
-//! given meaning.
+//! The broker crate is generic; this is where `tickets`, `work` and `todo` keys
+//! are given meaning.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -13,9 +13,10 @@ use zax_app::queries;
 use zax_broker::client::binary_identity;
 use zax_broker::provider_source::ProviderSource;
 use zax_broker::server::{self, ServerConfig};
-use zax_broker::topics::{encode_work, TicketsSpec, WorkSpec, TICKETS, WORK};
+use zax_broker::todo_source::TodoSource;
+use zax_broker::topics::{encode_work, TicketsSpec, TodoSpec, WorkSpec, TICKETS, TODO, WORK};
 use zax_broker::{BrokerPaths, Source, SourceFactory};
-use zax_domain::WorktreeRoot;
+use zax_domain::{TodoFile, WorktreeRoot};
 use zax_exec::{SystemExec, SystemHandover};
 use zax_infra_tmux::{TmuxCli, SOCKET_DEFAULT};
 use zax_protocol::SourceKey;
@@ -79,6 +80,12 @@ impl SourceFactory for Factory {
                 let root = WorktreeRoot::new(PathBuf::from(spec.worktree_root))
                     .map_err(|e| e.to_string())?;
                 Ok(Box::new(WorkSource { root }))
+            }
+            TODO => {
+                let spec: TodoSpec =
+                    serde_json::from_str(&key.source).map_err(|e| e.to_string())?;
+                let file = TodoFile::new(PathBuf::from(spec.file)).map_err(|e| e.to_string())?;
+                Ok(Box::new(TodoSource::new(file.as_path().to_path_buf())))
             }
             other => Err(format!("the broker has no `{other}` source")),
         }

@@ -3,7 +3,7 @@
 
 use std::path::PathBuf;
 
-use zax_domain::{BranchName, RepoSlug, TicketKey};
+use zax_domain::{BranchName, RepoSlug, TicketKey, TodoEdit};
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum PaneAction {
@@ -17,6 +17,10 @@ pub enum PaneAction {
         repo: RepoSlug,
         number: u32,
     },
+    /// A change to the todo file, sent to the broker.
+    Todo(TodoEdit),
+    /// Open a file in the editor.
+    OpenFile(PathBuf),
     Quit,
     /// `zax worktree new <branch>` in the current repository.
     StartWork {

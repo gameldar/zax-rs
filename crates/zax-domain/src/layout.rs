@@ -88,12 +88,13 @@ pub enum BuiltinPane {
     BranchStatus,
     MyPrs,
     Tickets,
+    Todo,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum BuiltinPaneError {
     #[error(
-        "`{0}` is not a built-in pane; the built-ins are prs-for-review, branch-status, my-prs and tickets"
+        "`{0}` is not a built-in pane; the built-ins are prs-for-review, branch-status, my-prs, tickets and todo"
     )]
     Unknown(String),
 }
@@ -102,11 +103,12 @@ impl BuiltinPane {
     /// Every built-in there is. Help text, validation messages and the CLI's
     /// own subcommand test read the list from here, so a built-in added to
     /// the enum cannot be left out of one of them unnoticed.
-    pub const ALL: [Self; 4] = [
+    pub const ALL: [Self; 5] = [
         Self::PrsForReview,
         Self::BranchStatus,
         Self::MyPrs,
         Self::Tickets,
+        Self::Todo,
     ];
 
     pub fn parse(raw: &str) -> Result<Self, BuiltinPaneError> {
@@ -115,6 +117,7 @@ impl BuiltinPane {
             "branch-status" => Ok(Self::BranchStatus),
             "my-prs" => Ok(Self::MyPrs),
             "tickets" => Ok(Self::Tickets),
+            "todo" => Ok(Self::Todo),
             other => Err(BuiltinPaneError::Unknown(other.to_owned())),
         }
     }
@@ -125,6 +128,7 @@ impl BuiltinPane {
             Self::BranchStatus => "branch-status",
             Self::MyPrs => "my-prs",
             Self::Tickets => "tickets",
+            Self::Todo => "todo",
         }
     }
 }
@@ -347,6 +351,12 @@ mod tests {
     }
 
     #[test]
+    fn todo_is_a_built_in_pane() {
+        assert_eq!(BuiltinPane::parse("todo").unwrap(), BuiltinPane::Todo);
+        assert_eq!(BuiltinPane::Todo.as_str(), "todo");
+    }
+
+    #[test]
     fn tickets_is_a_built_in_pane() {
         assert_eq!(BuiltinPane::parse("tickets").unwrap(), BuiltinPane::Tickets);
         assert_eq!(BuiltinPane::Tickets.as_str(), "tickets");
@@ -368,7 +378,7 @@ mod tests {
 
     #[test]
     fn all_lists_every_built_in_and_each_one_round_trips() {
-        assert_eq!(BuiltinPane::ALL.len(), 4);
+        assert_eq!(BuiltinPane::ALL.len(), 5);
         for builtin in BuiltinPane::ALL {
             assert_eq!(BuiltinPane::parse(builtin.as_str()).unwrap(), builtin);
         }

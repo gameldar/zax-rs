@@ -30,6 +30,7 @@ pub fn run(command: PaneCommand) -> Result<()> {
         PaneCommand::BranchStatus => run_branch_pane(),
         PaneCommand::MyPrs => run_my_prs_pane(),
         PaneCommand::Tickets => crate::cmd_tickets::run(),
+        PaneCommand::Todo => crate::cmd_todo::run(),
         PaneCommand::Exec {
             title,
             every,
@@ -235,15 +236,18 @@ fn perform_with<E: Exec>(exec: &E, action: PaneAction) -> Result<Option<String>>
             );
             return Ok(review_message(result));
         }
-        // The tickets loop performs its own four row actions; they need the
-        // broker connection, which this function does not have.
+        // The tickets loop performs its own four row actions, and the todo
+        // loop its two; they need the broker connection, which this function
+        // does not have.
         PaneAction::None
         | PaneAction::Refresh
         | PaneAction::Quit
         | PaneAction::StartWork { .. }
         | PaneAction::OpenWorktree { .. }
         | PaneAction::ListTransitions { .. }
-        | PaneAction::Transition { .. } => {}
+        | PaneAction::Transition { .. }
+        | PaneAction::Todo(_)
+        | PaneAction::OpenFile(_) => {}
     }
     Ok(None)
 }

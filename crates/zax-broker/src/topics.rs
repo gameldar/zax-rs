@@ -10,14 +10,15 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use zax_domain::{
-    BranchName, CheckState, LiveSession, Mergeable, MyPullRequest, PullRequest, PullRequestStatus,
-    RepoSlug, ReviewState, RootRepoName, SessionName, StatusCategory, Ticket, TicketKey,
-    TicketStatus, Transition, WorkIndex, Worktree,
+    BranchName, CheckState, Date, LineRef, LiveSession, Mergeable, MyPullRequest, PullRequest,
+    PullRequestStatus, RepoSlug, ReviewState, RootRepoName, SessionName, StatusCategory, Ticket,
+    TicketKey, TicketStatus, TodoEdit, TodoItem, TodoList, Transition, WorkIndex, Worktree,
 };
 use zax_protocol::{category, TicketsTopic, TransitionsResult, WireTicket};
 
 pub const TICKETS: &str = "tickets";
 pub const WORK: &str = "work";
+pub const TODO: &str = "todo";
 
 /// The `tickets` source spec: the provider command as config resolved it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -29,6 +30,21 @@ pub struct TicketsSpec {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkSpec {
     pub worktree_root: String,
+}
+
+/// The `todo` source spec: the todo file as config resolved it, absolute.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TodoSpec {
+    pub file: String,
+}
+
+/// The writes the `todo` source takes, one per `TodoEdit` variant.
+pub mod todo_method {
+    pub const ADD: &str = "todo/add";
+    pub const TOGGLE: &str = "todo/toggle";
+    pub const SET: &str = "todo/set";
+    pub const DELETE: &str = "todo/delete";
+    pub const SNOOZE: &str = "todo/snooze";
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -298,6 +314,139 @@ pub fn fetched_at(secs: u64) -> SystemTime {
     UNIX_EPOCH + Duration::from_secs(secs)
 }
 
+#[derive(Serialize, Deserialize)]
+struct TodoDto {
+    file: String,
+    items: Vec<TodoLineDto>,
+}
+
+/// A task line travels as written; the pane reads it with the domain's own
+/// parser, so there is one parser and no second copy of its fields.
+#[derive(Serialize, Deserialize)]
+struct TodoLineDto {
+    line: usize,
+    raw: String,
+}
+
+pub fn encode_todo(file: &str, items: &[TodoItem]) -> Value {
+    serde_json::json!({
+        "file": file,
+        "items": items
+            .iter()
+            .map(|i| serde_json::json!({"line": i.line, "raw": i.raw}))
+            .collect::<Vec<_>>(),
+    })
+}
+
+pub fn decode_todo(value: &Value) -> Result<TodoList, String> {
+    let dto: TodoDto = serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
+    Ok(TodoList {
+        file: dto.file,
+        items: dto
+            .items
+            .into_iter()
+            .filter_map(|l| TodoItem::parse(l.line, &l.raw))
+            .collect(),
+    })
+}
+
+/// Every field optional: which ones a method needs is checked per method.
+#[derive(Deserialize)]
+struct EditDto {
+    line: Option<usize>,
+    raw: Option<String>,
+    text: Option<String>,
+    due: Option<String>,
+    today: Option<String>,
+}
+
+pub fn encode_todo_edit(edit: &TodoEdit) -> (&'static str, Value) {
+    use serde_json::{json, Map};
+    fn at(at: &LineRef, params: &mut Map<String, Value>) {
+        params.insert("line".into(), json!(at.line));
+        params.insert("raw".into(), json!(at.raw));
+    }
+    let mut params = Map::new();
+    let method = match edit {
+        TodoEdit::Add { text, due } => {
+            params.insert("text".into(), json!(text));
+            if let Some(d) = due {
+                params.insert("due".into(), json!(d.to_string()));
+            }
+            todo_method::ADD
+        }
+        TodoEdit::Toggle { at: line, today } => {
+            at(line, &mut params);
+            params.insert("today".into(), json!(today.to_string()));
+            todo_method::TOGGLE
+        }
+        TodoEdit::Set {
+            at: line,
+            text,
+            due,
+        } => {
+            at(line, &mut params);
+            params.insert("text".into(), json!(text));
+            if let Some(d) = due {
+                params.insert("due".into(), json!(d.to_string()));
+            }
+            todo_method::SET
+        }
+        TodoEdit::Delete { at: line } => {
+            at(line, &mut params);
+            todo_method::DELETE
+        }
+        TodoEdit::Snooze { at: line, today } => {
+            at(line, &mut params);
+            params.insert("today".into(), json!(today.to_string()));
+            todo_method::SNOOZE
+        }
+    };
+    (method, Value::Object(params))
+}
+
+pub fn decode_todo_edit(method: &str, params: &Value) -> Result<TodoEdit, String> {
+    let dto: EditDto =
+        serde_json::from_value(params.clone()).map_err(|e| format!("{method}: {e}"))?;
+    let missing = |field: &str| format!("{method}: missing `{field}`");
+    let date = |raw: Option<&String>, field: &str| -> Result<Date, String> {
+        let raw = raw.ok_or_else(|| missing(field))?;
+        Date::parse_iso(raw).map_err(|e| format!("{method}: {e}"))
+    };
+    let optional_date = |raw: Option<&String>| -> Result<Option<Date>, String> {
+        raw.map(|r| Date::parse_iso(r).map_err(|e| format!("{method}: {e}")))
+            .transpose()
+    };
+    let at = || -> Result<LineRef, String> {
+        Ok(LineRef {
+            line: dto.line.ok_or_else(|| missing("line"))?,
+            raw: dto.raw.clone().ok_or_else(|| missing("raw"))?,
+        })
+    };
+    let text = || dto.text.clone().ok_or_else(|| missing("text"));
+    match method {
+        todo_method::ADD => Ok(TodoEdit::Add {
+            text: text()?,
+            due: optional_date(dto.due.as_ref())?,
+        }),
+        todo_method::TOGGLE => Ok(TodoEdit::Toggle {
+            at: at()?,
+            today: date(dto.today.as_ref(), "today")?,
+        }),
+        todo_method::SET => Ok(TodoEdit::Set {
+            at: at()?,
+            text: text()?,
+            due: optional_date(dto.due.as_ref())?,
+        }),
+        todo_method::DELETE => Ok(TodoEdit::Delete { at: at()? }),
+        todo_method::SNOOZE => Ok(TodoEdit::Snooze {
+            at: at()?,
+            today: date(dto.today.as_ref(), "today")?,
+        }),
+        other => Err(format!("the todo source has no `{other}`")),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)]
@@ -448,5 +597,114 @@ mod tests {
     #[test]
     fn a_work_index_of_the_wrong_shape_is_an_error() {
         assert!(decode_work(&json!(null)).is_err());
+    }
+
+    fn todo_date(raw: &str) -> zax_domain::Date {
+        zax_domain::Date::parse_iso(raw).unwrap()
+    }
+
+    #[test]
+    fn a_todo_snapshot_carries_lines_and_reads_back_as_items() {
+        let items =
+            zax_domain::TodoDocument::parse("# T\n- [ ] a [due:: 2026-10-10]\nnote\n").items();
+        let value = encode_todo("/h/todo.md", &items);
+        assert_eq!(
+            value,
+            serde_json::json!({"file": "/h/todo.md", "items": [{"line": 1, "raw": "- [ ] a [due:: 2026-10-10]"}]})
+        );
+        let list = decode_todo(&value).unwrap();
+        assert_eq!(list.file, "/h/todo.md");
+        assert_eq!(list.items, items);
+    }
+
+    #[test]
+    fn a_line_that_is_not_a_task_is_dropped_on_decode() {
+        let value = serde_json::json!({"file": "/f", "items": [{"line": 0, "raw": "note"}, {"line": 1, "raw": "- [ ] a"}]});
+        assert_eq!(decode_todo(&value).unwrap().items.len(), 1);
+    }
+
+    #[test]
+    fn every_todo_edit_survives_the_wire() {
+        let at = zax_domain::LineRef {
+            line: 3,
+            raw: "- [ ] a".into(),
+        };
+        let today = todo_date("2026-10-07");
+        let edits = [
+            zax_domain::TodoEdit::Add {
+                text: "a".into(),
+                due: Some(todo_date("2026-10-12")),
+            },
+            zax_domain::TodoEdit::Add {
+                text: "a".into(),
+                due: None,
+            },
+            zax_domain::TodoEdit::Toggle {
+                at: at.clone(),
+                today,
+            },
+            zax_domain::TodoEdit::Set {
+                at: at.clone(),
+                text: "b".into(),
+                due: None,
+            },
+            zax_domain::TodoEdit::Set {
+                at: at.clone(),
+                text: "b".into(),
+                due: Some(today),
+            },
+            zax_domain::TodoEdit::Delete { at: at.clone() },
+            zax_domain::TodoEdit::Snooze { at, today },
+        ];
+        for edit in edits {
+            let (method, params) = encode_todo_edit(&edit);
+            assert_eq!(
+                decode_todo_edit(method, &params).unwrap(),
+                edit,
+                "{method} {params}"
+            );
+        }
+    }
+
+    #[test]
+    fn todo_edits_have_the_documented_shapes() {
+        let (method, params) = encode_todo_edit(&zax_domain::TodoEdit::Toggle {
+            at: zax_domain::LineRef {
+                line: 2,
+                raw: "- [ ] a".into(),
+            },
+            today: todo_date("2026-10-07"),
+        });
+        assert_eq!(method, "todo/toggle");
+        assert_eq!(
+            params,
+            serde_json::json!({"line": 2, "raw": "- [ ] a", "today": "2026-10-07"})
+        );
+        let (method, params) = encode_todo_edit(&zax_domain::TodoEdit::Add {
+            text: "a".into(),
+            due: None,
+        });
+        assert_eq!(method, "todo/add");
+        assert_eq!(params, serde_json::json!({"text": "a"}));
+    }
+
+    #[test]
+    fn a_malformed_todo_edit_is_refused_with_the_reason() {
+        let cases = [
+            ("todo/nope", serde_json::json!({})),
+            ("todo/toggle", serde_json::json!({"line": 1, "raw": "x"})),
+            (
+                "todo/toggle",
+                serde_json::json!({"line": 1, "raw": "x", "today": "tuesday"}),
+            ),
+            ("todo/add", serde_json::json!({"due": "2026-10-07"})),
+            ("todo/delete", serde_json::json!({"raw": "x"})),
+        ];
+        for (method, params) in cases {
+            assert!(
+                decode_todo_edit(method, &params).is_err(),
+                "{method} {params}"
+            );
+        }
     }
 }

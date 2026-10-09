@@ -15,6 +15,7 @@ pub struct RawConfig {
     pub prs: Option<RawPrs>,
     pub editor: Option<RawEditor>,
     pub tickets: Option<RawTickets>,
+    pub todo: Option<RawTodo>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
@@ -72,6 +73,13 @@ pub struct RawEditor {
 #[serde(deny_unknown_fields)]
 pub struct RawTickets {
     pub provider: Option<Vec<String>>,
+}
+
+/// The `[todo]` table: where the todo pane's markdown file is.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RawTodo {
+    pub file: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]

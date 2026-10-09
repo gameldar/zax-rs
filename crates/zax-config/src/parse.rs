@@ -5,11 +5,11 @@ use std::path::PathBuf;
 
 use zax_domain::{
     parse_duration, BuiltinPane, Command, LayoutSpec, PaneKind, PaneSize, PaneSpec, PrFilter,
-    RepoPattern, WorktreeRoot,
+    RepoPattern, TodoFile, WorktreeRoot,
 };
 
 use crate::error::ConfigError;
-use crate::raw::{RawConfig, RawEditor, RawPane, RawPrs, RawTickets};
+use crate::raw::{RawConfig, RawEditor, RawPane, RawPrs, RawTickets, RawTodo};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
@@ -19,6 +19,7 @@ pub struct Config {
     pub prs: PrFilter,
     pub editor: EditorConfig,
     pub tickets: TicketsConfig,
+    pub todo: TodoConfig,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -46,6 +47,14 @@ pub struct EditorConfig {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TicketsConfig {
     pub provider: Option<Command>,
+}
+
+/// Where the todo pane's file is. `None` means the default under the data
+/// home, which depends on the environment and so is the composition root's
+/// to resolve.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TodoConfig {
+    pub file: Option<TodoFile>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -131,6 +140,7 @@ pub fn from_raw(raw: RawConfig, home: &str) -> Result<Config, ConfigError> {
     let prs = prs_filter_from_raw(raw.prs.unwrap_or_default())?;
     let editor = editor_from_raw(raw.editor.unwrap_or_default())?;
     let tickets = tickets_from_raw(raw.tickets.unwrap_or_default())?;
+    let todo = todo_from_raw(raw.todo.unwrap_or_default(), home)?;
 
     Ok(Config {
         layout,
@@ -139,7 +149,22 @@ pub fn from_raw(raw: RawConfig, home: &str) -> Result<Config, ConfigError> {
         prs,
         editor,
         tickets,
+        todo,
     })
+}
+
+fn todo_from_raw(raw: RawTodo, home: &str) -> Result<TodoConfig, ConfigError> {
+    let invalid = |detail: String| ConfigError::Invalid {
+        field: "todo.file",
+        detail,
+    };
+    match raw.file {
+        None => Ok(TodoConfig { file: None }),
+        Some(text) if text.trim().is_empty() => Err(invalid("is empty".to_owned())),
+        Some(text) => TodoFile::new(PathBuf::from(expand_home(&text, home)))
+            .map(|file| TodoConfig { file: Some(file) })
+            .map_err(|e| invalid(e.to_string())),
+    }
 }
 
 /// An absent table and an empty list both mean no provider, so the pane has
@@ -396,6 +421,34 @@ mod tests {
     fn config_from(text: &str) -> Config {
         let raw: RawConfig = toml::from_str(text).unwrap();
         from_raw(raw, "/home/me").unwrap()
+    }
+
+    #[test]
+    fn no_todo_table_leaves_the_file_to_the_default() {
+        assert_eq!(config_from("").todo.file, None);
+    }
+
+    #[test]
+    fn a_todo_file_expands_home() {
+        let config = config_from("[todo]\nfile = \"~/notes/todo.md\"");
+        assert_eq!(
+            config.todo.file.unwrap().as_path(),
+            std::path::Path::new("/home/me/notes/todo.md")
+        );
+    }
+
+    #[test]
+    fn a_relative_or_empty_todo_file_is_refused() {
+        for text in ["[todo]\nfile = \"todo.md\"", "[todo]\nfile = \"\""] {
+            let raw: RawConfig = toml::from_str(text).unwrap();
+            let err = from_raw(raw, "/home/me").unwrap_err();
+            assert!(err.to_string().contains("todo.file"), "{err}");
+        }
+    }
+
+    #[test]
+    fn an_unknown_todo_key_is_an_error() {
+        assert!(toml::from_str::<RawConfig>("[todo]\npath = \"/a\"").is_err());
     }
 
     #[test]

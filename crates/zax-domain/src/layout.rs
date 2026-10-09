@@ -87,12 +87,13 @@ pub enum BuiltinPane {
     PrsForReview,
     BranchStatus,
     MyPrs,
+    Tickets,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum BuiltinPaneError {
     #[error(
-        "`{0}` is not a built-in pane; the built-ins are prs-for-review, branch-status and my-prs"
+        "`{0}` is not a built-in pane; the built-ins are prs-for-review, branch-status, my-prs and tickets"
     )]
     Unknown(String),
 }
@@ -101,13 +102,19 @@ impl BuiltinPane {
     /// Every built-in there is. Help text, validation messages and the CLI's
     /// own subcommand test read the list from here, so a built-in added to
     /// the enum cannot be left out of one of them unnoticed.
-    pub const ALL: [Self; 3] = [Self::PrsForReview, Self::BranchStatus, Self::MyPrs];
+    pub const ALL: [Self; 4] = [
+        Self::PrsForReview,
+        Self::BranchStatus,
+        Self::MyPrs,
+        Self::Tickets,
+    ];
 
     pub fn parse(raw: &str) -> Result<Self, BuiltinPaneError> {
         match raw {
             "prs-for-review" => Ok(Self::PrsForReview),
             "branch-status" => Ok(Self::BranchStatus),
             "my-prs" => Ok(Self::MyPrs),
+            "tickets" => Ok(Self::Tickets),
             other => Err(BuiltinPaneError::Unknown(other.to_owned())),
         }
     }
@@ -117,6 +124,7 @@ impl BuiltinPane {
             Self::PrsForReview => "prs-for-review",
             Self::BranchStatus => "branch-status",
             Self::MyPrs => "my-prs",
+            Self::Tickets => "tickets",
         }
     }
 }
@@ -339,6 +347,12 @@ mod tests {
     }
 
     #[test]
+    fn tickets_is_a_built_in_pane() {
+        assert_eq!(BuiltinPane::parse("tickets").unwrap(), BuiltinPane::Tickets);
+        assert_eq!(BuiltinPane::Tickets.as_str(), "tickets");
+    }
+
+    #[test]
     fn an_unknown_built_in_names_every_built_in_there_is() {
         // Driven from ALL rather than a list written out here, so adding a
         // built-in and forgetting the message is a failing test.
@@ -354,7 +368,7 @@ mod tests {
 
     #[test]
     fn all_lists_every_built_in_and_each_one_round_trips() {
-        assert_eq!(BuiltinPane::ALL.len(), 3);
+        assert_eq!(BuiltinPane::ALL.len(), 4);
         for builtin in BuiltinPane::ALL {
             assert_eq!(BuiltinPane::parse(builtin.as_str()).unwrap(), builtin);
         }

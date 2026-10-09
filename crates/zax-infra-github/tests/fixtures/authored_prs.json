@@ -6,6 +6,7 @@
           "number": 12,
           "title": "Add the my-prs pane",
           "url": "https://github.com/gameldar/zax/pull/12",
+          "headRefName": "OMEGA-1963-stamp",
           "isDraft": false,
           "createdAt": "2023-11-14T10:00:00Z",
           "mergeable": "CONFLICTING",

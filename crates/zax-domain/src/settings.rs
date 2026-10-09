@@ -91,9 +91,9 @@ pub enum SettingShape {
 
 /// Every setting the modal can edit.
 ///
-/// Closed on purpose. A new config key makes the catalogue match in `zax-config`
-/// fail to compile until the modal handles it, so the modal cannot silently omit
-/// a setting.
+/// Closed on purpose. A new config key makes the matches over it fail to compile
+/// until they handle it, and the modal's row list is held to `SettingKey::ALL`
+/// by a test, so the modal cannot silently omit a setting.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum SettingKey {
     AgentCommand,
@@ -101,6 +101,7 @@ pub enum SettingKey {
     WorktreeCopy,
     WorktreeHooks,
     EditorCommand,
+    TicketsProvider,
     TmuxPrefix,
     PrsInclude,
     PrsExclude,
@@ -111,12 +112,13 @@ pub enum SettingKey {
 impl SettingKey {
     /// Display order: grouped as the TOML is, with the repo key last because it
     /// is the one setting that is about zax's own bookkeeping.
-    pub const ALL: [SettingKey; 10] = [
+    pub const ALL: [SettingKey; 11] = [
         SettingKey::AgentCommand,
         SettingKey::WorktreeRoot,
         SettingKey::WorktreeCopy,
         SettingKey::WorktreeHooks,
         SettingKey::EditorCommand,
+        SettingKey::TicketsProvider,
         SettingKey::TmuxPrefix,
         SettingKey::PrsInclude,
         SettingKey::PrsExclude,
@@ -130,6 +132,7 @@ impl SettingKey {
             Self::AgentCommand => Some("agent"),
             Self::WorktreeRoot | Self::WorktreeCopy | Self::WorktreeHooks => Some("worktree"),
             Self::EditorCommand => Some("editor"),
+            Self::TicketsProvider => Some("tickets"),
             Self::TmuxPrefix => Some("tmux"),
             Self::PrsInclude | Self::PrsExclude | Self::PrsMaxAge => Some("prs"),
             Self::RepoKeyName => None,
@@ -143,6 +146,7 @@ impl SettingKey {
             Self::WorktreeRoot => "root",
             Self::WorktreeCopy => "copy",
             Self::WorktreeHooks => "hooks",
+            Self::TicketsProvider => "provider",
             Self::TmuxPrefix => "prefix",
             Self::PrsInclude => "include",
             Self::PrsExclude => "exclude",
@@ -159,6 +163,7 @@ impl SettingKey {
             Self::WorktreeCopy => "worktree.copy",
             Self::WorktreeHooks => "worktree.hooks",
             Self::EditorCommand => "editor.command",
+            Self::TicketsProvider => "tickets.provider",
             Self::TmuxPrefix => "tmux.prefix",
             Self::PrsInclude => "prs.include",
             Self::PrsExclude => "prs.exclude",
@@ -172,7 +177,7 @@ impl SettingKey {
     /// read as a comma-separated list.
     pub fn list_separator(self) -> &'static str {
         match self {
-            Self::AgentCommand | Self::EditorCommand => " ",
+            Self::AgentCommand | Self::EditorCommand | Self::TicketsProvider => " ",
             _ => ", ",
         }
     }
@@ -183,6 +188,7 @@ impl SettingKey {
             | Self::WorktreeCopy
             | Self::WorktreeHooks
             | Self::EditorCommand
+            | Self::TicketsProvider
             | Self::PrsInclude
             | Self::PrsExclude => SettingShape::List,
             Self::WorktreeRoot | Self::TmuxPrefix | Self::PrsMaxAge | Self::RepoKeyName => {
@@ -199,6 +205,9 @@ impl SettingKey {
             Self::WorktreeCopy => "paths copied into a new worktree, relative to the repository",
             Self::WorktreeHooks => "shell commands run in a new worktree, in order",
             Self::EditorCommand => "what a new worktree opens in; empty opens nothing",
+            Self::TicketsProvider => {
+                "the ticket provider command, such as zax-jira; empty means none"
+            }
             Self::TmuxPrefix => "the tmux prefix key, such as C-Space or C-a",
             Self::PrsInclude => "only these repositories; empty means every repository",
             Self::PrsExclude => "never these repositories, even when included",
@@ -214,6 +223,7 @@ impl SettingKey {
             Self::WorktreeRoot => "~/src/worktrees",
             Self::WorktreeCopy | Self::WorktreeHooks | Self::PrsExclude => "[]",
             Self::EditorCommand => "zed -e",
+            Self::TicketsProvider => "[] (none)",
             Self::TmuxPrefix => "C-Space",
             Self::PrsInclude => "[] (every repository)",
             Self::PrsMaxAge => "(no limit)",
@@ -571,6 +581,14 @@ mod tests {
     }
 
     #[test]
+    fn the_tickets_provider_reads_as_a_command_line() {
+        assert_eq!(SettingKey::TicketsProvider.list_separator(), " ");
+        assert_eq!(SettingKey::TicketsProvider.full_name(), "tickets.provider");
+        let row = SettingRow::new(SettingKey::TicketsProvider, [None, None, None]);
+        assert_eq!(row.display_effective(), "[] (none)");
+    }
+
+    #[test]
     fn an_empty_editor_command_reads_as_the_setting_that_opens_nothing() {
         let row = SettingRow::new(SettingKey::EditorCommand, [None, None, list(&[])]);
         assert_eq!(row.display_effective(), "[]");
@@ -686,6 +704,7 @@ mod tests {
                 SettingKey::WorktreeCopy,
                 SettingKey::WorktreeHooks,
                 SettingKey::EditorCommand,
+                SettingKey::TicketsProvider,
                 SettingKey::PrsInclude,
                 SettingKey::PrsExclude,
             ]

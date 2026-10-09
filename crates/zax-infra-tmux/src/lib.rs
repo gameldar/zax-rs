@@ -253,15 +253,19 @@ fn no_server_to_query(stderr: &str) -> bool {
 /// One `list-sessions` line. Someone else's session on this socket is not ours
 /// to report, so it is skipped rather than parsed.
 fn parse_listed_session(line: &str) -> Option<Result<LiveSession, PortError>> {
-    let line = line.trim();
-    let (raw_name, clients) = line.rsplit_once(' ').unwrap_or((line, ""));
+    let line = line.trim_end_matches(['\n', '\r']);
+    let mut fields = line.splitn(3, '\t');
+    let raw_name = fields.next().unwrap_or_default();
     let name = SessionName::parse(raw_name).ok()?;
+    let clients = fields.next().unwrap_or_default();
+    let path = fields.next().unwrap_or_default();
     Some(
         clients
             .parse::<u32>()
             .map(|clients| LiveSession {
                 name,
                 attached: clients > 0,
+                path: PathBuf::from(path),
             })
             .map_err(|_| PortError::Unparseable {
                 tool: TOOL,
@@ -520,7 +524,7 @@ mod tests {
     #[test]
     fn listing_sessions_keeps_only_names_that_are_zax_sessions() {
         let tmux = cli(vec![ok(
-            "zax-acme-topic 0\npersonal 1\nzax-omega-OMEGA-1-a 2\n",
+            "zax-acme-topic\t0\t/a\npersonal\t1\t/b\nzax-omega-OMEGA-1-a\t2\t/c\n",
         )]);
         let names: Vec<_> = tmux
             .list_sessions()
@@ -534,7 +538,7 @@ mod tests {
     #[test]
     fn a_session_with_any_client_is_attached_and_one_with_none_is_not() {
         // `#{session_attached}` is a client count, not a flag.
-        let tmux = cli(vec![ok("zax-a 0\nzax-b 1\nzax-c 2\n")]);
+        let tmux = cli(vec![ok("zax-a\t0\t/a\nzax-b\t1\t/b\nzax-c\t2\t/c\n")]);
         let attached: Vec<_> = tmux
             .list_sessions()
             .unwrap()
@@ -552,10 +556,36 @@ mod tests {
     }
 
     #[test]
+    fn a_listed_session_carries_the_directory_it_started_in() {
+        let name = "zax-acme-topic-1a2b3c4d";
+        let tmux = cli(vec![ok(&format!(
+            "{name}\t1\t/Users/me/src/worktrees/acme/topic\n"
+        ))]);
+        let sessions = tmux.list_sessions().unwrap();
+        assert_eq!(
+            sessions[0].path,
+            PathBuf::from("/Users/me/src/worktrees/acme/topic")
+        );
+        assert!(sessions[0].attached);
+    }
+
+    #[test]
+    fn a_session_path_may_contain_spaces() {
+        let name = "zax-acme-topic-1a2b3c4d";
+        let tmux = cli(vec![ok(&format!("{name}\t0\t/Users/me/My Projects/x\n"))]);
+        assert_eq!(
+            tmux.list_sessions().unwrap()[0].path,
+            PathBuf::from("/Users/me/My Projects/x")
+        );
+    }
+
+    #[test]
     fn a_listing_line_zax_cannot_read_is_an_error_not_a_detached_session() {
         // Reading garbage as "nobody attached" would hand this agent to a
         // second Zed thread as if it were free.
-        let err = cli(vec![ok("zax-a lots\n")]).list_sessions().unwrap_err();
+        let err = cli(vec![ok("zax-a\tlots\t/a\n")])
+            .list_sessions()
+            .unwrap_err();
         assert!(
             matches!(err, PortError::Unparseable { tool: "tmux", .. }),
             "got: {err:?}"

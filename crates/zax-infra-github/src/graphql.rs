@@ -41,6 +41,7 @@ query($owner: String!, $name: String!, $branch: String!) {
         number
         title
         url
+        headRefName
         isDraft
         createdAt
         mergeable
@@ -73,6 +74,7 @@ query($q: String!) {
         number
         title
         url
+        headRefName
         isDraft
         createdAt
         mergeable

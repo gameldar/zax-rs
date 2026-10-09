@@ -1,6 +1,8 @@
 //! Layer merging. Your layer wins; arrays replace.
 
-use crate::raw::{RawAgent, RawConfig, RawEditor, RawLayout, RawPrs, RawTmux, RawWorktree};
+use crate::raw::{
+    RawAgent, RawConfig, RawEditor, RawLayout, RawPrs, RawTickets, RawTmux, RawWorktree,
+};
 
 /// Fold the layers in order, lowest precedence first.
 pub fn merge(layers: Vec<RawConfig>) -> RawConfig {
@@ -15,6 +17,7 @@ fn fold_one(mut base: RawConfig, over: RawConfig) -> RawConfig {
     base.tmux = merge_tmux(base.tmux, over.tmux);
     base.prs = merge_prs(base.prs, over.prs);
     base.editor = merge_editor(base.editor, over.editor);
+    base.tickets = merge_tickets(base.tickets, over.tickets);
     base
 }
 
@@ -24,6 +27,17 @@ fn merge_editor(base: Option<RawEditor>, over: Option<RawEditor>) -> Option<RawE
         (None, o) => o,
         (Some(mut b), Some(o)) => {
             b.command = o.command.or(b.command);
+            Some(b)
+        }
+    }
+}
+
+fn merge_tickets(base: Option<RawTickets>, over: Option<RawTickets>) -> Option<RawTickets> {
+    match (base, over) {
+        (b, None) => b,
+        (None, o) => o,
+        (Some(mut b), Some(o)) => {
+            b.provider = o.provider.or(b.provider);
             Some(b)
         }
     }
@@ -110,6 +124,15 @@ mod tests {
             merged.agent.unwrap().command.unwrap(),
             vec!["claude", "--dangerously-skip-permissions"]
         );
+    }
+
+    #[test]
+    fn a_later_layer_replaces_the_tickets_provider() {
+        let merged = merge(vec![
+            parse("[tickets]\nprovider = [\"a\"]"),
+            parse("[tickets]\nprovider = [\"b\", \"--x\"]"),
+        ]);
+        assert_eq!(merged.tickets.unwrap().provider.unwrap(), ["b", "--x"]);
     }
 
     #[test]

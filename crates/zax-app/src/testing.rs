@@ -8,12 +8,12 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use zax_domain::{
     BranchName, Command, LiveSession, PaneSize, PrFilter, PrRef, PullRequest, PullRequestStatus,
-    RepoSlug, RootRepoName, SessionName,
+    RepoSlug, RootRepoName, SessionName, Worktree, WorktreeRoot,
 };
 
 use crate::ports::{
     Clock, Editor, FileSystem, Forge, GitRepo, Multiplexer, PortError, ProcessRunner,
-    PullRequestHead, SshAgent, WorktreeEntry,
+    PullRequestHead, SshAgent, WorktreeEntry, WorktreeScanner,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -49,6 +49,8 @@ pub struct FakeMultiplexer {
     sessions: RefCell<HashSet<String>>,
     /// The subset of `sessions` that a client is attached to.
     attached: HashSet<String>,
+    /// The directory each session was started in.
+    paths: RefCell<HashMap<String, PathBuf>>,
     /// `session_exists` and `list_sessions` answers "no" whatever the session set says.
     blind: bool,
     fail_at: Option<usize>,
@@ -71,6 +73,22 @@ impl FakeMultiplexer {
             attached: names,
             ..Self::default()
         }
+    }
+
+    /// One session with the directory it started in, as `list-sessions`
+    /// reports it.
+    pub fn with_session_at(name: SessionName, path: &str, attached: bool) -> Self {
+        Self::default().and_session_at(name, path, attached)
+    }
+
+    pub fn and_session_at(mut self, name: SessionName, path: &str, attached: bool) -> Self {
+        let key = name.as_str().to_owned();
+        self.sessions.borrow_mut().insert(key.clone());
+        if attached {
+            self.attached.insert(key.clone());
+        }
+        self.paths.borrow_mut().insert(key, PathBuf::from(path));
+        self
     }
 
     /// Fail the call at `index`, counting every recorded call from zero, the
@@ -146,6 +164,7 @@ impl Multiplexer for FakeMultiplexer {
                 SessionName::parse(n).ok().map(|name| LiveSession {
                     name,
                     attached: self.attached.contains(n),
+                    path: self.paths.borrow().get(n).cloned().unwrap_or_default(),
                 })
             })
             .collect())
@@ -175,6 +194,9 @@ impl Multiplexer for FakeMultiplexer {
             });
         }
         self.sessions.borrow_mut().insert(name.as_str().to_owned());
+        self.paths
+            .borrow_mut()
+            .insert(name.as_str().to_owned(), cwd.to_owned());
         self.record(call)
     }
 
@@ -808,5 +830,14 @@ impl Editor for FakeEditor {
             Some(error) => Err(error.clone()),
             None => Ok("zed 0.0.0".to_owned()),
         }
+    }
+}
+
+/// Worktrees as a scan of the root would find them.
+pub struct FakeScanner(pub Vec<Worktree>);
+
+impl WorktreeScanner for FakeScanner {
+    fn scan(&self, _root: &WorktreeRoot) -> Result<Vec<Worktree>, PortError> {
+        Ok(self.0.clone())
     }
 }

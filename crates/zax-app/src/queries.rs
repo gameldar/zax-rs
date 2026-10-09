@@ -6,11 +6,12 @@ use std::time::SystemTime;
 use thiserror::Error;
 use zax_domain::{
     BranchName, BranchView, MyPullRequest, PrFilter, PullRequest, RootRepoName, Transport,
-    WorktreePath, WorktreePathError, WorktreeRoot,
+    WorkIndex, WorktreePath, WorktreePathError, WorktreeRoot,
 };
 
 use crate::ports::{
     Editor, FileSystem, Forge, GitRepo, Multiplexer, PortError, SshAgent, WorktreeEntry,
+    WorktreeScanner,
 };
 
 /// The `prs-for-review` pane's data source.
@@ -178,6 +179,25 @@ fn origin_needs_ssh_key<G: GitRepo>(git: &G) -> bool {
         .is_some_and(|url| Transport::of(&url).needs_ssh_key())
 }
 
+/// The `work` source's data: what exists across every repository, for any
+/// pane to join against.
+///
+/// Pull requests are not filtered by `[prs]`: that narrows the pull request
+/// panes, and a ticket's own pull request must not disappear because of a
+/// review-queue setting.
+pub fn list_work<S: WorktreeScanner, M: Multiplexer, Fg: Forge>(
+    scanner: &S,
+    mux: &M,
+    forge: &Fg,
+    root: &WorktreeRoot,
+) -> Result<WorkIndex, PortError> {
+    Ok(WorkIndex {
+        worktrees: scanner.scan(root)?,
+        sessions: mux.list_sessions()?,
+        prs: list_my_pull_requests(forge, &PrFilter::default())?,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)]
@@ -268,6 +288,7 @@ mod tests {
                 review: ReviewState::ReviewRequired,
                 unresolved_threads: 2,
                 mergeable: Mergeable::Mergeable,
+                head: None,
             }),
             ..FakeForge::default()
         };
@@ -501,6 +522,7 @@ mod tests {
             review,
             unresolved_threads: threads,
             mergeable,
+            head: None,
         }
     }
 
@@ -650,5 +672,41 @@ mod tests {
     fn a_broken_forge_is_not_an_empty_list_of_my_pull_requests() {
         let forge = FakeForge::failing(PortError::MissingTool { tool: "gh" });
         assert!(list_my_pull_requests(&forge, &PrFilter::default()).is_err());
+    }
+
+    #[test]
+    fn work_gathers_worktrees_sessions_and_unfiltered_pull_requests() {
+        use crate::testing::FakeScanner;
+        use zax_domain::{SessionName, Worktree};
+
+        let root = WorktreeRoot::new(PathBuf::from("/w")).unwrap();
+        let scanner = FakeScanner(vec![Worktree {
+            repo: RootRepoName::parse("omega").unwrap(),
+            branch: BranchName::parse_foreign("OMEGA-1-a").unwrap(),
+            path: PathBuf::from("/w/omega/OMEGA-1-a"),
+        }]);
+        let mux = FakeMultiplexer::with_session_at(
+            SessionName::parse("zax-omega-x-00000000").unwrap(),
+            "/w/omega/OMEGA-1-a",
+            true,
+        );
+        let mut status = PullRequestStatus {
+            pr: pr(5),
+            review: ReviewState::None,
+            unresolved_threads: 0,
+            mergeable: Mergeable::Mergeable,
+            head: None,
+        };
+        status.pr.repo = RepoSlug::parse("other/repo").unwrap();
+        let forge = FakeForge::with_authored(vec![status]);
+
+        let work = list_work(&scanner, &mux, &forge, &root).unwrap();
+        assert_eq!(work.worktrees.len(), 1);
+        assert_eq!(work.sessions.len(), 1);
+        assert_eq!(
+            work.prs.len(),
+            1,
+            "no [prs] filter applies to the work index"
+        );
     }
 }

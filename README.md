@@ -20,13 +20,17 @@ scrollback intact.
 
 - `tmux`, `git` and `gh` on `PATH`.
 - `gh` already authenticated. zax never manages GitHub auth; it inherits it.
+- `acli` on `PATH` and logged in (`acli jira auth login`), for the Jira ticket
+  provider. Only needed for the `tickets` pane.
 - `zed` on `PATH`, for opening a new worktree. On macOS the CLI ships inside
   the application bundle rather than on `PATH`: open Zed and run `cli: install`
   from the command palette. Set `[editor] command` to use something else, or
   `[]` to open nothing.
 
 `zax doctor` checks tmux, git, gh, gh's auth and the editor, and reports each
-separately, so one missing tool never hides the state of the others.
+separately, so one missing tool never hides the state of the others. Once a
+`[tickets] provider` is configured it also starts that provider and reports its
+name and protocol.
 
 ## Install
 
@@ -40,8 +44,12 @@ nix run . -- doctor
 With cargo (toolchain pinned in `rust-toolchain.toml`):
 
 ```sh
-cargo build --release   # ./target/release/zax
+cargo build --release   # ./target/release/zax and ./target/release/zax-jira
 ```
+
+The build produces two binaries, `zax` and `zax-jira`. `zax-jira` is the Jira
+ticket provider (see [Tickets](#tickets)); put it on `PATH` beside `zax` to
+use it as `["zax-jira"]`.
 
 ## Quick start
 
@@ -83,11 +91,11 @@ title is what drives Zed's in-progress indicator for a thread. tmux's own
 | `zax worktree review <pr\|url> [--force] [--no-hooks] [--no-open]` | A pull request's head branch in a worktree, then copy, hooks and the editor |
 | `zax worktree list` | The worktrees zax manages for this repository |
 | `zax worktree rm <branch> [--force]` | Remove one |
-| `zax pane prs-for-review \| branch-status \| my-prs` | Built-in pane processes, normally launched by `session start` |
+| `zax pane prs-for-review \| branch-status \| my-prs \| tickets` | Built-in pane processes, normally launched by `session start` |
 | `zax pane exec --title <t> --every <dur> -- <cmd>` | Wrap any command's stdout in a header and refresh loop |
-| `zax config` | View and edit the three config layers, in a popup over the session |
+| `zax config` | View and edit the three config layers, in a popup over the session. It shows every key, including `editor.command` and `tickets.provider` |
 | `zax config show` | The same view, printed: every setting, its effective value and its origin |
-| `zax doctor` | Verify tmux, git, gh and the editor are present and authenticated |
+| `zax doctor` | Verify tmux, git, gh and the editor are present and authenticated, and the ticket provider answers when one is configured |
 
 ## Configuration
 
@@ -116,9 +124,16 @@ one.
 **Layer 2 is a trust boundary.** It is a file checked into somebody else's
 repository, and zax runs what it says: `raw` and `exec` pane commands are
 executed when a session starts, and `[worktree] hooks` run through `sh -c`
-when a worktree is made. That is the point of a layer whose job is shipping a
-repository's own layout, but it is worth knowing before opening an untrusted
-repository with zax as the agent entry point. The values that are not already
+when a worktree is made. Running what the repository says is the point of a
+layer whose job is shipping a repository's own layout, but it is worth knowing
+before opening an untrusted repository with zax as the agent entry point.
+
+`[tickets] provider` is the same kind of command, with one difference worth
+knowing: a provider from any layer, including a repository's own `.zax.toml`,
+is run by the shared per-user broker, outside that repository's session. It is
+not a child of the pane or the session that named it, it does not inherit the
+session's working directory, and it keeps running for as long as any pane in
+any session uses it. The values that are not already
 "the repository can run commands" are constrained: `name` must be a single
 directory name, `tmux.prefix` may not contain a control character, and `copy`
 entries may not be absolute or contain `..`.
@@ -199,6 +214,8 @@ max_age = "14d"
 | `tmux.prefix` | `C-Space` | Prefix key for zax's tmux server |
 | `prs.include` / `prs.exclude` | none | Which repositories `prs-for-review` and `my-prs` show |
 | `prs.max_age` | none | Hide pull requests older than this, in `prs-for-review` only |
+| `editor.command` | `["zed", "-e"]` | What opens a worktree, with the path as its last argument. `[]` opens nothing |
+| `tickets.provider` | none | The ticket provider command, such as `["zax-jira"]`. Without one the `tickets` pane says so and does nothing |
 
 Durations are written `30s`, `5m`, `2h` or `14d`; a bare number means
 seconds.
@@ -218,7 +235,9 @@ Three kinds, and the built-ins are privileged instances of the same
 mechanism:
 
 - **`builtin`** - a Rust pane shipped with zax. Takes `name`:
-  `prs-for-review`, `branch-status` or `my-prs`.
+  `prs-for-review`, `branch-status`, `my-prs` or `tickets`. The `tickets` pane is
+  not in the default layout; add it to `[[layout.panes]]` once a provider is
+  configured.
 - **`exec`** - runs a command on a loop and wraps its stdout in a styled
   header with a last-updated time, stale and error marking, and scrollback.
   Takes `title`, `every` and `command`.
@@ -323,8 +342,18 @@ Inside a focused built-in pane:
 | `y` | Copy its URL |
 | `r` | Refresh now |
 | `q` / `esc` | Close the pane |
-| `j` / `k`, arrows | Move the selection (`prs-for-review`, `my-prs`) |
+| `j` / `k`, arrows | Move the selection (`prs-for-review`, `my-prs`, `tickets`) |
 | `w` | `zax worktree review` for the selected row (`prs-for-review`, `my-prs`) |
+
+In the `tickets` pane `enter` and `y` act on the ticket's URL, and the rest
+differ:
+
+| Key | Action |
+| --- | --- |
+| `enter` / `y` | Open / copy the ticket's URL |
+| `p` | Open the ticket's most urgent pull request. `no pull request` on the error line when it has none |
+| `w` | Start or open work: `zax worktree new` on a branch named from the ticket when it has no worktree, otherwise open its most recently modified worktree in the editor |
+| `s` | Pick a transition: `1`-`9` chooses, `esc` cancels. Absent when the provider does not advertise transitions |
 
 The context panes stay read-only and action-oriented: a keystroke opens, copies
 or starts something, and a row action that fails says so on the pane's own error
@@ -349,6 +378,149 @@ fixes the prefix for every repository until it exits. A second repository's
 `[tmux] prefix` is read and merged as usual but changes nothing while a
 server is already running. To pick up a new prefix, stop every zax session or
 run `tmux -L zax kill-server`.
+
+## Tickets
+
+`tickets` is the fourth built-in pane: every ticket assigned to you, joined
+with the work behind it - worktrees, live agent sessions and pull requests, in
+every repository. It needs a ticket provider, a separate executable that
+knows the tracker. zax ships one, `zax-jira`, which drives `acli`.
+
+```toml
+[tickets]
+provider = ["zax-jira"]
+
+[[layout.panes]]
+kind = "builtin"
+name = "tickets"
+size = "30%"
+```
+
+A relative path in the provider's program (`bin/jira`) is anchored at the
+repository's main worktree, so the same line means the same file wherever the
+broker happens to be running from. A leading `~/` is your home directory. A bare name such as `zax-jira` is looked up
+on `PATH`. `zax doctor` starts the provider exactly as the broker will and
+reports its name and protocol.
+
+```
+Tickets (3) Jira         ⟳ 1m
+● OMEGA-2713 ▲ ✓  Make exp…
+◐ OMEGA-2650 ▲ ✗  Retry st…
+○ OMEGA-2702      US124 Ad…
+```
+
+Rows are ordered by what you are doing: live work first, then in progress,
+then to do, then done. Ties go to the ticket whose pull request needs the
+most attention, then to the key. A done ticket is shown only while it still
+has work.
+
+| Glyph | Means |
+| --- | --- |
+| `●` | An agent session is live in a worktree for it. Bold when you are attached to one |
+| `◐` | In progress, no live session |
+| `○` | To do |
+| `✔` | Done, but it still has a worktree or pull request |
+| `▲` | A worktree for it exists, in any repository |
+| after `▲` | The most urgent pull request, drawn exactly as `my-prs` draws it: the check glyph, then the attention glyph when there is one to add |
+
+The work glyphs go first when the pane is narrow: the title is never squeezed
+below 8 columns. Under the rows, one line spells out the selected ticket - its
+status, priority, worktrees and pull requests - in words. A ticket is joined
+to a worktree or pull request by the key at the front of the branch name, and
+to a session by the worktree it runs in.
+
+If `acli` or the provider fails, the last good tickets stay on screen marked
+stale, with the reason on the error line.
+
+### The broker
+
+The pane does not run the provider itself. A developer runs several sessions
+at once, so one shared, per-user broker owns the provider, polls it once,
+caches the result and fans it out to every pane in every session. It also
+gathers the work half of the join: the worktrees under `worktree.root`, the
+zax sessions, and your pull requests.
+
+- It is started on demand by the first pane that needs it. Two panes racing
+  cannot start two brokers.
+- It exits 30 seconds after its last pane goes away. A source nobody is
+  watching keeps its cache for those 30 seconds too, so a pane restarted by a
+  session rebuild shows its tickets at once.
+- It polls the provider at the interval the provider advertises as `poll`, or
+  every 2 minutes when it advertises none; `zax-jira` advertises `2m`. The
+  work half is polled every 60 seconds. `r` in a pane refreshes now.
+- Its socket and lock are in `$XDG_RUNTIME_DIR/zax/` when that is set, else
+  `~/.cache/zax/`. Its log is `~/.cache/zax/broker.log` (`$XDG_CACHE_HOME`
+  replaces `~/.cache`). Look there when a pane shows no tickets.
+- It runs with your home directory as its working directory, because it
+  outlives the pane that started it and serves every repository.
+- A broker restarts only for a newer client: a pane built from a newer `zax`
+  binary replaces an older running broker, and a pane never replaces a newer
+  one, so two installed builds cannot restart each other in a loop.
+- A provider that exits, hangs or answers nothing for 30 seconds is restarted
+  with a backoff from one second to five minutes, and the pane keeps showing
+  what went wrong with when the next try is. A provider that answers with an
+  error, such as `zax-jira` when `acli` is logged out, is not backed off: `r`
+  after logging in tries again at once.
+
+### zax-jira
+
+`zax-jira` needs `acli` logged in. It reads
+`~/.config/zax/providers/jira.toml` (`$XDG_CONFIG_HOME` replaces `~/.config`),
+and works with no file at all:
+
+```toml
+jql = "assignee = currentUser() AND statusCategory != Done"
+transitions = ["In Progress", "In Review", "Done"]
+
+[projects.OMEGA]
+transitions = ["In Progress", "Code Review", "Done"]
+```
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `jql` | `assignee = currentUser() AND (statusCategory != Done OR updated >= -14d) ORDER BY updated DESC` | Which tickets to show. The default includes recently done tickets, so their leftover worktrees stay visible |
+| `transitions` | `["In Progress", "In Review", "Done"]` | The moves offered by `s` |
+| `projects.<KEY>.transitions` | the global list | The moves for one project, which replaces the global list |
+
+`acli` cannot list the transitions a work item allows, so they are configured
+here rather than discovered. The ticket's current status is left out of the
+list, and each move runs `acli jira workitem transition` with the status name
+as its id. A move the workflow does not allow comes back as `acli`'s own error
+on the pane's error line. Unknown keys in the file are errors, and a file
+that cannot be read is reported on the pane's error line with its path and
+line.
+
+## Writing a ticket provider
+
+A provider is any executable that speaks protocol version 1 on stdin and
+stdout, so a tracker other than Jira is another binary and a line of config.
+Every message is one line of JSON-RPC 2.0. The broker sends five methods:
+
+| Method | Params | Result |
+| --- | --- | --- |
+| `initialize` | `{protocol}` | `{protocol, name, capabilities: {transitions}, poll?}` |
+| `tickets/assigned` | `{}` | `{tickets: [{key, summary, status: {category, name}, priority?, kind?, url}]}` |
+| `tickets/transitions` | `{key}` | `{transitions: [{id, name}]}` |
+| `tickets/transition` | `{key, id}` | `{}` |
+| `shutdown` | `{}` | `{}`, after which the broker closes stdin |
+
+- `status.category` is one of `to_do`, `in_progress` or `done`; it drives
+  ordering and colour, while `status.name` is shown as the tracker calls it.
+  A ticket with a category zax does not know is dropped, not the list.
+- `poll` is how often to be asked for tickets, such as `30s`, `5m` or `2h`.
+- The two transition methods are used only when `capabilities.transitions` is
+  true. A transition `id` is opaque to zax and is handed back unchanged.
+- A provider that answers `initialize` with a different protocol is refused.
+- An error carries `data: {"kind": ...}`, one of `not_authenticated`,
+  `missing_tool`, `unavailable`, `invalid_request` or `unsupported`. The
+  message is shown on the pane's error line, so make it say what to do.
+- A provider may send the notification `tickets/changed` to say "poll now".
+  The broker currently accepts it and acts on it at the next poll.
+
+Write diagnostics to stderr, which the broker logs; stdout is the protocol.
+`crates/zax-protocol/src/tickets.rs` is the reference for the payloads, and
+`rpc.rs` beside it for the envelope and the error kinds. A Rust provider needs
+only that crate.
 
 ## Worktrees
 
@@ -477,10 +649,19 @@ zax-app      use cases + ports (traits)
 zax-config  zax-infra-tmux  zax-infra-git  zax-infra-github  zax-tui
    ^
 zax-cli      clap + composition root
+
+zax-protocol  wire types for the broker and providers (serde, serde_json)
+zax-broker    shared per-user broker: socket, sources, fan-out
+              (zax-domain, zax-protocol)
+zax-jira      the Jira ticket provider, a separate binary
+              (zax-exec, zax-protocol)
 ```
 
-Nothing at `zax-app` or below mentions tmux, git or GitHub by name. Parsing
-happens once, at the boundary, into types that make the invalid states
+`zax-protocol` depends on nothing else in the workspace, so a provider written
+in Rust needs only it. `zax-broker` and `zax-jira` sit beside the main stack
+rather than in it: the broker depends only on `zax-domain` and `zax-protocol`,
+and `zax-jira` only on `zax-exec` and `zax-protocol`. Nothing at `zax-app` or
+below mentions tmux, git or GitHub by name. Parsing happens once, at the boundary, into types that make the invalid states
 unrepresentable.
 
 The original design document is

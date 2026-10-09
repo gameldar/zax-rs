@@ -22,7 +22,9 @@ use serde::Deserialize;
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 use zax_app::PullRequestHead;
-use zax_domain::{CheckState, Mergeable, PullRequest, PullRequestStatus, RepoSlug, ReviewState};
+use zax_domain::{
+    BranchName, CheckState, Mergeable, PullRequest, PullRequestStatus, RepoSlug, ReviewState,
+};
 
 #[derive(Debug, Deserialize)]
 struct Envelope<T> {
@@ -62,6 +64,8 @@ struct PrNode {
     number: Option<u32>,
     title: Option<String>,
     url: Option<String>,
+    #[serde(rename = "headRefName")]
+    head_ref_name: Option<String>,
     #[serde(rename = "isDraft")]
     is_draft: Option<bool>,
     #[serde(rename = "createdAt")]
@@ -114,6 +118,7 @@ impl PrNode {
         self.number.is_none()
             && self.title.is_none()
             && self.url.is_none()
+            && self.head_ref_name.is_none()
             && self.is_draft.is_none()
             && self.created_at.is_none()
             && self.mergeable.is_none()
@@ -211,6 +216,10 @@ fn to_pull_request_status(node: PrNode) -> Result<PullRequestStatus, String> {
         .unwrap_or(0);
     let review = review_state(node.review_decision.as_deref());
     let mergeable = mergeable_state(node.mergeable.as_deref());
+    let head = node
+        .head_ref_name
+        .as_deref()
+        .and_then(|raw| BranchName::parse_foreign(raw).ok());
     let pr = to_pull_request(node)?;
 
     Ok(PullRequestStatus {
@@ -218,6 +227,7 @@ fn to_pull_request_status(node: PrNode) -> Result<PullRequestStatus, String> {
         review,
         unresolved_threads: u32::try_from(unresolved_threads).unwrap_or(u32::MAX),
         mergeable,
+        head,
     })
 }
 

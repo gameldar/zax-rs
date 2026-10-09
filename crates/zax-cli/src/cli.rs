@@ -37,6 +37,9 @@ pub enum Commands {
     },
     /// Verify that tmux, git, gh and the editor are present and authenticated.
     Doctor,
+    /// The shared per-user broker. Started by panes, not by hand.
+    #[command(hide = true)]
+    Broker,
 }
 
 #[derive(Debug, Subcommand)]
@@ -108,6 +111,8 @@ pub enum PaneCommand {
     BranchStatus,
     /// Your own open pull requests, across every repository.
     MyPrs,
+    /// Your assigned tickets and the work behind each.
+    Tickets,
     /// Wrap any command's stdout in a header, refresh loop and scrollback.
     Exec {
         #[arg(long)]
@@ -344,6 +349,13 @@ mod tests {
                 command: Some(ConfigCommand::Show)
             }
         ));
+    }
+
+    #[test]
+    fn the_broker_is_a_hidden_command() {
+        assert!(Cli::try_parse_from(["zax", "broker"]).is_ok());
+        let help = Cli::command().render_help().to_string();
+        assert!(!help.contains("broker"), "{help}");
     }
 
     #[test]

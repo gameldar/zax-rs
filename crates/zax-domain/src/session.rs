@@ -1,6 +1,7 @@
 //! tmux session names, derived so that one worktree maps to one session.
 
 use std::fmt;
+use std::path::PathBuf;
 
 use thiserror::Error;
 
@@ -117,6 +118,10 @@ pub struct LiveSession {
     pub name: SessionName,
     /// At least one client is looking at it.
     pub attached: bool,
+    /// The directory the session was started in. A session is matched to a
+    /// worktree through this, because its name is sanitised and fingerprinted
+    /// and cannot be read back into a branch.
+    pub path: PathBuf,
 }
 
 /// What `zax session start` should do in a worktree.
@@ -326,6 +331,7 @@ mod tests {
         LiveSession {
             name: name.clone(),
             attached,
+            path: PathBuf::new(),
         }
     }
 

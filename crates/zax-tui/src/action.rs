@@ -1,7 +1,9 @@
 //! What a keystroke asks the host process to do. Panes never perform I/O
 //! themselves; they return an action.
 
-use zax_domain::RepoSlug;
+use std::path::PathBuf;
+
+use zax_domain::{BranchName, RepoSlug, TicketKey};
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum PaneAction {
@@ -16,6 +18,24 @@ pub enum PaneAction {
         number: u32,
     },
     Quit,
+    /// `zax worktree new <branch>` in the current repository.
+    StartWork {
+        branch: BranchName,
+    },
+    /// Open an existing worktree in the editor. `others` counts the ticket's
+    /// other worktrees, so the pane can say it picked one.
+    OpenWorktree {
+        path: PathBuf,
+        others: usize,
+    },
+    /// Ask the provider which transitions the ticket has.
+    ListTransitions {
+        key: TicketKey,
+    },
+    Transition {
+        key: TicketKey,
+        id: String,
+    },
 }
 
 #[cfg(test)]

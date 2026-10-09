@@ -995,14 +995,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "zax-broker"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tempfile",
+ "zax-domain",
+ "zax-protocol",
+]
+
+[[package]]
 name = "zax-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
  "ratatui",
+ "serde_json",
  "tempfile",
  "zax-app",
+ "zax-broker",
  "zax-config",
  "zax-domain",
  "zax-exec",
@@ -1011,6 +1024,7 @@ dependencies = [
  "zax-infra-github",
  "zax-infra-ssh",
  "zax-infra-tmux",
+ "zax-protocol",
  "zax-tui",
 ]
 
@@ -1087,6 +1101,25 @@ dependencies = [
  "zax-app",
  "zax-domain",
  "zax-exec",
+]
+
+[[package]]
+name = "zax-jira"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "toml",
+ "zax-exec",
+ "zax-protocol",
+]
+
+[[package]]
+name = "zax-protocol"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

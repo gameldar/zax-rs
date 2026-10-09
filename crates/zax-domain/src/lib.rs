@@ -12,6 +12,7 @@ pub mod repo;
 pub mod session;
 pub mod settings;
 pub mod ticket;
+pub mod work;
 
 pub use branch::{BranchName, BranchNameError, BranchOrigin};
 pub use forge::{
@@ -36,4 +37,7 @@ pub use settings::{
     ConfigView, LayerInfo, LayerSlot, Origin, PaneEdit, PaneField, PaneKindTag, PanesView, Pending,
     Saved, SettingKey, SettingRow, SettingShape, SettingValue,
 };
-pub use ticket::{TicketKey, TicketKeyError};
+pub use ticket::{
+    branch_slug, StatusCategory, Ticket, TicketKey, TicketKeyError, TicketStatus, Transition,
+};
+pub use work::{join, TicketRank, TicketRow, TicketWork, WorkIndex, Worktree};

@@ -6,7 +6,7 @@ use std::time::SystemTime;
 use thiserror::Error;
 use zax_domain::{
     BranchName, Command, LiveSession, PaneSize, PrFilter, PrRef, PullRequest, PullRequestStatus,
-    RepoSlug, RootRepoName, SessionName,
+    RepoSlug, RootRepoName, SessionName, Worktree, WorktreeRoot,
 };
 
 /// Every way the outside world can fail, in terms a pane can render.
@@ -210,4 +210,11 @@ pub trait SshAgent {
 
 pub trait Clock {
     fn now(&self) -> SystemTime;
+}
+
+/// Every worktree under the configured root, in every repository. The root's
+/// layout is `<root>/<repo>/<branch>`, so a worktree is found without asking
+/// git, and its branch is read from its path.
+pub trait WorktreeScanner {
+    fn scan(&self, root: &WorktreeRoot) -> Result<Vec<Worktree>, PortError>;
 }

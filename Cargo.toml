@@ -19,6 +19,8 @@ zax-infra-github = { path = "crates/zax-infra-github" }
 zax-infra-ssh = { path = "crates/zax-infra-ssh" }
 zax-infra-tmux = { path = "crates/zax-infra-tmux" }
 zax-tui = { path = "crates/zax-tui" }
+zax-protocol = { path = "crates/zax-protocol" }
+zax-broker = { path = "crates/zax-broker" }
 
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }

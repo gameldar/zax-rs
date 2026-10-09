@@ -158,3 +158,14 @@ fn graphql_errors_on_the_authored_search_are_not_an_empty_queue() {
     let err = dto::parse_authored_search_response(json).unwrap_err();
     assert!(err.contains("rate limited"), "got: {err}");
 }
+
+#[test]
+fn an_authored_pull_request_carries_its_head_branch() {
+    let json = include_str!("fixtures/authored_prs.json");
+    let prs = dto::parse_authored_search_response(json).unwrap();
+    let first = prs.first().unwrap();
+    assert_eq!(
+        first.head.as_ref().map(|b| b.as_str()),
+        Some("OMEGA-1963-stamp")
+    );
+}

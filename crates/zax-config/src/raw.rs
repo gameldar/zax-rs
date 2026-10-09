@@ -14,6 +14,7 @@ pub struct RawConfig {
     pub tmux: Option<RawTmux>,
     pub prs: Option<RawPrs>,
     pub editor: Option<RawEditor>,
+    pub tickets: Option<RawTickets>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
@@ -64,6 +65,13 @@ pub struct RawWorktree {
 #[serde(deny_unknown_fields)]
 pub struct RawEditor {
     pub command: Option<Vec<String>>,
+}
+
+/// The `[tickets]` table: which ticket provider the tickets pane runs.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RawTickets {
+    pub provider: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]

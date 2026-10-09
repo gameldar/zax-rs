@@ -1,4 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)]
+use std::os::unix::net::UnixStream;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::thread;
@@ -77,13 +78,27 @@ fn start(
     };
     let factory = Arc::new(Factory(fetches.clone()));
     let handle = thread::spawn(move || server::run(config, factory).unwrap());
-    for _ in 0..50 {
-        if paths.socket.exists() {
+    // The socket file appears at bind, before the broker listens, so only a
+    // connection that is accepted shows it is ready. The probe hangs up
+    // without a hello, which just restarts the idle timer.
+    for _ in 0..250 {
+        if UnixStream::connect(&paths.socket).is_ok() {
             break;
         }
         thread::sleep(Duration::from_millis(20));
     }
     (paths, fetches, handle)
+}
+
+/// Wait for the broker to exit, however slowly a loaded machine schedules it.
+fn exits(handle: &thread::JoinHandle<()>) -> bool {
+    for _ in 0..500 {
+        if handle.is_finished() {
+            return true;
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+    false
 }
 
 fn next_snapshot(client: &Client) -> zax_protocol::Snapshot {
@@ -206,8 +221,7 @@ fn the_broker_exits_once_idle() {
     let dir = tempfile::tempdir().unwrap();
     let (paths, _f, handle) = start(dir.path(), 10);
     drop(Client::connect_or_spawn(&paths, 10, &[]).unwrap());
-    thread::sleep(Duration::from_millis(1500));
-    assert!(handle.is_finished());
+    assert!(exits(&handle));
     assert!(
         !paths.socket.exists(),
         "the socket is removed on the way out"
@@ -222,8 +236,7 @@ fn an_older_broker_steps_aside_for_a_newer_client() {
     // No spawn command: after the restart nothing new starts, so connect fails.
     let err = Client::connect_or_spawn(&paths, 11, &[]).err();
     assert!(err.is_some());
-    thread::sleep(Duration::from_millis(300));
-    assert!(handle.is_finished());
+    assert!(exits(&handle));
     assert!(
         !paths.socket.exists(),
         "the socket is removed on the way out"
@@ -249,8 +262,7 @@ fn an_exiting_broker_leaves_a_successors_socket_alone() {
     // A successor binds the same path, as a freshly spawned broker would.
     std::fs::remove_file(&paths.socket).unwrap();
     let _successor = std::os::unix::net::UnixListener::bind(&paths.socket).unwrap();
-    thread::sleep(Duration::from_millis(1000));
-    assert!(handle.is_finished());
+    assert!(exits(&handle));
     assert!(paths.socket.exists(), "the successor's socket survives");
 }
 

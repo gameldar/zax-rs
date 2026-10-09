@@ -438,7 +438,7 @@ mod tests {
             _program: &str,
             _args: &[String],
             _cwd: Option<&Path>,
-            _env: &[(String, String)],
+            _env: &[zax_exec::EnvVar],
         ) -> Result<Output, ExecError> {
             Ok(Output {
                 status: 1,

@@ -37,13 +37,22 @@ pub enum ExecError {
     Io { program: String, detail: String },
 }
 
+/// One change to the environment a child would otherwise inherit whole.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EnvVar {
+    Set(String, String),
+    /// Removed outright rather than set empty: zax's own tmux guard treats an
+    /// empty `TMUX` as unset, but not every program is so forgiving.
+    Unset(String),
+}
+
 pub trait Exec {
     fn exec(
         &self,
         program: &str,
         args: &[String],
         cwd: Option<&Path>,
-        env: &[(String, String)],
+        env: &[EnvVar],
     ) -> Result<Output, ExecError>;
 }
 
@@ -114,7 +123,7 @@ impl Exec for SystemExec {
         program: &str,
         args: &[String],
         cwd: Option<&Path>,
-        env: &[(String, String)],
+        env: &[EnvVar],
     ) -> Result<Output, ExecError> {
         let mut command = StdCommand::new(program);
         // Before the caller's own entries, so a call with an opinion about one
@@ -158,7 +167,7 @@ impl Exec for InteractiveExec {
         program: &str,
         args: &[String],
         cwd: Option<&Path>,
-        env: &[(String, String)],
+        env: &[EnvVar],
     ) -> Result<Output, ExecError> {
         let mut command = StdCommand::new(program);
         for key in fabricated(var) {
@@ -172,14 +181,17 @@ fn configure(
     mut command: StdCommand,
     args: &[String],
     cwd: Option<&Path>,
-    env: &[(String, String)],
+    env: &[EnvVar],
 ) -> StdCommand {
     command.args(args);
     if let Some(dir) = cwd {
         command.current_dir(dir);
     }
-    for (key, value) in env {
-        command.env(key, value);
+    for var in env {
+        match var {
+            EnvVar::Set(key, value) => command.env(key, value),
+            EnvVar::Unset(key) => command.env_remove(key),
+        };
     }
     command
 }
@@ -212,7 +224,7 @@ pub struct ExecCall {
     pub program: String,
     pub args: Vec<String>,
     pub cwd: Option<PathBuf>,
-    pub env: Vec<(String, String)>,
+    pub env: Vec<EnvVar>,
 }
 
 /// Replays canned responses in order and remembers every call, so an adapter
@@ -259,7 +271,7 @@ impl Exec for RecordingExec {
         program: &str,
         args: &[String],
         cwd: Option<&Path>,
-        env: &[(String, String)],
+        env: &[EnvVar],
     ) -> Result<Output, ExecError> {
         self.calls.borrow_mut().push(ExecCall {
             program: program.to_owned(),
@@ -367,7 +379,7 @@ mod tests {
                 "sh",
                 &["-c".to_owned(), "pwd; echo $ZAX_TEST".to_owned()],
                 Some(Path::new("/")),
-                &[("ZAX_TEST".to_owned(), "set".to_owned())],
+                &[EnvVar::Set("ZAX_TEST".to_owned(), "set".to_owned())],
             )
             .unwrap();
         let lines: Vec<&str> = out.stdout.lines().collect();
@@ -448,7 +460,10 @@ mod tests {
                     "printf '%s' \"$GIT_TERMINAL_PROMPT\"".to_owned(),
                 ],
                 None,
-                &[("GIT_TERMINAL_PROMPT".to_owned(), "1".to_owned())],
+                &[EnvVar::Set(
+                    "GIT_TERMINAL_PROMPT".to_owned(),
+                    "1".to_owned(),
+                )],
             )
             .unwrap();
         assert_eq!(out.stdout, "1");
@@ -507,6 +522,21 @@ mod tests {
     #[test]
     fn a_clean_environment_has_nothing_to_take_back() {
         assert!(fabricated(|_| None).is_empty());
+    }
+
+    #[test]
+    fn the_system_runner_removes_an_unset_variable_from_the_child() {
+        // HOME is set in any shell that runs the tests, so its absence in the
+        // child can only be the unset.
+        let out = SystemExec
+            .exec(
+                "sh",
+                &["-c".to_owned(), "echo ${HOME-unset}".to_owned()],
+                None,
+                &[EnvVar::Unset("HOME".to_owned())],
+            )
+            .unwrap();
+        assert_eq!(out.stdout.trim(), "unset");
     }
 
     #[test]

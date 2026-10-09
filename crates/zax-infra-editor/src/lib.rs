@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 use zax_app::{Editor, PortError};
 use zax_domain::Command;
-use zax_exec::{Exec, ExecError};
+use zax_exec::{EnvVar, Exec, ExecError};
 
 /// On macOS the `zed` binary lives inside the application bundle, so a machine
 /// with Zed installed and working still has no `zed` on PATH until this is
@@ -17,6 +17,13 @@ use zax_exec::{Exec, ExecError};
 /// they already have.
 const ZED_HINT: &str = "if Zed is installed, open it and run `cli: install` \
                         from the command palette to put `zed` on PATH";
+
+/// What a zax pane running inside tmux must not hand the editor. The `zed`
+/// CLI forwards its whole environment to the running app, which gives it to
+/// every terminal in the workspace it opens - so without this, a terminal in
+/// a worktree opened from a pane believes it is inside tmux and
+/// `zax session start` there refuses to nest.
+const MULTIPLEXER_VARS: [&str; 2] = ["TMUX", "TMUX_PANE"];
 
 pub struct EditorCli<E: Exec> {
     exec: E,
@@ -40,9 +47,13 @@ impl<E: Exec> EditorCli<E> {
         let mut argv: Vec<String> = command.argv().iter().skip(1).cloned().collect();
         argv.extend_from_slice(args);
 
+        let env: Vec<EnvVar> = MULTIPLEXER_VARS
+            .iter()
+            .map(|&var| EnvVar::Unset(var.to_owned()))
+            .collect();
         let out = self
             .exec
-            .exec(program, &argv, None, &[])
+            .exec(program, &argv, None, &env)
             .map_err(|e| map_exec_error(e, program))?;
         if out.ok() {
             return Ok(());
@@ -135,7 +146,7 @@ mod tests {
             program: &str,
             _args: &[String],
             _cwd: Option<&Path>,
-            _env: &[(String, String)],
+            _env: &[zax_exec::EnvVar],
         ) -> Result<Output, ExecError> {
             Err(ExecError::NotFound {
                 program: program.to_owned(),
@@ -161,6 +172,25 @@ mod tests {
         assert_eq!(
             call.args,
             ["-e", "/Users/me/src/worktrees/acme/patch-1"]
+        );
+    }
+
+    #[test]
+    fn opening_keeps_the_panes_tmux_out_of_the_editors_environment() {
+        // Zed hands the CLI's environment to the terminals of the workspace it
+        // opens; a `TMUX` from the pane would make `zax session start` there
+        // refuse to run.
+        let exec = RecordingExec::returning("");
+        let editor = EditorCli::new(exec, zed());
+
+        editor.open(Path::new("/tmp/anywhere")).unwrap();
+
+        assert_eq!(
+            editor.exec_ref().calls()[0].env,
+            [
+                EnvVar::Unset("TMUX".to_owned()),
+                EnvVar::Unset("TMUX_PANE".to_owned()),
+            ]
         );
     }
 

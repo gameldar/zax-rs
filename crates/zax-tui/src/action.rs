@@ -40,10 +40,10 @@ pub enum PaneAction {
         key: TicketKey,
         id: String,
     },
-    /// `git worktree remove` on a worktree the popup listed. Never forced:
-    /// git refuses one with uncommitted changes, and the branch survives.
-    RemoveWorktree {
-        path: PathBuf,
+    /// Open the ticket's worktrees in a popup over the whole window, where
+    /// they can be removed.
+    ListWorktrees {
+        key: TicketKey,
     },
 }
 

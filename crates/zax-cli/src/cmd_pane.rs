@@ -31,6 +31,7 @@ pub fn run(command: PaneCommand) -> Result<()> {
         PaneCommand::MyPrs => run_my_prs_pane(),
         PaneCommand::Tickets => crate::cmd_tickets::run(),
         PaneCommand::Todo => crate::cmd_todo::run(),
+        PaneCommand::Worktrees { ticket } => crate::cmd_worktrees::run(&ticket),
         PaneCommand::Exec {
             title,
             every,
@@ -246,7 +247,7 @@ fn perform_with<E: Exec>(exec: &E, action: PaneAction) -> Result<Option<String>>
         | PaneAction::OpenWorktree { .. }
         | PaneAction::ListTransitions { .. }
         | PaneAction::Transition { .. }
-        | PaneAction::RemoveWorktree { .. }
+        | PaneAction::ListWorktrees { .. }
         | PaneAction::Todo(_)
         | PaneAction::OpenFile(_) => {}
     }

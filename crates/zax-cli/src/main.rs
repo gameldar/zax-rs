@@ -9,6 +9,7 @@ mod cmd_session;
 mod cmd_tickets;
 mod cmd_todo;
 mod cmd_worktree;
+mod cmd_worktrees;
 mod guard;
 mod marked;
 mod screen;

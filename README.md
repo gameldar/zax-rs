@@ -356,6 +356,7 @@ differ:
 | `enter` / `y` | Open / copy the ticket's URL |
 | `p` | Open the ticket's most urgent pull request. `no pull request` on the error line when it has none |
 | `w` | Start or open work: `zax worktree new` on a branch named from the ticket when it has no worktree, otherwise open its most recently modified worktree in the editor |
+| `W` | List the ticket's worktrees in a popup. `j`/`k` move, `d` then `y` removes the selected one with an unforced `git worktree remove` (git refuses one with uncommitted changes; the branch is kept), `esc` closes |
 | `s` | Pick a transition: `1`-`9` chooses, `esc` cancels. Absent when the provider does not advertise transitions |
 
 The context panes stay read-only and action-oriented: a keystroke opens, copies

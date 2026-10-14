@@ -6,10 +6,11 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::Paragraph;
+use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use ratatui::Frame;
 use zax_domain::{
     branch_slug, join, Attention, Ticket, TicketKey, TicketRank, TicketRow, Transition, WorkIndex,
+    Worktree,
 };
 
 use crate::action::PaneAction;
@@ -40,6 +41,14 @@ struct Picker {
     transitions: Vec<Transition>,
 }
 
+/// The popup over the list: one ticket's worktrees, for cleaning up.
+struct WorktreePopup {
+    key: TicketKey,
+    selected: usize,
+    /// `d` was pressed on the selected worktree and `y` has not answered.
+    confirming: bool,
+}
+
 pub struct TicketsPane {
     configured: bool,
     tickets: Cached<TicketsValue>,
@@ -48,6 +57,7 @@ pub struct TicketsPane {
     selected: usize,
     focused: bool,
     picker: Option<Picker>,
+    popup: Option<WorktreePopup>,
     notice: Option<String>,
 }
 
@@ -67,6 +77,7 @@ impl TicketsPane {
             selected: 0,
             focused: false,
             picker: None,
+            popup: None,
             notice: None,
         }
     }
@@ -132,6 +143,27 @@ impl TicketsPane {
             .map(|t| join(t.tickets.clone(), work))
             .unwrap_or_default();
         self.selected = self.selected.min(self.rows.len().saturating_sub(1));
+        // A removal shows up here as a shorter list; the popup follows it,
+        // and closes once there is nothing left to list.
+        let left = self
+            .popup
+            .as_ref()
+            .map(|p| self.popup_worktrees(&p.key).len());
+        match (left, self.popup.as_mut()) {
+            (Some(0), _) => self.popup = None,
+            (Some(n), Some(p)) => {
+                p.selected = p.selected.min(n - 1);
+                p.confirming = false;
+            }
+            _ => {}
+        }
+    }
+
+    fn popup_worktrees(&self, key: &TicketKey) -> &[Worktree] {
+        self.rows
+            .iter()
+            .find(|r| &r.ticket.key == key)
+            .map_or(&[], |r| r.work.worktrees.as_slice())
     }
 
     pub fn show_picker(&mut self, key: TicketKey, transitions: Vec<Transition>) {
@@ -202,6 +234,52 @@ impl TicketsPane {
             lines.push(error_line(&message));
         }
         frame.render_widget(Paragraph::new(Text::from(lines)), area);
+        self.render_popup(frame, area);
+    }
+
+    fn render_popup(&self, frame: &mut Frame, area: Rect) {
+        let Some(popup) = &self.popup else {
+            return;
+        };
+        let worktrees = self.popup_worktrees(&popup.key);
+        let height = u16::try_from(worktrees.len() + 3)
+            .unwrap_or(u16::MAX)
+            .min(area.height);
+        if height < 3 || area.width < 12 {
+            return;
+        }
+        let rect = Rect::new(area.x, area.y + area.height - height, area.width, height);
+        let inner_width = usize::from(rect.width).saturating_sub(2);
+        let mut lines: Vec<Line<'static>> = worktrees
+            .iter()
+            .enumerate()
+            .map(|(i, w)| {
+                let marker = if i == popup.selected { "> " } else { "  " };
+                let text = format!("{marker}{}:{}  {}", w.repo, w.branch, w.path.display());
+                let style = if i == popup.selected {
+                    Style::default().add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default()
+                };
+                Line::styled(truncate(&text, inner_width), style)
+            })
+            .collect();
+        let hint = match (popup.confirming, worktrees.get(popup.selected)) {
+            (true, Some(w)) => (
+                format!("remove {}? y/n", w.branch),
+                Style::default().fg(Color::Red),
+            ),
+            _ => (
+                "j/k move  d remove  esc close".to_owned(),
+                Style::default().fg(Color::DarkGray),
+            ),
+        };
+        lines.push(Line::styled(truncate(&hint.0, inner_width), hint.1));
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title(format!("Worktrees {}", popup.key));
+        frame.render_widget(Clear, rect);
+        frame.render_widget(Paragraph::new(Text::from(lines)).block(block), rect);
     }
 
     /// The header, or the transition picker while it is open.
@@ -329,9 +407,28 @@ impl TicketsPane {
                 }
             };
         }
+        if self.popup.is_some() {
+            return self.on_popup_key(key);
+        }
         let len = self.rows.len();
         match key.code {
             KeyCode::Char('r') => PaneAction::Refresh,
+            KeyCode::Char('W') => {
+                match self.selected_row().map(|r| r.ticket.key.clone()) {
+                    Some(key) if self.popup_worktrees(&key).is_empty() => {
+                        self.notice = Some(format!("{key} has no worktrees"));
+                    }
+                    Some(key) => {
+                        self.popup = Some(WorktreePopup {
+                            key,
+                            selected: 0,
+                            confirming: false,
+                        });
+                    }
+                    None => {}
+                }
+                PaneAction::None
+            }
             KeyCode::Char('q') | KeyCode::Esc => PaneAction::Quit,
             KeyCode::Char('j') | KeyCode::Down => {
                 self.selected = (self.selected + 1).min(len.saturating_sub(1));
@@ -372,6 +469,42 @@ impl TicketsPane {
             }
             _ => PaneAction::None,
         }
+    }
+
+    fn on_popup_key(&mut self, key: KeyEvent) -> PaneAction {
+        let Some(popup) = self.popup.as_mut() else {
+            return PaneAction::None;
+        };
+        let count = self
+            .rows
+            .iter()
+            .find(|r| r.ticket.key == popup.key)
+            .map_or(0, |r| r.work.worktrees.len());
+        if popup.confirming {
+            popup.confirming = false;
+            if key.code == KeyCode::Char('y') {
+                let path = self
+                    .rows
+                    .iter()
+                    .find(|r| r.ticket.key == popup.key)
+                    .and_then(|r| r.work.worktrees.get(popup.selected))
+                    .map(|w| w.path.clone());
+                if let Some(path) = path {
+                    return PaneAction::RemoveWorktree { path };
+                }
+            }
+            return PaneAction::None;
+        }
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('W') => self.popup = None,
+            KeyCode::Char('j') | KeyCode::Down => {
+                popup.selected = (popup.selected + 1).min(count.saturating_sub(1));
+            }
+            KeyCode::Char('k') | KeyCode::Up => popup.selected = popup.selected.saturating_sub(1),
+            KeyCode::Char('d') if count > 0 => popup.confirming = true,
+            _ => {}
+        }
+        PaneAction::None
     }
 
     fn start_or_open(&mut self) -> PaneAction {
@@ -665,6 +798,71 @@ mod tests {
                 others: 1
             }
         );
+    }
+
+    fn two_worktrees() -> TicketsPane {
+        let work = WorkIndex {
+            worktrees: vec![worktree("OMEGA-1-a"), worktree("OMEGA-1-b")],
+            ..WorkIndex::default()
+        };
+        pane_with(vec![ticket("OMEGA-1", StatusCategory::Done, "x")], work)
+    }
+
+    #[test]
+    fn capital_w_lists_the_worktrees_and_d_then_y_removes_the_selected() {
+        let mut pane = two_worktrees();
+        assert_eq!(pane.on_key(key(KeyCode::Char('W'))), PaneAction::None);
+        let screen = draw(&pane, 60, 8).join("\n");
+        assert!(screen.contains("omega:OMEGA-1-a"), "{screen}");
+        assert!(screen.contains("omega:OMEGA-1-b"), "{screen}");
+        pane.on_key(key(KeyCode::Char('j')));
+        pane.on_key(key(KeyCode::Char('d')));
+        assert!(draw(&pane, 60, 8)
+            .join("\n")
+            .contains("remove OMEGA-1-b? y/n"));
+        assert_eq!(
+            pane.on_key(key(KeyCode::Char('y'))),
+            PaneAction::RemoveWorktree {
+                path: PathBuf::from("/w/omega/OMEGA-1-b")
+            }
+        );
+    }
+
+    #[test]
+    fn anything_but_y_cancels_a_removal() {
+        let mut pane = two_worktrees();
+        pane.on_key(key(KeyCode::Char('W')));
+        pane.on_key(key(KeyCode::Char('d')));
+        assert_eq!(pane.on_key(key(KeyCode::Char('n'))), PaneAction::None);
+        assert_eq!(pane.on_key(key(KeyCode::Char('y'))), PaneAction::None);
+    }
+
+    #[test]
+    fn esc_closes_the_popup_rather_than_the_pane() {
+        let mut pane = two_worktrees();
+        pane.on_key(key(KeyCode::Char('W')));
+        assert_eq!(pane.on_key(key(KeyCode::Esc)), PaneAction::None);
+        assert_eq!(pane.on_key(key(KeyCode::Esc)), PaneAction::Quit);
+    }
+
+    #[test]
+    fn the_popup_closes_when_the_last_worktree_is_gone() {
+        let mut pane = two_worktrees();
+        pane.on_key(key(KeyCode::Char('W')));
+        pane.apply_work(Some(WorkIndex::default()), Some(t(110)), None);
+        assert_eq!(pane.on_key(key(KeyCode::Esc)), PaneAction::Quit);
+    }
+
+    #[test]
+    fn w_without_worktrees_says_so() {
+        let mut pane = pane_with(
+            vec![ticket("OMEGA-1", StatusCategory::ToDo, "x")],
+            WorkIndex::default(),
+        );
+        pane.on_key(key(KeyCode::Char('W')));
+        assert!(draw(&pane, 60, 6)
+            .join("\n")
+            .contains("OMEGA-1 has no worktrees"));
     }
 
     #[test]

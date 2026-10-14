@@ -236,7 +236,7 @@ fn perform_with<E: Exec>(exec: &E, action: PaneAction) -> Result<Option<String>>
             );
             return Ok(review_message(result));
         }
-        // The tickets loop performs its own four row actions, and the todo
+        // The tickets loop performs its own five row actions, and the todo
         // loop its two; they need the broker connection, which this function
         // does not have.
         PaneAction::None
@@ -246,6 +246,7 @@ fn perform_with<E: Exec>(exec: &E, action: PaneAction) -> Result<Option<String>>
         | PaneAction::OpenWorktree { .. }
         | PaneAction::ListTransitions { .. }
         | PaneAction::Transition { .. }
+        | PaneAction::RemoveWorktree { .. }
         | PaneAction::Todo(_)
         | PaneAction::OpenFile(_) => {}
     }

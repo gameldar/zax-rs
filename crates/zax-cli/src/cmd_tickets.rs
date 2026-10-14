@@ -217,6 +217,17 @@ pub fn run() -> Result<()> {
                     }
                     Ok(()) => {}
                 },
+                // Quick enough to run in place; the work source is refreshed
+                // so the popup and the row drop it now, not at the next poll.
+                PaneAction::RemoveWorktree { path } => match remove_worktree(&SystemExec, &path) {
+                    Some(message) => pane.notice(message),
+                    None => {
+                        pane.notice(format!("removed {}", path.display()));
+                        if let Some(c) = &client {
+                            let _ = c.refresh(work_key.clone());
+                        }
+                    }
+                },
                 other => {
                     if let Some(message) = crate::cmd_pane::perform(other)? {
                         pane.notice(message);
@@ -363,6 +374,58 @@ fn start_work<E: Exec>(exec: &E, zax: &str, branch: &str) -> Option<String> {
     Some(format!("worktree new: {detail}"))
 }
 
+/// `git worktree remove <path>`, unforced, run from the worktree's own
+/// repository. The pane serves every repository under the worktree root, so
+/// the repository is found from the worktree: its common dir's parent is the
+/// main checkout. Git refuses a worktree with uncommitted changes, and that
+/// refusal is the message. The branch is left alone.
+fn remove_worktree<E: Exec>(exec: &E, path: &Path) -> Option<String> {
+    let common = exec.exec(
+        "git",
+        &[
+            "-C".to_owned(),
+            path.to_string_lossy().into_owned(),
+            "rev-parse".to_owned(),
+            "--path-format=absolute".to_owned(),
+            "--git-common-dir".to_owned(),
+        ],
+        None,
+        &[],
+    );
+    let main = match common {
+        Ok(out) if out.ok() => Path::new(out.trimmed_stdout()).parent().map(Path::to_owned),
+        Ok(out) => return Some(git_failure(&out.stderr, out.status)),
+        Err(e) => return Some(format!("git: {e}")),
+    };
+    let Some(main) = main else {
+        return Some("git: no main worktree found".to_owned());
+    };
+    let removed = exec.exec(
+        "git",
+        &[
+            "worktree".to_owned(),
+            "remove".to_owned(),
+            path.to_string_lossy().into_owned(),
+        ],
+        Some(&main),
+        &[],
+    );
+    match removed {
+        Ok(out) if out.ok() => None,
+        Ok(out) => Some(git_failure(&out.stderr, out.status)),
+        Err(e) => Some(format!("git: {e}")),
+    }
+}
+
+fn git_failure(stderr: &str, status: i32) -> String {
+    let line = stderr
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .map_or_else(|| format!("exited with status {status}"), str::to_owned);
+    format!("git: {line}")
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)]
@@ -371,7 +434,7 @@ mod tests {
 
     use zax_exec::{Exec, ExecError, Output, RecordingExec};
 
-    use super::{anchor_provider, spawn_start_work, start_work};
+    use super::{anchor_provider, remove_worktree, spawn_start_work, start_work};
 
     fn argv(parts: &[&str]) -> Vec<String> {
         parts.iter().map(|p| (*p).to_owned()).collect()
@@ -494,5 +557,59 @@ mod tests {
         }]);
         let message = start_work(&exec, "zax", "OMEGA-1-go").unwrap();
         assert!(message.contains('2'), "got: {message}");
+    }
+
+    #[test]
+    fn a_worktree_is_removed_from_its_own_repository_without_force() {
+        let exec = RecordingExec::with_responses(vec![
+            Output {
+                status: 0,
+                stdout: "/src/omega/.git\n".into(),
+                stderr: String::new(),
+            },
+            Output {
+                status: 0,
+                stdout: String::new(),
+                stderr: String::new(),
+            },
+        ]);
+        assert_eq!(
+            remove_worktree(&exec, Path::new("/w/omega/OMEGA-1-a")),
+            None
+        );
+        assert_eq!(
+            exec.args(0),
+            [
+                "-C",
+                "/w/omega/OMEGA-1-a",
+                "rev-parse",
+                "--path-format=absolute",
+                "--git-common-dir"
+            ]
+        );
+        assert_eq!(exec.args(1), ["worktree", "remove", "/w/omega/OMEGA-1-a"]);
+        assert_eq!(
+            exec.calls()[1].cwd.as_deref(),
+            Some(Path::new("/src/omega"))
+        );
+    }
+
+    #[test]
+    fn git_refusing_a_dirty_worktree_reaches_the_pane() {
+        let exec = RecordingExec::with_responses(vec![
+            Output {
+                status: 0,
+                stdout: "/src/omega/.git\n".into(),
+                stderr: String::new(),
+            },
+            Output {
+                status: 128,
+                stdout: String::new(),
+                stderr: "fatal: '/w/omega/x' contains modified or untracked files, use --force to delete it\n".into(),
+            },
+        ]);
+        let message = remove_worktree(&exec, Path::new("/w/omega/x")).unwrap();
+        assert!(message.starts_with("git: fatal:"), "{message}");
+        assert!(message.contains("modified or untracked"), "{message}");
     }
 }

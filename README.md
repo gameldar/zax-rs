@@ -93,6 +93,7 @@ title is what drives Zed's in-progress indicator for a thread. tmux's own
 | `zax worktree list` | The worktrees zax manages for this repository |
 | `zax worktree rm <branch> [--force]` | Remove one |
 | `zax pane prs-for-review \| branch-status \| my-prs \| tickets \| todo` | Built-in pane processes, normally launched by `session start` |
+| `zax pane worktrees <TICKET>` | A ticket's worktrees with removal; the tickets pane's `W` opens it in a tmux popup |
 | `zax pane exec --title <t> --every <dur> -- <cmd>` | Wrap any command's stdout in a header and refresh loop |
 | `zax config` | View and edit the three config layers, in a popup over the session. It shows every key, including `editor.command` and `tickets.provider` |
 | `zax config show` | The same view, printed: every setting, its effective value and its origin |
@@ -356,6 +357,7 @@ differ:
 | `enter` / `y` | Open / copy the ticket's URL |
 | `p` | Open the ticket's most urgent pull request. `no pull request` on the error line when it has none |
 | `w` | Start or open work: `zax worktree new` on a branch named from the ticket when it has no worktree, otherwise open its most recently modified worktree in the editor |
+| `W` | Open the ticket's worktrees in a tmux popup over the whole window (`zax pane worktrees <TICKET>`; needs tmux 3.3 or newer). `j`/`k` move, `d` then `y` removes the selected one with an unforced `git worktree remove` (git refuses one with uncommitted changes; the branch is kept), `esc` closes |
 | `s` | Pick a transition: `1`-`9` chooses, `esc` cancels. Absent when the provider does not advertise transitions |
 
 The context panes stay read-only and action-oriented: a keystroke opens, copies

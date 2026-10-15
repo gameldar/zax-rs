@@ -20,6 +20,7 @@ use zax_broker::topics::{
     WORK,
 };
 use zax_broker::BrokerPaths;
+use zax_domain::TicketKey;
 use zax_exec::{Exec, SystemExec};
 use zax_protocol::{method, Snapshot, SourceKey};
 use zax_tui::{PaneAction, TicketsPane};
@@ -217,6 +218,17 @@ pub fn run() -> Result<()> {
                     }
                     Ok(()) => {}
                 },
+                // A tmux popup over the whole window, run to the end: the
+                // pane has nothing to draw while it is open. Whatever was
+                // removed shows on the rows at once, not at the next poll.
+                PaneAction::ListWorktrees { key } => {
+                    if let Some(message) = worktrees_popup(&SystemExec, &zax_program, &key) {
+                        pane.notice(message);
+                    }
+                    if let Some(c) = &client {
+                        let _ = c.refresh(work_key.clone());
+                    }
+                }
                 other => {
                     if let Some(message) = crate::cmd_pane::perform(other)? {
                         pane.notice(message);
@@ -363,6 +375,52 @@ fn start_work<E: Exec>(exec: &E, zax: &str, branch: &str) -> Option<String> {
     Some(format!("worktree new: {detail}"))
 }
 
+/// The popup's own tmux command, run by the pane. `-E` closes the popup when
+/// the command exits and makes this call wait for that, and `-w`/`-h` of 100%
+/// cover every pane rather than just this one. `-d` is this pane's directory,
+/// because `zax` resolves the repository from where it runs and a popup
+/// otherwise starts wherever the tmux server did. Returns what the pane
+/// should say when the popup could not be opened.
+fn worktrees_popup<E: Exec>(exec: &E, zax: &str, key: &TicketKey) -> Option<String> {
+    let cwd = match std::env::current_dir() {
+        Ok(cwd) => cwd,
+        Err(e) => return Some(format!("worktrees: {e}")),
+    };
+    let args = [
+        "display-popup".to_owned(),
+        "-E".to_owned(),
+        "-b".to_owned(),
+        "rounded".to_owned(),
+        "-T".to_owned(),
+        format!(" worktrees {key} "),
+        "-w".to_owned(),
+        "100%".to_owned(),
+        "-h".to_owned(),
+        "100%".to_owned(),
+        "-d".to_owned(),
+        cwd.to_string_lossy().into_owned(),
+        zax.to_owned(),
+        "pane".to_owned(),
+        "worktrees".to_owned(),
+        key.to_string(),
+    ];
+    match exec.exec("tmux", &args, None, &[]) {
+        Ok(out) if out.ok() => None,
+        Ok(out) => Some(format!(
+            "worktrees: {}",
+            out.stderr
+                .lines()
+                .map(str::trim)
+                .find(|l| !l.is_empty())
+                .map_or_else(
+                    || format!("tmux exited with status {}", out.status),
+                    str::to_owned
+                )
+        )),
+        Err(e) => Some(format!("worktrees: {e}")),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)]
@@ -371,7 +429,7 @@ mod tests {
 
     use zax_exec::{Exec, ExecError, Output, RecordingExec};
 
-    use super::{anchor_provider, spawn_start_work, start_work};
+    use super::{anchor_provider, spawn_start_work, start_work, worktrees_popup};
 
     fn argv(parts: &[&str]) -> Vec<String> {
         parts.iter().map(|p| (*p).to_owned()).collect()
@@ -494,5 +552,37 @@ mod tests {
         }]);
         let message = start_work(&exec, "zax", "OMEGA-1-go").unwrap();
         assert!(message.contains('2'), "got: {message}");
+    }
+
+    #[test]
+    fn the_worktrees_popup_covers_the_window_and_runs_this_zax() {
+        let exec = RecordingExec::returning("");
+        let key = zax_domain::TicketKey::parse("OMEGA-1").unwrap();
+        assert_eq!(worktrees_popup(&exec, "/bin/zax", &key), None);
+        let args = exec.args(0);
+        assert_eq!(args[0], "display-popup");
+        assert!(args.contains(&"-E".to_owned()));
+        let at = |flag: &str| args.iter().position(|a| a == flag).unwrap();
+        assert_eq!(args[at("-w") + 1], "100%");
+        assert_eq!(args[at("-h") + 1], "100%");
+        assert_eq!(
+            args[args.len() - 4..],
+            ["/bin/zax", "pane", "worktrees", "OMEGA-1"]
+        );
+        assert_eq!(exec.calls()[0].program, "tmux");
+    }
+
+    #[test]
+    fn a_popup_tmux_would_not_open_is_reported() {
+        let exec = RecordingExec::with_responses(vec![Output {
+            status: 1,
+            stdout: String::new(),
+            stderr: "no server running\n".into(),
+        }]);
+        let key = zax_domain::TicketKey::parse("OMEGA-1").unwrap();
+        assert_eq!(
+            worktrees_popup(&exec, "/bin/zax", &key).unwrap(),
+            "worktrees: no server running"
+        );
     }
 }

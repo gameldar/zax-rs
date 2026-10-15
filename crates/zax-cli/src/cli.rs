@@ -115,6 +115,11 @@ pub enum PaneCommand {
     Tickets,
     /// Your todo list, from a markdown file shared by every session.
     Todo,
+    /// One ticket's worktrees, with removal. Meant for a tmux popup.
+    Worktrees {
+        /// The ticket key, such as OMEGA-1963.
+        ticket: String,
+    },
     /// Wrap any command's stdout in a header, refresh loop and scrollback.
     Exec {
         #[arg(long)]

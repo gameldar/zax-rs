@@ -361,6 +361,16 @@ impl TicketsPane {
                 None => PaneAction::None,
             },
             KeyCode::Char('w') => self.start_or_open(),
+            KeyCode::Char('W') => match self.selected_row() {
+                Some(r) if r.work.worktrees.is_empty() => {
+                    self.notice = Some(format!("{} has no worktrees", r.ticket.key));
+                    PaneAction::None
+                }
+                Some(r) => PaneAction::ListWorktrees {
+                    key: r.ticket.key.clone(),
+                },
+                None => PaneAction::None,
+            },
             KeyCode::Char('s') => {
                 let can = self.tickets.value().is_some_and(|v| v.transitions);
                 match self.selected_row() {
@@ -663,6 +673,29 @@ mod tests {
             PaneAction::OpenWorktree {
                 path: PathBuf::from("/w/omega/OMEGA-1-a"),
                 others: 1
+            }
+        );
+    }
+
+    #[test]
+    fn capital_w_asks_for_the_worktrees_popup_or_says_there_are_none() {
+        let mut pane = pane_with(
+            vec![ticket("OMEGA-1", StatusCategory::ToDo, "x")],
+            WorkIndex::default(),
+        );
+        assert_eq!(pane.on_key(key(KeyCode::Char('W'))), PaneAction::None);
+        assert!(draw(&pane, 60, 6)
+            .join("\n")
+            .contains("OMEGA-1 has no worktrees"));
+        let work = WorkIndex {
+            worktrees: vec![worktree("OMEGA-1-a")],
+            ..WorkIndex::default()
+        };
+        let mut pane = pane_with(vec![ticket("OMEGA-1", StatusCategory::Done, "x")], work);
+        assert_eq!(
+            pane.on_key(key(KeyCode::Char('W'))),
+            PaneAction::ListWorktrees {
+                key: TicketKey::parse("OMEGA-1").unwrap()
             }
         );
     }

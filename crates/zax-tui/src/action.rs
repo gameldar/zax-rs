@@ -40,6 +40,11 @@ pub enum PaneAction {
         key: TicketKey,
         id: String,
     },
+    /// Open the ticket's worktrees in a popup over the whole window, where
+    /// they can be removed.
+    ListWorktrees {
+        key: TicketKey,
+    },
 }
 
 #[cfg(test)]

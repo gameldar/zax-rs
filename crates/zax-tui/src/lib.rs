@@ -13,6 +13,7 @@ pub mod prs_pane;
 pub mod refresh;
 pub mod tickets_pane;
 pub mod todo_pane;
+pub mod worktrees_modal;
 
 pub use action::PaneAction;
 pub use branch_pane::BranchStatusPane;
@@ -23,3 +24,4 @@ pub use my_prs_pane::MyPrsPane;
 pub use prs_pane::PrsForReviewPane;
 pub use tickets_pane::TicketsPane;
 pub use todo_pane::TodoPane;
+pub use worktrees_modal::{WorktreesAction, WorktreesModal};

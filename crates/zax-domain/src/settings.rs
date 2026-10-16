@@ -254,7 +254,7 @@ impl SettingKey {
             Self::WorktreeCopy | Self::WorktreeHooks | Self::PrsExclude => "[]",
             Self::OpenVia | Self::EditorVia => "command",
             Self::OpenCommand => "zed -e",
-            Self::EditorCommand => "zed -e",
+            Self::EditorCommand => "zed -e (nvim with via = herdr)",
             Self::TicketsProvider => "[] (none)",
             Self::TodoFile => "~/.local/share/zax/todo.md",
             Self::TmuxPrefix => "C-Space",
@@ -610,7 +610,9 @@ mod tests {
         assert_eq!(SettingKey::EditorCommand.shape(), SettingShape::List);
         assert_eq!(SettingKey::EditorCommand.list_separator(), " ");
         let row = SettingRow::new(SettingKey::EditorCommand, [None, None, None]);
-        assert_eq!(row.display_effective(), "zed -e");
+        // The default depends on `editor.via`, so it says both rather than
+        // claiming Zed for someone editing through herdr.
+        assert_eq!(row.display_effective(), "zed -e (nvim with via = herdr)");
     }
 
     #[test]

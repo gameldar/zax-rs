@@ -207,8 +207,29 @@ impl<E: Exec> Editor for HerdrEditor<E> {
             .map(|_| ())
     }
 
+    /// The server, and then the editor itself: a space whose shell cannot
+    /// find the editor is worse than no space, because the next edit focuses it.
     fn probe(&self) -> Result<String, PortError> {
-        self.herdr.probe_server()
+        let server = self.herdr.probe_server()?;
+        let program = self.command.program();
+        let out = self
+            .herdr
+            .exec
+            .exec(program, &["--version".to_owned()], None, &[])
+            .map_err(|e| match e {
+                ExecError::NotFound { .. } => PortError::MissingProgram {
+                    program: program.to_owned(),
+                    hint: format!(
+                        "`{program}` comes from `editor.command`; `zax config` is where to change it"
+                    ),
+                },
+                ExecError::Io { detail, .. } => PortError::Incompatible {
+                    tool: "editor",
+                    detail: format!("could not run `{program}`: {detail}"),
+                },
+            })?;
+        let version = out.stdout.lines().next().unwrap_or_default();
+        Ok(format!("{server}; {version}"))
     }
 }
 
@@ -441,6 +462,53 @@ mod tests {
             editor.herdr.exec_ref().args(2)[3],
             r"exec nvim '/home/k/My Notes/it'\''s.md'"
         );
+    }
+
+    #[test]
+    fn an_editor_probe_reports_the_server_and_the_editor() {
+        let editor = editor(vec![
+            ok("status: running\nversion: 0.9.1\n"),
+            ok("NVIM v0.10.4\nBuild type: Release\n"),
+        ]);
+
+        let detail = Editor::probe(&editor).unwrap();
+
+        let calls = editor.herdr.exec_ref().calls();
+        assert_eq!(calls[1].program, "nvim");
+        assert_eq!(calls[1].args, ["--version"]);
+        assert_eq!(detail, "herdr 0.9.1, server running; NVIM v0.10.4");
+    }
+
+    #[test]
+    fn an_editor_probe_fails_when_the_editor_is_not_installed() {
+        // Otherwise doctor says ok and the first `o` opens a space whose shell
+        // cannot find the editor, which the next `o` would then focus.
+        struct NoEditor;
+        impl Exec for NoEditor {
+            fn exec(
+                &self,
+                program: &str,
+                _: &[String],
+                _: Option<&Path>,
+                _: &[EnvVar],
+            ) -> Result<Output, ExecError> {
+                if program == "herdr" {
+                    return Ok(ok("status: running\nversion: 0.9.1\n"));
+                }
+                Err(ExecError::NotFound {
+                    program: program.to_owned(),
+                })
+            }
+        }
+        let editor = HerdrEditor::new(
+            HerdrCli::new(NoEditor, "herdr".to_owned()),
+            Command::new(vec!["nvim".to_owned()]).unwrap(),
+        );
+
+        let err = Editor::probe(&editor).unwrap_err();
+
+        assert!(matches!(err, PortError::MissingProgram { .. }), "{err:?}");
+        assert!(err.to_string().contains("editor.command"), "{err}");
     }
 
     #[test]

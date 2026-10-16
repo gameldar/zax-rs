@@ -1,4 +1,5 @@
-//! tmux takes a shell command as one string, so argv has to be re-quoted.
+//! tmux and herdr both take a shell command as one string, so argv has to be
+//! re-quoted.
 
 /// POSIX single-quote each argument that is not obviously safe, and join them.
 pub fn shell_quote(argv: &[String]) -> String {

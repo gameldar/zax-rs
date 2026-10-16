@@ -3,20 +3,20 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use zax_app::{FileSystem, PortError};
-use zax_config::Config;
+use zax_app::{Editor, FileSystem, PortError, WorktreeOpener};
+use zax_config::{Config, EditorConfig, OpenConfig};
 use zax_domain::{RootRepoName, TodoFile};
 use zax_exec::{InteractiveExec, SystemExec, SystemHandover};
 use zax_infra_editor::EditorCli;
 use zax_infra_git::GitCli;
 use zax_infra_github::GhCli;
+use zax_infra_herdr::{HerdrCli, HerdrEditor};
 use zax_infra_ssh::SshAddCli;
 use zax_infra_tmux::{conf, TmuxCli, SOCKET_DEFAULT};
 
 pub type Git = GitCli<SystemExec>;
 pub type Gh = GhCli<SystemExec>;
 pub type Tmux = TmuxCli<SystemExec, SystemHandover>;
-pub type EditorAdapter = EditorCli<InteractiveExec>;
 pub type SshAdapter = SshAddCli<SystemExec>;
 
 pub struct Resolved {
@@ -127,12 +127,90 @@ pub fn ssh() -> SshAdapter {
     SshAddCli::new(SystemExec)
 }
 
-/// The editor `[editor] command` names, which may be no editor at all.
-///
-/// The one adapter not on `SystemExec`: an editor is handed to the user rather
-/// than questioned by zax, so it keeps whatever way of asking it came with.
+/// What `[open]` chose to open a worktree in.
+pub enum OpenerAdapter {
+    /// Not on `SystemExec`: an editor is handed to the user rather than
+    /// questioned by zax, so it keeps whatever way of asking it came with.
+    Command(EditorCli<InteractiveExec>),
+    Herdr(HerdrCli<SystemExec>),
+}
+
+impl WorktreeOpener for OpenerAdapter {
+    fn open_worktree(&self, path: &Path) -> Result<(), PortError> {
+        match self {
+            Self::Command(cli) => cli.open_worktree(path),
+            Self::Herdr(herdr) => herdr.open_worktree(path),
+        }
+    }
+
+    fn probe(&self) -> Result<String, PortError> {
+        match self {
+            Self::Command(cli) => WorktreeOpener::probe(cli),
+            Self::Herdr(herdr) => WorktreeOpener::probe(herdr),
+        }
+    }
+}
+
+/// What `[editor]` chose to edit a file in.
+pub enum EditorAdapter {
+    Command(EditorCli<InteractiveExec>),
+    Herdr(HerdrEditor<SystemExec>),
+}
+
+impl Editor for EditorAdapter {
+    fn edit(&self, file: &Path) -> Result<(), PortError> {
+        match self {
+            Self::Command(cli) => cli.edit(file),
+            Self::Herdr(herdr) => herdr.edit(file),
+        }
+    }
+
+    fn probe(&self) -> Result<String, PortError> {
+        match self {
+            Self::Command(cli) => Editor::probe(cli),
+            Self::Herdr(herdr) => Editor::probe(herdr),
+        }
+    }
+}
+
+pub fn opener(config: &Config) -> OpenerAdapter {
+    match &config.open {
+        OpenConfig::Command(command) => OpenerAdapter::Command(EditorCli::new(
+            InteractiveExec,
+            command.clone(),
+            "open.command",
+        )),
+        OpenConfig::Herdr => OpenerAdapter::Herdr(herdr()),
+    }
+}
+
 pub fn editor(config: &Config) -> EditorAdapter {
-    EditorCli::new(InteractiveExec, config.editor.command.clone())
+    match &config.editor {
+        EditorConfig::Command(command) => EditorAdapter::Command(EditorCli::new(
+            InteractiveExec,
+            command.clone(),
+            "editor.command",
+        )),
+        EditorConfig::Herdr(command) => {
+            EditorAdapter::Herdr(HerdrEditor::new(herdr(), command.clone()))
+        }
+    }
+}
+
+fn herdr() -> HerdrCli<SystemExec> {
+    HerdrCli::new(
+        SystemExec,
+        herdr_program_from(std::env::var_os("HERDR_BIN_PATH")),
+    )
+}
+
+/// herdr gives its own panes `HERDR_BIN_PATH`, the binary of the server they
+/// run under. A pane beside herdr has no such variable and finds it on PATH.
+fn herdr_program_from(value: Option<std::ffi::OsString>) -> String {
+    match value {
+        Some(path) if !path.is_empty() => path.to_string_lossy().into_owned(),
+        _ => "herdr".to_owned(),
+    }
 }
 
 /// The absolute path of the running binary, so panes re-invoke this build.
@@ -211,6 +289,7 @@ impl zax_app::ProcessRunner for RealRunner {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
     use super::*;
 
     #[test]
@@ -229,5 +308,41 @@ mod tests {
                 PathBuf::from("/h/.local/share")
             );
         }
+    }
+
+    fn config(open: OpenConfig, editor: EditorConfig) -> Config {
+        let mut config =
+            zax_config::parse::from_raw(zax_config::raw::RawConfig::default(), "/h").unwrap();
+        config.open = open;
+        config.editor = editor;
+        config
+    }
+
+    fn nvim() -> zax_domain::Command {
+        zax_domain::Command::new(vec!["nvim".to_owned()]).unwrap()
+    }
+
+    #[test]
+    fn herdr_config_wires_the_herdr_adapters() {
+        let config = config(OpenConfig::Herdr, EditorConfig::Herdr(nvim()));
+        assert!(matches!(opener(&config), OpenerAdapter::Herdr(_)));
+        assert!(matches!(editor(&config), EditorAdapter::Herdr(_)));
+    }
+
+    #[test]
+    fn command_config_wires_the_command_adapters() {
+        let config = config(
+            OpenConfig::Command(None),
+            EditorConfig::Command(Some(nvim())),
+        );
+        assert!(matches!(opener(&config), OpenerAdapter::Command(_)));
+        assert!(matches!(editor(&config), EditorAdapter::Command(_)));
+    }
+
+    #[test]
+    fn herdr_is_the_binary_herdr_names_when_it_names_one() {
+        assert_eq!(herdr_program_from(Some("/opt/herdr".into())), "/opt/herdr");
+        assert_eq!(herdr_program_from(Some("".into())), "herdr");
+        assert_eq!(herdr_program_from(None), "herdr");
     }
 }

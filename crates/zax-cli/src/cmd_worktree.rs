@@ -5,7 +5,7 @@ use std::path::Path;
 use anyhow::Result;
 use zax_app::{
     queries, CreateReviewWorktree, CreateReviewWorktreeRequest, CreateWorktree,
-    CreateWorktreeRequest, Editor, Provisioning,
+    CreateWorktreeRequest, Provisioning, WorktreeOpener,
 };
 use zax_domain::{BranchName, PrRef};
 
@@ -53,8 +53,8 @@ fn new(branch: String, from: Option<String>, no_hooks: bool, no_open: bool) -> R
         })?;
 
     report(&outcome);
-    warn(open_in_editor(
-        &wiring::editor(&ctx.config),
+    warn(open_worktree(
+        &wiring::opener(&ctx.config),
         outcome.path.as_path(),
         !no_open,
     ));
@@ -83,35 +83,33 @@ fn review(pr: String, no_hooks: bool, force: bool, no_open: bool) -> Result<()> 
         );
     }
     report(&outcome.worktree);
-    warn(open_in_editor(
-        &wiring::editor(&ctx.config),
+    warn(open_worktree(
+        &wiring::opener(&ctx.config),
         outcome.worktree.path.as_path(),
         !no_open,
     ));
     Ok(())
 }
 
-/// Hand the finished worktree to the editor, after the copies and the hooks:
+/// Hand the finished worktree to the opener, after the copies and the hooks:
 /// what opens is a worktree that is ready to work in, not a bare checkout
 /// that grows its config files while you look at it.
 ///
 /// The returned line is a warning, never an error. The worktree was made
 /// either way, and the review pane reads a non-zero exit as "the review was
-/// refused", which an editor that would not start does not make true.
-fn open_in_editor<E: Editor>(editor: &E, path: &Path, open: bool) -> Option<String> {
+/// refused", which an opener that would not start does not make true.
+fn open_worktree<O: WorktreeOpener>(opener: &O, path: &Path, open: bool) -> Option<String> {
     if !open {
         return None;
     }
-    editor.open(path).err().map(|e| e.to_string())
+    opener.open_worktree(path).err().map(|e| e.to_string())
 }
 
 /// Marked as zax's own, because the review pane runs this command as a
 /// subprocess and an unmarked line is indistinguishable from a hook's chatter.
 fn warn(message: Option<String>) {
     let Some(message) = message else { return };
-    marked::warn(&format!(
-        "could not open the worktree in the editor: {message}"
-    ));
+    marked::warn(&format!("could not open the worktree: {message}"));
 }
 
 fn report(outcome: &zax_app::CreateWorktreeOutcome) {
@@ -162,43 +160,43 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)]
     use std::path::{Path, PathBuf};
 
-    use zax_app::testing::FakeEditor;
+    use zax_app::testing::FakeOpener;
     use zax_app::PortError;
 
-    use super::open_in_editor;
+    use super::open_worktree;
 
     #[test]
-    fn a_finished_worktree_is_handed_to_the_editor() {
-        let editor = FakeEditor::default();
+    fn a_finished_worktree_is_handed_to_the_opener() {
+        let opener = FakeOpener::default();
 
-        let warning = open_in_editor(&editor, Path::new("/src/worktrees/acme/patch-1"), true);
+        let warning = open_worktree(&opener, Path::new("/src/worktrees/acme/patch-1"), true);
 
         assert_eq!(warning, None);
         assert_eq!(
-            *editor.opened.borrow(),
+            *opener.opened.borrow(),
             vec![PathBuf::from("/src/worktrees/acme/patch-1")]
         );
     }
 
     #[test]
-    fn no_open_leaves_the_editor_alone() {
-        let editor = FakeEditor::default();
+    fn no_open_leaves_the_opener_alone() {
+        let opener = FakeOpener::default();
 
-        open_in_editor(&editor, Path::new("/src/worktrees/acme/patch-1"), false);
+        open_worktree(&opener, Path::new("/src/worktrees/acme/patch-1"), false);
 
-        assert!(editor.opened.borrow().is_empty());
+        assert!(opener.opened.borrow().is_empty());
     }
 
     #[test]
-    fn an_editor_that_will_not_start_is_a_warning_and_not_a_failed_command() {
+    fn an_opener_that_will_not_start_is_a_warning_and_not_a_failed_command() {
         // The worktree exists either way, and the pane reads a non-zero exit
         // as "the review was refused", which would be a lie.
-        let editor = FakeEditor::failing(PortError::MissingProgram {
+        let opener = FakeOpener::failing(PortError::MissingProgram {
             program: "zed".to_owned(),
             hint: "run `cli: install`".to_owned(),
         });
 
-        let warning = open_in_editor(&editor, Path::new("/src/worktrees/acme/patch-1"), true)
+        let warning = open_worktree(&opener, Path::new("/src/worktrees/acme/patch-1"), true)
             .expect("a failure the user cannot see is a keystroke that did nothing");
 
         assert!(warning.contains("zed"), "got: {warning}");

@@ -9,7 +9,7 @@ use zax_domain::{
 };
 
 use crate::error::ConfigError;
-use crate::raw::{RawConfig, RawEditor, RawPane, RawPrs, RawTickets, RawTodo};
+use crate::raw::{RawConfig, RawEditor, RawOpen, RawPane, RawPrs, RawTickets, RawTodo};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
@@ -17,9 +17,13 @@ pub struct Config {
     pub worktree: WorktreeConfig,
     pub tmux: TmuxConfig,
     pub prs: PrFilter,
+    pub open: OpenConfig,
     pub editor: EditorConfig,
     pub tickets: TicketsConfig,
     pub todo: TodoConfig,
+    /// Things worth saying about the config that are not errors, such as a
+    /// key whose meaning has changed. `zax doctor` prints them.
+    pub notices: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -30,13 +34,27 @@ pub struct WorktreeConfig {
     pub hooks: Vec<Command>,
 }
 
-/// What a freshly made worktree is opened in.
+/// What a worktree is opened in: the tickets pane's `w`, and `zax worktree
+/// new` and `review` once the worktree is ready.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EditorConfig {
-    /// `None` when no editor should be opened at all. An editor command with
-    /// no program is not a command, so the absence is the type rather than a
-    /// separate flag every caller would have to consult.
-    pub command: Option<Command>,
+pub enum OpenConfig {
+    /// Run the command with the worktree's path appended. `None` when nothing
+    /// should be opened at all. A command with no program is not a command,
+    /// so the absence is the type rather than a separate flag every caller
+    /// would have to consult.
+    Command(Option<Command>),
+    /// Focus the herdr space that has the worktree open, or open one.
+    Herdr,
+}
+
+/// What a single file is edited in: the todo pane's `o`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EditorConfig {
+    /// Run the command with the file's path appended; `None` edits nothing.
+    Command(Option<Command>),
+    /// Run the command on the file in a herdr space of its own. Never empty:
+    /// a space with nothing running in it is not an editor.
+    Herdr(Command),
 }
 
 /// Which ticket provider the tickets pane runs. A layer-2 provider is a
@@ -68,6 +86,17 @@ const DEFAULT_PREFIX: &str = "C-Space";
 /// zax is the Zed agent terminal, so a new worktree opens in Zed. `-e` is the
 /// flag Zed's own CLI takes for "open this path".
 const DEFAULT_EDITOR: [&str; 2] = ["zed", "-e"];
+/// A herdr space is a terminal, so the editor run in it is a terminal one.
+const DEFAULT_HERDR_EDITOR: [&str; 1] = ["nvim"];
+
+/// The ways `open` and `editor` can hand a path on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Via {
+    Command,
+    Herdr,
+}
+
+const VIA_CHOICES: &str = "command, herdr";
 
 /// `home` is the value `~` expands to. It is a parameter rather than a lookup so
 /// this function stays pure and testable.
@@ -138,6 +167,8 @@ pub fn from_raw(raw: RawConfig, home: &str) -> Result<Config, ConfigError> {
     })?;
 
     let prs = prs_filter_from_raw(raw.prs.unwrap_or_default())?;
+    let notices = migration_notices(raw.open.as_ref(), raw.editor.as_ref());
+    let open = open_from_raw(raw.open.unwrap_or_default())?;
     let editor = editor_from_raw(raw.editor.unwrap_or_default())?;
     let tickets = tickets_from_raw(raw.tickets.unwrap_or_default())?;
     let todo = todo_from_raw(raw.todo.unwrap_or_default(), home)?;
@@ -147,9 +178,11 @@ pub fn from_raw(raw: RawConfig, home: &str) -> Result<Config, ConfigError> {
         worktree: WorktreeConfig { root, copy, hooks },
         tmux: TmuxConfig { prefix },
         prs,
+        open,
         editor,
         tickets,
         todo,
+        notices,
     })
 }
 
@@ -182,23 +215,85 @@ fn tickets_from_raw(raw: RawTickets) -> Result<TicketsConfig, ConfigError> {
     }
 }
 
+fn via_from_raw(raw: Option<&str>, field: &'static str) -> Result<Via, ConfigError> {
+    match raw {
+        None | Some("command") => Ok(Via::Command),
+        Some("herdr") => Ok(Via::Herdr),
+        Some(other) => Err(ConfigError::Invalid {
+            field,
+            detail: format!("`{other}` is not one of {VIA_CHOICES}"),
+        }),
+    }
+}
+
+fn default_argv(argv: &[&str]) -> Vec<String> {
+    argv.iter().map(|s| (*s).to_owned()).collect()
+}
+
+/// An absent list is the default; an empty one is no command at all.
+fn optional_command(
+    argv: Option<Vec<String>>,
+    default: &[&str],
+    field: &'static str,
+) -> Result<Option<Command>, ConfigError> {
+    let argv = argv.unwrap_or_else(|| default_argv(default));
+    if argv.is_empty() {
+        return Ok(None);
+    }
+    Command::new(argv)
+        .map(Some)
+        .map_err(|e| ConfigError::Invalid {
+            field,
+            detail: e.to_string(),
+        })
+}
+
 /// An absent table opens Zed; an empty list opens nothing. Only a list with a
 /// program in it has to be checked, and it is checked here so nothing that
-/// holds an `EditorConfig` afterwards asks again.
-fn editor_from_raw(raw: RawEditor) -> Result<EditorConfig, ConfigError> {
-    let argv = raw
-        .command
-        .unwrap_or_else(|| DEFAULT_EDITOR.iter().map(|s| (*s).to_owned()).collect());
-    if argv.is_empty() {
-        return Ok(EditorConfig { command: None });
+/// holds an `OpenConfig` afterwards asks again. Through herdr the command is
+/// not used: herdr opens the worktree as a space of its own.
+fn open_from_raw(raw: RawOpen) -> Result<OpenConfig, ConfigError> {
+    match via_from_raw(raw.via.as_deref(), "open.via")? {
+        Via::Command => {
+            optional_command(raw.command, &DEFAULT_EDITOR, "open.command").map(OpenConfig::Command)
+        }
+        Via::Herdr => Ok(OpenConfig::Herdr),
     }
-    let command = Command::new(argv).map_err(|e| ConfigError::Invalid {
-        field: "editor.command",
-        detail: e.to_string(),
-    })?;
-    Ok(EditorConfig {
-        command: Some(command),
-    })
+}
+
+fn editor_from_raw(raw: RawEditor) -> Result<EditorConfig, ConfigError> {
+    match via_from_raw(raw.via.as_deref(), "editor.via")? {
+        Via::Command => optional_command(raw.command, &DEFAULT_EDITOR, "editor.command")
+            .map(EditorConfig::Command),
+        Via::Herdr => {
+            match optional_command(raw.command, &DEFAULT_HERDR_EDITOR, "editor.command")? {
+                Some(command) => Ok(EditorConfig::Herdr(command)),
+                None => Err(ConfigError::Invalid {
+                    field: "editor.command",
+                    detail: "herdr runs this command on the file in a space of its own, \
+                             so it cannot be empty"
+                        .to_owned(),
+                }),
+            }
+        }
+    }
+}
+
+/// `[editor] command` used to be what a worktree opened in. A config that
+/// still says so and has no `[open]` table would quietly start opening
+/// worktrees in Zed, so that is worth a line.
+fn migration_notices(open: Option<&RawOpen>, editor: Option<&RawEditor>) -> Vec<String> {
+    let custom_editor = editor
+        .and_then(|e| e.command.as_ref())
+        .is_some_and(|argv| *argv != default_argv(&DEFAULT_EDITOR));
+    if open.is_none() && custom_editor {
+        return vec![
+            "`[editor] command` now only edits files, such as the todo pane's `o`; \
+             worktrees open in `[open] command`, which defaults to `zed -e`"
+                .to_owned(),
+        ];
+    }
+    Vec::new()
 }
 
 fn prs_filter_from_raw(raw: RawPrs) -> Result<PrFilter, ConfigError> {
@@ -496,39 +591,135 @@ mod tests {
         assert_eq!(config.tmux.prefix, "C-Space");
     }
 
+    fn argv(command: &Command) -> Vec<&str> {
+        command.argv().iter().map(String::as_str).collect()
+    }
+
+    fn err_from(text: &str) -> String {
+        let raw: RawConfig = toml::from_str(text).unwrap();
+        from_raw(raw, "/home/me").unwrap_err().to_string()
+    }
+
     #[test]
-    fn no_editor_table_opens_the_worktree_in_zed() {
+    fn no_open_table_opens_the_worktree_in_zed() {
         // zax exists to sit beside Zed, so the editor it opens a new worktree
         // in is the one you are already in unless you say otherwise.
-        let config = config_from("");
-        assert_eq!(
-            config.editor.command.unwrap().argv(),
-            ["zed".to_owned(), "-e".to_owned()]
-        );
+        let OpenConfig::Command(Some(command)) = config_from("").open else {
+            panic!("expected a command opener");
+        };
+        assert_eq!(argv(&command), ["zed", "-e"]);
     }
 
     #[test]
-    fn an_editor_command_replaces_the_default_argv_entirely() {
-        let config = config_from("[editor]\ncommand = [\"code\", \"--new-window\"]");
-        assert_eq!(
-            config.editor.command.unwrap().argv(),
-            ["code".to_owned(), "--new-window".to_owned()]
-        );
+    fn an_open_command_replaces_the_default_argv_entirely() {
+        let config = config_from("[open]\ncommand = [\"code\", \"--new-window\"]");
+        let OpenConfig::Command(Some(command)) = config.open else {
+            panic!("expected a command opener");
+        };
+        assert_eq!(argv(&command), ["code", "--new-window"]);
     }
 
     #[test]
-    fn an_empty_editor_command_is_how_you_turn_opening_off() {
+    fn an_empty_open_command_is_how_you_turn_opening_off() {
         // There is no separate on/off key: a command with no program is the
         // absence of a command, and the type says so rather than a flag some
         // later caller has to remember to consult.
-        assert_eq!(config_from("[editor]\ncommand = []").editor.command, None);
+        assert_eq!(
+            config_from("[open]\ncommand = []").open,
+            OpenConfig::Command(None)
+        );
+    }
+
+    #[test]
+    fn opening_through_herdr_needs_no_command() {
+        assert_eq!(
+            config_from("[open]\nvia = \"herdr\"").open,
+            OpenConfig::Herdr
+        );
+    }
+
+    #[test]
+    fn no_editor_table_edits_in_zed() {
+        let EditorConfig::Command(Some(command)) = config_from("").editor else {
+            panic!("expected a command editor");
+        };
+        assert_eq!(argv(&command), ["zed", "-e"]);
+    }
+
+    #[test]
+    fn an_empty_editor_command_edits_nothing() {
+        assert_eq!(
+            config_from("[editor]\ncommand = []").editor,
+            EditorConfig::Command(None)
+        );
+    }
+
+    #[test]
+    fn editing_through_herdr_runs_nvim_unless_told_otherwise() {
+        let EditorConfig::Herdr(command) = config_from("[editor]\nvia = \"herdr\"").editor else {
+            panic!("expected a herdr editor");
+        };
+        assert_eq!(argv(&command), ["nvim"]);
+    }
+
+    #[test]
+    fn editing_through_herdr_runs_the_configured_command() {
+        let config = config_from("[editor]\nvia = \"herdr\"\ncommand = [\"hx\"]");
+        let EditorConfig::Herdr(command) = config.editor else {
+            panic!("expected a herdr editor");
+        };
+        assert_eq!(argv(&command), ["hx"]);
+    }
+
+    #[test]
+    fn editing_through_herdr_with_no_command_is_refused() {
+        // herdr runs the command in a new space; with nothing to run the
+        // space would be an empty shell nobody asked for.
+        let err = err_from("[editor]\nvia = \"herdr\"\ncommand = []");
+        assert!(err.contains("editor.command"), "got: {err}");
+    }
+
+    #[test]
+    fn an_unknown_via_names_the_field_and_the_choices() {
+        let err = err_from("[open]\nvia = \"vim\"");
+        assert!(err.contains("open.via"), "got: {err}");
+        assert!(err.contains("command, herdr"), "got: {err}");
+        let err = err_from("[editor]\nvia = \"\"");
+        assert!(err.contains("editor.via"), "got: {err}");
     }
 
     #[test]
     fn an_editor_command_whose_program_is_blank_is_rejected() {
-        let raw: RawConfig = toml::from_str("[editor]\ncommand = [\"  \"]").unwrap();
-        let err = from_raw(raw, "/home/me").unwrap_err();
-        assert!(err.to_string().contains("editor.command"), "got: {err}");
+        let err = err_from("[editor]\ncommand = [\"  \"]");
+        assert!(err.contains("editor.command"), "got: {err}");
+        let err = err_from("[open]\ncommand = [\"  \"]");
+        assert!(err.contains("open.command"), "got: {err}");
+    }
+
+    #[test]
+    fn an_editor_command_with_no_open_table_is_noticed() {
+        // `[editor] command` used to be what a worktree opened in. A config
+        // written then would otherwise quietly start opening worktrees in Zed.
+        let config = config_from("[editor]\ncommand = [\"code\"]");
+        assert_eq!(config.notices.len(), 1, "{:?}", config.notices);
+        assert!(config.notices[0].contains("[open]"), "{:?}", config.notices);
+    }
+
+    #[test]
+    fn an_editor_command_beside_an_open_table_is_not_noticed() {
+        let config = config_from("[editor]\ncommand = [\"code\"]\n[open]\nvia = \"herdr\"");
+        assert!(config.notices.is_empty(), "{:?}", config.notices);
+    }
+
+    #[test]
+    fn the_default_editor_command_written_out_is_not_noticed() {
+        let config = config_from("[editor]\ncommand = [\"zed\", \"-e\"]");
+        assert!(config.notices.is_empty(), "{:?}", config.notices);
+    }
+
+    #[test]
+    fn an_unknown_open_key_is_an_error() {
+        assert!(toml::from_str::<RawConfig>("[open]\neditor = \"zed\"").is_err());
     }
 
     #[test]

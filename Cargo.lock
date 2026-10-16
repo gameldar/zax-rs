@@ -1129,6 +1129,7 @@ dependencies = [
  "zax-infra-editor",
  "zax-infra-git",
  "zax-infra-github",
+ "zax-infra-herdr",
  "zax-infra-ssh",
  "zax-infra-tmux",
  "zax-protocol",
@@ -1187,6 +1188,18 @@ dependencies = [
  "serde",
  "serde_json",
  "time",
+ "zax-app",
+ "zax-domain",
+ "zax-exec",
+]
+
+[[package]]
+name = "zax-infra-herdr"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tempfile",
  "zax-app",
  "zax-domain",
  "zax-exec",

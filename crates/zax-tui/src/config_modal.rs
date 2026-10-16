@@ -57,12 +57,15 @@ enum Row {
 
 impl Row {
     /// Grouped as the TOML is, with the layout where a reader expects it.
-    const ALL: [Row; 13] = [
+    const ALL: [Row; 16] = [
         Row::Setting(SettingKey::AgentCommand),
         Row::Panes,
         Row::Setting(SettingKey::WorktreeRoot),
         Row::Setting(SettingKey::WorktreeCopy),
         Row::Setting(SettingKey::WorktreeHooks),
+        Row::Setting(SettingKey::OpenVia),
+        Row::Setting(SettingKey::OpenCommand),
+        Row::Setting(SettingKey::EditorVia),
         Row::Setting(SettingKey::EditorCommand),
         Row::Setting(SettingKey::TicketsProvider),
         Row::Setting(SettingKey::TodoFile),
@@ -1784,7 +1787,7 @@ mod tests {
     }
 
     fn screen(modal: &ConfigModal, view: &ConfigView) -> String {
-        rendered(modal, view, 78, 24)
+        rendered(modal, view, 78, 32)
     }
 
     fn rendered(modal: &ConfigModal, view: &ConfigView, width: u16, height: u16) -> String {
@@ -2032,10 +2035,10 @@ mod tests {
         );
         let modal = ConfigModal::new(true);
 
-        let wide = rendered(&modal, &view, 78, 24);
+        let wide = rendered(&modal, &view, 78, 32);
         assert!(wide.contains("personal"), "got:\n{wide}");
 
-        let narrow = rendered(&modal, &view, 34, 24);
+        let narrow = rendered(&modal, &view, 34, 32);
         // The value survives; the answer to "which layer" is what gives way.
         assert!(narrow.contains("C-q"), "got:\n{narrow}");
         assert!(

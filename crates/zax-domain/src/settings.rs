@@ -100,6 +100,9 @@ pub enum SettingKey {
     WorktreeRoot,
     WorktreeCopy,
     WorktreeHooks,
+    OpenVia,
+    OpenCommand,
+    EditorVia,
     EditorCommand,
     TicketsProvider,
     TodoFile,
@@ -113,11 +116,14 @@ pub enum SettingKey {
 impl SettingKey {
     /// Display order: grouped as the TOML is, with the repo key last because it
     /// is the one setting that is about zax's own bookkeeping.
-    pub const ALL: [SettingKey; 12] = [
+    pub const ALL: [SettingKey; 15] = [
         SettingKey::AgentCommand,
         SettingKey::WorktreeRoot,
         SettingKey::WorktreeCopy,
         SettingKey::WorktreeHooks,
+        SettingKey::OpenVia,
+        SettingKey::OpenCommand,
+        SettingKey::EditorVia,
         SettingKey::EditorCommand,
         SettingKey::TicketsProvider,
         SettingKey::TodoFile,
@@ -133,7 +139,8 @@ impl SettingKey {
         match self {
             Self::AgentCommand => Some("agent"),
             Self::WorktreeRoot | Self::WorktreeCopy | Self::WorktreeHooks => Some("worktree"),
-            Self::EditorCommand => Some("editor"),
+            Self::OpenVia | Self::OpenCommand => Some("open"),
+            Self::EditorVia | Self::EditorCommand => Some("editor"),
             Self::TicketsProvider => Some("tickets"),
             Self::TodoFile => Some("todo"),
             Self::TmuxPrefix => Some("tmux"),
@@ -145,7 +152,8 @@ impl SettingKey {
     /// The key within its table.
     pub fn label(self) -> &'static str {
         match self {
-            Self::AgentCommand | Self::EditorCommand => "command",
+            Self::AgentCommand | Self::OpenCommand | Self::EditorCommand => "command",
+            Self::OpenVia | Self::EditorVia => "via",
             Self::WorktreeRoot => "root",
             Self::WorktreeCopy => "copy",
             Self::WorktreeHooks => "hooks",
@@ -166,6 +174,9 @@ impl SettingKey {
             Self::WorktreeRoot => "worktree.root",
             Self::WorktreeCopy => "worktree.copy",
             Self::WorktreeHooks => "worktree.hooks",
+            Self::OpenVia => "open.via",
+            Self::OpenCommand => "open.command",
+            Self::EditorVia => "editor.via",
             Self::EditorCommand => "editor.command",
             Self::TicketsProvider => "tickets.provider",
             Self::TodoFile => "todo.file",
@@ -182,7 +193,10 @@ impl SettingKey {
     /// read as a comma-separated list.
     pub fn list_separator(self) -> &'static str {
         match self {
-            Self::AgentCommand | Self::EditorCommand | Self::TicketsProvider => " ",
+            Self::AgentCommand
+            | Self::OpenCommand
+            | Self::EditorCommand
+            | Self::TicketsProvider => " ",
             _ => ", ",
         }
     }
@@ -192,11 +206,14 @@ impl SettingKey {
             Self::AgentCommand
             | Self::WorktreeCopy
             | Self::WorktreeHooks
+            | Self::OpenCommand
             | Self::EditorCommand
             | Self::TicketsProvider
             | Self::PrsInclude
             | Self::PrsExclude => SettingShape::List,
             Self::WorktreeRoot
+            | Self::OpenVia
+            | Self::EditorVia
             | Self::TodoFile
             | Self::TmuxPrefix
             | Self::PrsMaxAge
@@ -211,7 +228,12 @@ impl SettingKey {
             Self::WorktreeRoot => "every worktree lives under <root>/<repo>/<branch>",
             Self::WorktreeCopy => "paths copied into a new worktree, relative to the repository",
             Self::WorktreeHooks => "shell commands run in a new worktree, in order",
-            Self::EditorCommand => "what a new worktree opens in; empty opens nothing",
+            Self::OpenVia => "command runs open.command; herdr opens the worktree as a herdr space",
+            Self::OpenCommand => "what a worktree opens in, path appended; empty opens nothing",
+            Self::EditorVia => "command runs editor.command; herdr runs it in a herdr space",
+            Self::EditorCommand => {
+                "what a file such as the todo list is edited in; empty edits nothing"
+            }
             Self::TicketsProvider => {
                 "the ticket provider command, such as zax-jira; empty means none"
             }
@@ -230,7 +252,9 @@ impl SettingKey {
             Self::AgentCommand => "claude",
             Self::WorktreeRoot => "~/src/worktrees",
             Self::WorktreeCopy | Self::WorktreeHooks | Self::PrsExclude => "[]",
-            Self::EditorCommand => "zed -e",
+            Self::OpenVia | Self::EditorVia => "command",
+            Self::OpenCommand => "zed -e",
+            Self::EditorCommand => "zed -e (nvim with via = herdr)",
             Self::TicketsProvider => "[] (none)",
             Self::TodoFile => "~/.local/share/zax/todo.md",
             Self::TmuxPrefix => "C-Space",
@@ -586,7 +610,40 @@ mod tests {
         assert_eq!(SettingKey::EditorCommand.shape(), SettingShape::List);
         assert_eq!(SettingKey::EditorCommand.list_separator(), " ");
         let row = SettingRow::new(SettingKey::EditorCommand, [None, None, None]);
+        // The default depends on `editor.via`, so it says both rather than
+        // claiming Zed for someone editing through herdr.
+        assert_eq!(row.display_effective(), "zed -e (nvim with via = herdr)");
+    }
+
+    #[test]
+    fn the_open_command_is_a_command_line_in_its_own_table() {
+        assert_eq!(SettingKey::OpenCommand.full_name(), "open.command");
+        assert_eq!(SettingKey::OpenCommand.group(), Some("open"));
+        assert_eq!(SettingKey::OpenCommand.list_separator(), " ");
+        let row = SettingRow::new(SettingKey::OpenCommand, [None, None, None]);
         assert_eq!(row.display_effective(), "zed -e");
+    }
+
+    #[test]
+    fn each_via_is_a_scalar_that_defaults_to_running_a_command() {
+        for (key, name) in [
+            (SettingKey::OpenVia, "open.via"),
+            (SettingKey::EditorVia, "editor.via"),
+        ] {
+            assert_eq!(key.full_name(), name);
+            assert_eq!(key.label(), "via");
+            assert_eq!(key.shape(), SettingShape::Scalar);
+            assert!(key.help().contains("herdr"), "{}", key.help());
+            let row = SettingRow::new(key, [None, None, None]);
+            assert_eq!(row.display_effective(), "command");
+        }
+    }
+
+    #[test]
+    fn each_table_lists_its_via_before_its_command() {
+        let at = |key| SettingKey::ALL.iter().position(|k| *k == key).unwrap();
+        assert!(at(SettingKey::OpenVia) + 1 == at(SettingKey::OpenCommand));
+        assert!(at(SettingKey::EditorVia) + 1 == at(SettingKey::EditorCommand));
     }
 
     #[test]
@@ -720,6 +777,7 @@ mod tests {
                 SettingKey::AgentCommand,
                 SettingKey::WorktreeCopy,
                 SettingKey::WorktreeHooks,
+                SettingKey::OpenCommand,
                 SettingKey::EditorCommand,
                 SettingKey::TicketsProvider,
                 SettingKey::PrsInclude,

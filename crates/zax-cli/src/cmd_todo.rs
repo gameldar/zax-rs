@@ -114,7 +114,7 @@ pub fn run() -> Result<()> {
                     None => pane.notice("not connected to the broker".to_owned()),
                 },
                 PaneAction::OpenFile(path) => {
-                    if let Err(e) = editor.open(&path) {
+                    if let Err(e) = editor.edit(&path) {
                         pane.notice(format!("editor: {e}"));
                     }
                 }

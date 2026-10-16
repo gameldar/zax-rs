@@ -10,9 +10,10 @@ pub fn run() -> Result<()> {
     let ctx = wiring::resolve()?;
     let tmux = wiring::tmux(&ctx.config)?;
 
+    let opener = wiring::opener(&ctx.config);
     let editor = wiring::editor(&ctx.config);
 
-    let checks = queries::doctor(&tmux, &ctx.git, &ctx.gh, &editor, &wiring::ssh());
+    let checks = queries::doctor(&tmux, &ctx.git, &ctx.gh, &opener, &editor, &wiring::ssh());
     let mut all_ok = true;
 
     for check in &checks {
@@ -71,6 +72,12 @@ pub fn run() -> Result<()> {
             all_ok = false;
             print_failure("todo", &error);
         }
+    }
+
+    // Not failures: the config loaded and works, but says something whose
+    // meaning has changed under it.
+    for notice in &ctx.config.notices {
+        println!("note            {notice}");
     }
 
     if all_ok {

@@ -13,6 +13,7 @@ pub struct RawConfig {
     pub worktree: Option<RawWorktree>,
     pub tmux: Option<RawTmux>,
     pub prs: Option<RawPrs>,
+    pub open: Option<RawOpen>,
     pub editor: Option<RawEditor>,
     pub tickets: Option<RawTickets>,
     pub todo: Option<RawTodo>,
@@ -61,10 +62,19 @@ pub struct RawWorktree {
     pub hooks: Option<Vec<String>>,
 }
 
-/// The `[editor]` table: what a freshly made worktree is opened in.
+/// The `[open]` table: what a worktree is opened in to work on it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RawOpen {
+    pub via: Option<String>,
+    pub command: Option<Vec<String>>,
+}
+
+/// The `[editor]` table: what a single file is edited in.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RawEditor {
+    pub via: Option<String>,
     pub command: Option<Vec<String>>,
 }
 

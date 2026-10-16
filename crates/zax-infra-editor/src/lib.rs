@@ -1,4 +1,5 @@
-//! `Editor` via whatever `[editor] command` names.
+//! `WorktreeOpener` and `Editor` via whatever `[open] command` or
+//! `[editor] command` names: the program, with the path appended.
 //!
 //! The program is configuration rather than a fixed dependency, so this
 //! adapter cannot name its tool the way the git and gh ones do. What it can
@@ -7,7 +8,7 @@
 
 use std::path::{Path, PathBuf};
 
-use zax_app::{Editor, PortError};
+use zax_app::{Editor, PortError, WorktreeOpener};
 use zax_domain::Command;
 use zax_exec::{EnvVar, Exec, ExecError};
 
@@ -29,11 +30,18 @@ pub struct EditorCli<E: Exec> {
     exec: E,
     /// `None` is a configured decision to open nothing, not a missing value.
     command: Option<Command>,
+    /// The setting the command came from, such as `open.command`, so a
+    /// program that will not start says where to change it.
+    setting: &'static str,
 }
 
 impl<E: Exec> EditorCli<E> {
-    pub fn new(exec: E, command: Option<Command>) -> Self {
-        Self { exec, command }
+    pub fn new(exec: E, command: Option<Command>, setting: &'static str) -> Self {
+        Self {
+            exec,
+            command,
+            setting,
+        }
     }
 
     /// For tests that assert on the recorded calls.
@@ -54,7 +62,7 @@ impl<E: Exec> EditorCli<E> {
         let out = self
             .exec
             .exec(program, &argv, None, &env)
-            .map_err(|e| map_exec_error(e, program))?;
+            .map_err(|e| map_exec_error(e, program, self.setting))?;
         if out.ok() {
             return Ok(());
         }
@@ -62,8 +70,9 @@ impl<E: Exec> EditorCli<E> {
     }
 }
 
-impl<E: Exec> Editor for EditorCli<E> {
-    fn open(&self, path: &Path) -> Result<(), PortError> {
+impl<E: Exec> EditorCli<E> {
+    /// Hand `path` to the configured program, or do nothing when there is none.
+    fn open_path(&self, path: &Path) -> Result<(), PortError> {
         let Some(command) = &self.command else {
             return Ok(());
         };
@@ -73,9 +82,9 @@ impl<E: Exec> Editor for EditorCli<E> {
         )
     }
 
-    fn probe(&self) -> Result<String, PortError> {
+    fn probe_program(&self) -> Result<String, PortError> {
         let Some(command) = &self.command else {
-            return Ok("no editor configured, so a new worktree opens nothing".to_owned());
+            return Ok(format!("`{}` is empty, so nothing opens", self.setting));
         };
 
         let program = command.program();
@@ -85,11 +94,31 @@ impl<E: Exec> Editor for EditorCli<E> {
         let out = self
             .exec
             .exec(program, &["--version".to_owned()], None, &[])
-            .map_err(|e| map_exec_error(e, program))?;
+            .map_err(|e| map_exec_error(e, program, self.setting))?;
         if !out.ok() {
             return Err(failed(program, out.status, &out.stderr));
         }
         Ok(out.stdout.lines().next().unwrap_or_default().to_owned())
+    }
+}
+
+impl<E: Exec> WorktreeOpener for EditorCli<E> {
+    fn open_worktree(&self, path: &Path) -> Result<(), PortError> {
+        self.open_path(path)
+    }
+
+    fn probe(&self) -> Result<String, PortError> {
+        self.probe_program()
+    }
+}
+
+impl<E: Exec> Editor for EditorCli<E> {
+    fn edit(&self, file: &Path) -> Result<(), PortError> {
+        self.open_path(file)
+    }
+
+    fn probe(&self) -> Result<String, PortError> {
+        self.probe_program()
     }
 }
 
@@ -102,11 +131,11 @@ fn failed(program: &str, status: i32, stderr: &str) -> PortError {
     }
 }
 
-fn map_exec_error(error: ExecError, program: &str) -> PortError {
+fn map_exec_error(error: ExecError, program: &str, setting: &str) -> PortError {
     match error {
         ExecError::NotFound { .. } => PortError::MissingProgram {
             program: program.to_owned(),
-            hint: hint_for(program),
+            hint: hint_for(program, setting),
         },
         ExecError::Io { detail, .. } => PortError::Incompatible {
             tool: "editor",
@@ -117,11 +146,11 @@ fn map_exec_error(error: ExecError, program: &str) -> PortError {
 
 /// What to do about a program that is not on PATH. Only Zed has an answer zax
 /// can give, because only Zed is the editor zax is built around.
-fn hint_for(program: &str) -> String {
+fn hint_for(program: &str, setting: &str) -> String {
     if Path::new(program).file_name().is_some_and(|n| n == "zed") {
         ZED_HINT.to_owned()
     } else {
-        format!("`{program}` comes from `[editor] command`; `zax config` is where to change it")
+        format!("`{program}` comes from `{setting}`; `zax config` is where to change it")
     }
 }
 
@@ -130,7 +159,7 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)]
     use std::path::Path;
 
-    use zax_app::{Editor, PortError};
+    use zax_app::{Editor, PortError, WorktreeOpener};
     use zax_domain::Command;
     use zax_exec::{Exec, ExecError, Output, RecordingExec};
 
@@ -161,10 +190,10 @@ mod tests {
     #[test]
     fn opening_appends_the_path_to_the_configured_argv() {
         let exec = RecordingExec::returning("");
-        let editor = EditorCli::new(exec, zed());
+        let editor = EditorCli::new(exec, zed(), "open.command");
 
         editor
-            .open(Path::new("/Users/me/src/worktrees/acme/patch-1"))
+            .open_worktree(Path::new("/Users/me/src/worktrees/acme/patch-1"))
             .unwrap();
 
         let call = &editor.exec_ref().calls()[0];
@@ -181,9 +210,9 @@ mod tests {
         // opens; a `TMUX` from the pane would make `zax session start` there
         // refuse to run.
         let exec = RecordingExec::returning("");
-        let editor = EditorCli::new(exec, zed());
+        let editor = EditorCli::new(exec, zed(), "open.command");
 
-        editor.open(Path::new("/tmp/anywhere")).unwrap();
+        editor.open_worktree(Path::new("/tmp/anywhere")).unwrap();
 
         assert_eq!(
             editor.exec_ref().calls()[0].env,
@@ -198,18 +227,22 @@ mod tests {
     fn opening_with_no_configured_command_runs_nothing_at_all() {
         // `editor.command = []` is how opening is turned off, and the type
         // already carries that: there is nothing left to decide here.
-        let editor = EditorCli::new(RecordingExec::returning(""), None);
+        let editor = EditorCli::new(RecordingExec::returning(""), None, "open.command");
 
-        editor.open(Path::new("/tmp/anywhere")).unwrap();
+        editor.open_worktree(Path::new("/tmp/anywhere")).unwrap();
 
         assert!(editor.exec_ref().calls().is_empty());
     }
 
     #[test]
     fn a_probe_reports_the_editors_own_version_line() {
-        let editor = EditorCli::new(RecordingExec::returning("Zed 0.147.2\n"), zed());
+        let editor = EditorCli::new(
+            RecordingExec::returning("Zed 0.147.2\n"),
+            zed(),
+            "open.command",
+        );
 
-        let detail = editor.probe().unwrap();
+        let detail = WorktreeOpener::probe(&editor).unwrap();
 
         assert_eq!(detail, "Zed 0.147.2");
         assert_eq!(editor.exec_ref().args(0), ["--version"]);
@@ -217,11 +250,11 @@ mod tests {
 
     #[test]
     fn a_probe_with_no_configured_command_is_fine_and_says_so() {
-        let editor = EditorCli::new(RecordingExec::returning(""), None);
+        let editor = EditorCli::new(RecordingExec::returning(""), None, "open.command");
 
-        let detail = editor.probe().unwrap();
+        let detail = WorktreeOpener::probe(&editor).unwrap();
 
-        assert!(detail.contains("no editor"), "got: {detail}");
+        assert!(detail.contains("nothing opens"), "got: {detail}");
         assert!(editor.exec_ref().calls().is_empty());
     }
 
@@ -230,9 +263,9 @@ mod tests {
         // On macOS the `zed` binary ships inside the app bundle and is not on
         // PATH until it is installed from the app, so "not installed" is
         // usually wrong and unhelpful on its own.
-        let editor = EditorCli::new(MissingExec, zed());
+        let editor = EditorCli::new(MissingExec, zed(), "open.command");
 
-        let err = editor.probe().unwrap_err();
+        let err = WorktreeOpener::probe(&editor).unwrap_err();
 
         assert!(matches!(err, PortError::MissingProgram { .. }));
         let message = err.to_string();
@@ -243,9 +276,9 @@ mod tests {
     #[test]
     fn a_missing_editor_that_is_not_zed_gets_the_plain_answer() {
         let command = Command::new(vec!["hx".to_owned()]).unwrap();
-        let editor = EditorCli::new(MissingExec, Some(command));
+        let editor = EditorCli::new(MissingExec, Some(command), "open.command");
 
-        let message = editor.probe().unwrap_err().to_string();
+        let message = WorktreeOpener::probe(&editor).unwrap_err().to_string();
 
         assert!(message.contains("hx"), "got: {message}");
         assert!(!message.contains("cli: install"), "got: {message}");
@@ -258,9 +291,12 @@ mod tests {
             stdout: String::new(),
             stderr: "no such file or directory".to_owned(),
         }]);
-        let editor = EditorCli::new(exec, zed());
+        let editor = EditorCli::new(exec, zed(), "open.command");
 
-        let message = editor.open(Path::new("/tmp/gone")).unwrap_err().to_string();
+        let message = editor
+            .open_worktree(Path::new("/tmp/gone"))
+            .unwrap_err()
+            .to_string();
 
         assert!(message.contains("no such file"), "got: {message}");
     }
@@ -272,9 +308,9 @@ mod tests {
             stdout: String::new(),
             stderr: "unknown option --version".to_owned(),
         }]);
-        let editor = EditorCli::new(exec, zed());
+        let editor = EditorCli::new(exec, zed(), "open.command");
 
-        let message = editor.probe().unwrap_err().to_string();
+        let message = WorktreeOpener::probe(&editor).unwrap_err().to_string();
 
         assert!(message.contains("unknown option"), "got: {message}");
     }
@@ -283,11 +319,37 @@ mod tests {
     fn a_missing_editor_is_reported_when_it_is_asked_to_open_something_too() {
         // The `w` row action is the path that matters, and it never calls
         // probe: the missing program has to be an error there as well.
-        let editor = EditorCli::new(MissingExec, zed());
+        let editor = EditorCli::new(MissingExec, zed(), "open.command");
 
-        let err = editor.open(Path::new("/tmp/anywhere")).unwrap_err();
+        let err = editor
+            .open_worktree(Path::new("/tmp/anywhere"))
+            .unwrap_err();
 
         assert!(matches!(err, PortError::MissingProgram { .. }));
+    }
+
+    #[test]
+    fn a_missing_program_names_the_setting_it_came_from() {
+        let command = Command::new(vec!["hx".to_owned()]).unwrap();
+        let editor = EditorCli::new(MissingExec, Some(command), "editor.command");
+
+        let message = Editor::probe(&editor).unwrap_err().to_string();
+
+        assert!(message.contains("editor.command"), "got: {message}");
+    }
+
+    #[test]
+    fn editing_a_file_appends_its_path_to_the_configured_argv() {
+        let editor = EditorCli::new(RecordingExec::returning(""), zed(), "editor.command");
+
+        editor
+            .edit(Path::new("/Users/me/.local/share/zax/todo.md"))
+            .unwrap();
+
+        assert_eq!(
+            editor.exec_ref().calls()[0].args,
+            ["-e", "/Users/me/.local/share/zax/todo.md"]
+        );
     }
 
     #[test]
@@ -296,9 +358,9 @@ mod tests {
         // app bundle, and the hint is about the program, not how it is spelt.
         let command =
             Command::new(vec!["/Applications/Zed.app/Contents/MacOS/zed".to_owned()]).unwrap();
-        let editor = EditorCli::new(MissingExec, Some(command));
+        let editor = EditorCli::new(MissingExec, Some(command), "open.command");
 
-        let message = editor.probe().unwrap_err().to_string();
+        let message = WorktreeOpener::probe(&editor).unwrap_err().to_string();
 
         assert!(message.contains("cli: install"), "got: {message}");
     }

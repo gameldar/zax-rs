@@ -1,7 +1,7 @@
 //! In-memory ports. A fake records the calls it was asked to make, so a use
 //! case test asserts on intent rather than on a subprocess.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -53,6 +53,8 @@ pub struct FakeMultiplexer {
     paths: RefCell<HashMap<String, PathBuf>>,
     /// `session_exists` and `list_sessions` answers "no" whatever the session set says.
     blind: bool,
+    /// Like `blind`, for the next `session_exists` only.
+    blind_once: Cell<bool>,
     fail_at: Option<usize>,
     failure: String,
 }
@@ -112,6 +114,13 @@ impl FakeMultiplexer {
         self
     }
 
+    /// The same race, but only the first `session_exists` is wrong: a second
+    /// look sees the session the concurrent start made.
+    pub fn pretending_no_session_exists_once(self) -> Self {
+        self.blind_once.set(true);
+        self
+    }
+
     pub fn calls(&self) -> Vec<MuxCall> {
         self.calls.borrow().clone()
     }
@@ -146,7 +155,7 @@ impl FakeMultiplexer {
 
 impl Multiplexer for FakeMultiplexer {
     fn session_exists(&self, name: &SessionName) -> Result<bool, PortError> {
-        if self.blind {
+        if self.blind || self.blind_once.replace(false) {
             return Ok(false);
         }
         Ok(self.sessions.borrow().contains(name.as_str()))

@@ -800,9 +800,12 @@ size = "50%"
 This session is `zax-panel`, one for every repository and worktree, because
 its panes are the same wherever it was started. `zax session start` attaches
 to a running panel even when another terminal is already showing it, and
-builds one only when none is running. Start it from inside any git
-repository: zax still reads its config from that repository's layers, and the
-panel's panes start in that directory. It is tied to no branch, so a detached
+builds one only when none is running, and two starts at once end up on the
+same panel. Start it from inside any git repository: zax reads its config from
+that repository's layers, and the panel's panes start in that repository's own
+checkout rather than in the worktree you started from, so removing that
+worktree later does not pull the panes' directory away. A running panel keeps
+the layout it was built with until it is killed. It is tied to no branch, so a detached
 HEAD does not stop it, and the tickets pane does not count it as an agent in
 whichever worktree it was started from. Stop it with
 `zax session kill zax-panel`.

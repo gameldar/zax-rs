@@ -1129,6 +1129,7 @@ dependencies = [
  "zax-infra-editor",
  "zax-infra-git",
  "zax-infra-github",
+ "zax-infra-herdr",
  "zax-infra-ssh",
  "zax-infra-tmux",
  "zax-protocol",

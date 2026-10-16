@@ -123,7 +123,9 @@ fn same_path(listed: &str, path: &Path) -> bool {
 }
 
 impl<E: Exec> WorktreeOpener for HerdrCli<E> {
-    /// Focus the space that already has the worktree open, or open one.
+    /// Focus the space that already has the worktree open, or open one. herdr
+    /// opens a worktree only from the repository's own checkout, never from
+    /// another linked worktree, so that is the directory it is opened from.
     fn open_worktree(&self, path: &Path) -> Result<(), PortError> {
         let text = path.to_string_lossy();
         let list: WorktreeList = self.call(&["worktree", "list", "--cwd", &text])?;
@@ -136,7 +138,13 @@ impl<E: Exec> WorktreeOpener for HerdrCli<E> {
             Some(id) => self.focus(id),
             None => self
                 .run(&[
-                    "worktree", "open", "--cwd", &text, "--path", &text, "--focus",
+                    "worktree",
+                    "open",
+                    "--cwd",
+                    &list.source.source_checkout_path,
+                    "--path",
+                    &text,
+                    "--focus",
                 ])
                 .map(|_| ()),
         }
@@ -231,7 +239,7 @@ mod tests {
         let open = open.map_or("null".to_owned(), |id| format!("\"{id}\""));
         format!(
             r#"{{"id":"cli:worktree:list","result":{{"type":"worktree_list",
-            "source":{{"repo_root":"/src/acme"}},
+            "source":{{"repo_root":"/src/acme","source_checkout_path":"/src/acme"}},
             "worktrees":[
               {{"path":"/src/acme","open_workspace_id":"w1","branch":"main"}},
               {{"path":"{path}","open_workspace_id":{open},"branch":"OMEGA-1"}}]}}}}"#
@@ -260,9 +268,19 @@ mod tests {
 
         herdr.open_worktree(Path::new(wt)).unwrap();
 
+        // From the repository's own checkout: herdr refuses to open a
+        // worktree starting from another linked worktree.
         assert_eq!(
             herdr.exec_ref().args(1),
-            ["worktree", "open", "--cwd", wt, "--path", wt, "--focus"]
+            [
+                "worktree",
+                "open",
+                "--cwd",
+                "/src/acme",
+                "--path",
+                wt,
+                "--focus"
+            ]
         );
     }
 

@@ -24,10 +24,13 @@ scrollback intact.
   provider. Only needed for the `tickets` pane.
 - `zed` on `PATH`, for opening a new worktree. On macOS the CLI ships inside
   the application bundle rather than on `PATH`: open Zed and run `cli: install`
-  from the command palette. Set `[editor] command` to use something else, or
+  from the command palette. Set `[open] command` to use something else, or
   `[]` to open nothing.
+- `herdr` on `PATH`, only when `[open]` or `[editor]` says `via = "herdr"`
+  (see [Opening in herdr](#opening-in-herdr)).
 
-`zax doctor` checks tmux, git, gh, gh's auth and the editor, and reports each
+`zax doctor` checks tmux, git, gh, gh's auth, the worktree opener and the
+editor, and reports each
 separately, so one missing tool never hides the state of the others. Once a
 `[tickets] provider` is configured it also starts that provider and reports its
 name and protocol. It also reports where the todo file is and how many
@@ -95,9 +98,9 @@ title is what drives Zed's in-progress indicator for a thread. tmux's own
 | `zax pane prs-for-review \| branch-status \| my-prs \| tickets \| todo` | Built-in pane processes, normally launched by `session start` |
 | `zax pane worktrees <TICKET>` | A ticket's worktrees with removal; the tickets pane's `W` opens it in a tmux popup |
 | `zax pane exec --title <t> --every <dur> -- <cmd>` | Wrap any command's stdout in a header and refresh loop |
-| `zax config` | View and edit the three config layers, in a popup over the session. It shows every key, including `editor.command` and `tickets.provider` |
+| `zax config` | View and edit the three config layers, in a popup over the session. It shows every key, including `open.command`, `editor.command` and `tickets.provider` |
 | `zax config show` | The same view, printed: every setting, its effective value and its origin |
-| `zax doctor` | Verify tmux, git, gh and the editor are present and authenticated, the ticket provider answers when one is configured, and the todo file is readable |
+| `zax doctor` | Verify tmux, git, gh, the worktree opener and the editor are present and authenticated, the ticket provider answers when one is configured, and the todo file is readable |
 
 ## Configuration
 
@@ -192,6 +195,9 @@ root  = "~/src/worktrees"
 copy  = [".env", ".envrc"]
 hooks = ["direnv allow", "bundle install"]
 
+[open]
+command = ["zed", "-e"]
+
 [editor]
 command = ["zed", "-e"]
 
@@ -216,7 +222,10 @@ max_age = "14d"
 | `tmux.prefix` | `C-Space` | Prefix key for zax's tmux server |
 | `prs.include` / `prs.exclude` | none | Which repositories `prs-for-review` and `my-prs` show |
 | `prs.max_age` | none | Hide pull requests older than this, in `prs-for-review` only |
-| `editor.command` | `["zed", "-e"]` | What opens a worktree, with the path as its last argument. `[]` opens nothing |
+| `open.via` | `"command"` | How a worktree is opened: `"command"` runs `open.command`, `"herdr"` opens it as a herdr space |
+| `open.command` | `["zed", "-e"]` | What opens a worktree, with the path as its last argument. `[]` opens nothing. Unused with `via = "herdr"` |
+| `editor.via` | `"command"` | How a file is edited: `"command"` runs `editor.command`, `"herdr"` runs it in a herdr space of its own |
+| `editor.command` | `["zed", "-e"]`, or `["nvim"]` with `via = "herdr"` | What edits a file, such as the todo list, with the path as its last argument. `[]` edits nothing, and is refused with `via = "herdr"` |
 | `tickets.provider` | none | The ticket provider command, such as `["zax-jira"]`. Without one the `tickets` pane says so and does nothing |
 | `todo.file` | `~/.local/share/zax/todo.md` | The markdown file the `todo` pane reads and writes. `$XDG_DATA_HOME` replaces `~/.local/share` |
 
@@ -558,7 +567,7 @@ checked off; `.` shows every done item in the file.
 | `x` / `space` | Check / uncheck |
 | `+` | Snooze: one day later, or tomorrow when it has no due date or is overdue |
 | `d` `d` | Delete |
-| `o` | Open the file in `[editor] command` |
+| `o` | Edit the file in `[editor]` |
 | `.` | Show / hide older done items |
 
 In the prompt, `due:` takes `today`, `tom`, a weekday (`fri`, the next one),
@@ -642,7 +651,7 @@ in `copy` but absent from the source tree is skipped rather than being an
 error, so a repository config can list `.envrc` for the people who use
 direnv.
 
-Last, the finished worktree is opened in `[editor] command`, which defaults to
+Last, the finished worktree is opened in `[open] command`, which defaults to
 `zed -e` and takes the worktree's path as its final argument. This happens
 after the copies and the hooks, so what opens is a worktree that is ready to
 work in rather than one that fills itself in while you look at it. `w` in the
@@ -659,6 +668,39 @@ path to a running application and returns - `zed`, `code`, `nvim --remote` -
 rather than a terminal editor expecting this terminal. The editor is the one
 program zax starts that keeps its own way of asking the user a question;
 everything else zax runs is told not to ask.
+
+`[editor] command` used to decide this too. It now only edits a single file,
+such as the todo pane's `o`. A config that sets `[editor] command` and has no
+`[open]` table gets a `note` from `zax doctor` saying so.
+
+### Opening in herdr
+
+zax's panes can run beside [herdr](https://herdr.dev) rather than inside it:
+split the terminal, run herdr on one side and a zax session on the other. The
+`herdr` CLI reaches the running herdr server through its socket from any
+terminal, so the panes act on herdr without being herdr panes.
+
+```toml
+[open]
+via = "herdr"
+
+[editor]
+via = "herdr"
+command = ["nvim"]
+```
+
+- With `[open] via = "herdr"`, a worktree is opened as a herdr space. zax asks
+  `herdr worktree list` which space has the worktree open and focuses it, or
+  runs `herdr worktree open`, which groups the new space under the
+  repository's own.
+- With `[editor] via = "herdr"`, a file is edited in a herdr space labelled
+  with its name, in the file's directory. A space with that label already open
+  is focused instead. The editor replaces the space's shell, so quitting it
+  closes the space.
+
+`herdr` is found on `PATH`, or at `$HERDR_BIN_PATH` when that is set.
+`zax doctor` reports the herdr server's version, and fails when no server is
+running.
 
 ### Credentials
 
@@ -731,7 +773,7 @@ zax-domain   pure types, no I/O
    ^
 zax-app      use cases + ports (traits)
    ^
-zax-config  zax-infra-tmux  zax-infra-git  zax-infra-github  zax-tui
+zax-config  zax-infra-tmux  zax-infra-herdr  zax-infra-git  zax-infra-github  zax-tui
    ^
 zax-cli      clap + composition root
 
@@ -746,7 +788,7 @@ zax-jira      the Jira ticket provider, a separate binary
 in Rust needs only it. `zax-broker` and `zax-jira` sit beside the main stack
 rather than in it: the broker depends only on `zax-domain` and `zax-protocol`,
 and `zax-jira` only on `zax-exec` and `zax-protocol`. Nothing at `zax-app` or
-below mentions tmux, git or GitHub by name. Parsing happens once, at the boundary, into types that make the invalid states
+below mentions tmux, herdr, git or GitHub by name. Parsing happens once, at the boundary, into types that make the invalid states
 unrepresentable.
 
 The original design document is

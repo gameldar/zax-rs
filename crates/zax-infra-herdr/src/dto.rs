@@ -23,7 +23,14 @@ pub struct FailureDetail {
 
 #[derive(Debug, Deserialize)]
 pub struct WorktreeList {
+    pub source: WorktreeSource,
     pub worktrees: Vec<WorktreeEntry>,
+}
+
+/// The repository's own checkout, which herdr opens new worktrees from.
+#[derive(Debug, Deserialize)]
+pub struct WorktreeSource {
+    pub source_checkout_path: String,
 }
 
 #[derive(Debug, Deserialize)]

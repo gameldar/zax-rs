@@ -23,6 +23,7 @@ zax-exec.workspace = true
 zax-infra-editor.workspace = true
 zax-infra-git.workspace = true
 zax-infra-github.workspace = true
+zax-infra-herdr.workspace = true
 zax-infra-ssh.workspace = true
 zax-infra-tmux.workspace = true
 zax-protocol.workspace = true

@@ -74,6 +74,12 @@ pub fn run() -> Result<()> {
         }
     }
 
+    // Not failures: the config loaded and works, but says something whose
+    // meaning has changed under it.
+    for notice in &ctx.config.notices {
+        println!("note            {notice}");
+    }
+
     if all_ok {
         Ok(())
     } else {

@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use zax_app::{FileSystem, PortError};
-use zax_config::Config;
+use zax_config::{Config, EditorConfig, OpenConfig};
 use zax_domain::{RootRepoName, TodoFile};
 use zax_exec::{InteractiveExec, SystemExec, SystemHandover};
 use zax_infra_editor::EditorCli;
@@ -16,6 +16,7 @@ use zax_infra_tmux::{conf, TmuxCli, SOCKET_DEFAULT};
 pub type Git = GitCli<SystemExec>;
 pub type Gh = GhCli<SystemExec>;
 pub type Tmux = TmuxCli<SystemExec, SystemHandover>;
+pub type OpenerAdapter = EditorCli<InteractiveExec>;
 pub type EditorAdapter = EditorCli<InteractiveExec>;
 pub type SshAdapter = SshAddCli<SystemExec>;
 
@@ -127,16 +128,25 @@ pub fn ssh() -> SshAdapter {
     SshAddCli::new(SystemExec)
 }
 
-/// The editor `[editor] command` names, which may be no editor at all.
+/// What `[open]` names for a worktree, which may be nothing at all.
 ///
-/// The one adapter not on `SystemExec`: an editor is handed to the user rather
-/// than questioned by zax, so it keeps whatever way of asking it came with.
-pub fn editor(config: &Config) -> EditorAdapter {
+/// Not on `SystemExec`: an editor is handed to the user rather than
+/// questioned by zax, so it keeps whatever way of asking it came with.
+pub fn opener(config: &Config) -> OpenerAdapter {
     let command = match &config.open {
-        zax_config::OpenConfig::Command(command) => command.clone(),
-        zax_config::OpenConfig::Herdr => None,
+        OpenConfig::Command(command) => command.clone(),
+        OpenConfig::Herdr => None,
     };
-    EditorCli::new(InteractiveExec, command)
+    EditorCli::new(InteractiveExec, command, "open.command")
+}
+
+/// What `[editor]` names for a single file, which may be nothing at all.
+pub fn editor(config: &Config) -> EditorAdapter {
+    let command = match &config.editor {
+        EditorConfig::Command(command) => command.clone(),
+        EditorConfig::Herdr(_) => None,
+    };
+    EditorCli::new(InteractiveExec, command, "editor.command")
 }
 
 /// The absolute path of the running binary, so panes re-invoke this build.

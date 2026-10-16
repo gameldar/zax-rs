@@ -188,11 +188,21 @@ pub trait FileSystem {
     fn copy_file(&self, from: &Path, to: &Path) -> Result<(), PortError>;
 }
 
-/// The editor a finished worktree is handed to.
+/// Where a worktree is opened to be worked in: an editor window, or a
+/// workspace in a terminal multiplexer.
+pub trait WorktreeOpener {
+    /// Open the worktree at `path`. Returns once the opener has been asked,
+    /// not once whatever it opened has been closed.
+    fn open_worktree(&self, path: &Path) -> Result<(), PortError>;
+    /// For `zax doctor`: can the configured opener be started at all?
+    fn probe(&self) -> Result<String, PortError>;
+}
+
+/// The editor a single file is handed to.
 pub trait Editor {
-    /// Open `path`. Returns once the editor has been asked, not once it has
+    /// Edit `file`. Returns once the editor has been asked, not once it has
     /// been closed.
-    fn open(&self, path: &Path) -> Result<(), PortError>;
+    fn edit(&self, file: &Path) -> Result<(), PortError>;
     /// For `zax doctor`: can the configured editor be started at all?
     fn probe(&self) -> Result<String, PortError>;
 }

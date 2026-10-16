@@ -3,7 +3,7 @@
 //! Unlike the other panes this one fetches nothing itself. It subscribes to
 //! the `tickets` and `work` sources the broker shares between every pane,
 //! and performs its row actions either through the broker (transitions) or
-//! by running zax and the editor directly.
+//! by running zax and the worktree opener directly.
 
 use std::path::Path;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
@@ -13,7 +13,7 @@ use std::time::{Duration, Instant, SystemTime};
 use anyhow::{anyhow, Result};
 use ratatui::crossterm::event::{self, Event as TermEvent, KeyEventKind};
 use serde_json::json;
-use zax_app::Editor;
+use zax_app::WorktreeOpener;
 use zax_broker::client::{binary_identity, Client, Event};
 use zax_broker::topics::{
     decode_tickets, decode_transitions, decode_work, fetched_at, TicketsSpec, WorkSpec, TICKETS,
@@ -69,7 +69,7 @@ pub fn run() -> Result<()> {
             worktree_root: ctx.config.worktree.root.as_path().display().to_string(),
         },
     );
-    let editor = wiring::editor(&ctx.config);
+    let opener = wiring::opener(&ctx.config);
 
     let mut pane = TicketsPane::new();
     pane.set_focused(true);
@@ -211,8 +211,8 @@ pub fn run() -> Result<()> {
                         starting = Some((branch, done));
                     }
                 },
-                PaneAction::OpenWorktree { path, others } => match editor.open(&path) {
-                    Err(e) => pane.notice(format!("editor: {e}")),
+                PaneAction::OpenWorktree { path, others } => match opener.open_worktree(&path) {
+                    Err(e) => pane.notice(format!("open: {e}")),
                     Ok(()) if others > 0 => {
                         pane.notice(format!("opened {}; {others} more", path.display()));
                     }

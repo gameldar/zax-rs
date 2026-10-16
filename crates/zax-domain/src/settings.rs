@@ -231,7 +231,9 @@ impl SettingKey {
             Self::OpenVia => "command runs open.command; herdr opens the worktree as a herdr space",
             Self::OpenCommand => "what a worktree opens in, path appended; empty opens nothing",
             Self::EditorVia => "command runs editor.command; herdr runs it in a herdr space",
-            Self::EditorCommand => "what a file such as the todo list is edited in; empty edits nothing",
+            Self::EditorCommand => {
+                "what a file such as the todo list is edited in; empty edits nothing"
+            }
             Self::TicketsProvider => {
                 "the ticket provider command, such as zax-jira; empty means none"
             }

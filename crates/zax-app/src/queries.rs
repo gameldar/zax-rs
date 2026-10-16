@@ -11,7 +11,7 @@ use zax_domain::{
 
 use crate::ports::{
     Editor, FileSystem, Forge, GitRepo, Multiplexer, PortError, SshAgent, WorktreeEntry,
-    WorktreeScanner,
+    WorktreeOpener, WorktreeScanner,
 };
 
 /// The `prs-for-review` pane's data source.
@@ -127,10 +127,11 @@ impl DoctorCheck {
 /// for itself - but a key is only needed when `origin` is reached over ssh,
 /// and a doctor that fails on a check the reader cannot act on is a doctor
 /// they learn to ignore.
-pub fn doctor<M: Multiplexer, G: GitRepo, Fg: Forge, E: Editor, S: SshAgent>(
+pub fn doctor<M: Multiplexer, G: GitRepo, Fg: Forge, O: WorktreeOpener, E: Editor, S: SshAgent>(
     mux: &M,
     git: &G,
     forge: &Fg,
+    opener: &O,
     editor: &E,
     ssh: &S,
 ) -> Vec<DoctorCheck> {
@@ -160,6 +161,10 @@ pub fn doctor<M: Multiplexer, G: GitRepo, Fg: Forge, E: Editor, S: SshAgent>(
         });
     }
 
+    checks.push(DoctorCheck {
+        name: "open",
+        result: opener.probe(),
+    });
     checks.push(DoctorCheck {
         name: "editor",
         result: editor.probe(),
@@ -212,7 +217,7 @@ mod tests {
     use super::*;
     use crate::ports::{PortError, WorktreeEntry};
     use crate::testing::{
-        FakeEditor, FakeForge, FakeFs, FakeGitRepo, FakeMultiplexer, FakeSshAgent,
+        FakeEditor, FakeForge, FakeFs, FakeGitRepo, FakeMultiplexer, FakeOpener, FakeSshAgent,
     };
 
     fn pr(number: u32) -> PullRequest {
@@ -403,7 +408,7 @@ mod tests {
             detail: "the agent is running but holds no keys".to_owned(),
         });
 
-        let checks = doctor(&mux, &git, &forge, &editor, &agent);
+        let checks = doctor(&mux, &git, &forge, &FakeOpener::default(), &editor, &agent);
 
         let ssh = checks
             .iter()
@@ -423,7 +428,7 @@ mod tests {
         let editor = FakeEditor::default();
         let agent = FakeSshAgent::locked(PortError::MissingTool { tool: "ssh-add" });
 
-        let checks = doctor(&mux, &git, &forge, &editor, &agent);
+        let checks = doctor(&mux, &git, &forge, &FakeOpener::default(), &editor, &agent);
 
         assert!(
             !checks.iter().any(|c| c.name == "ssh agent"),
@@ -440,7 +445,7 @@ mod tests {
         let editor = FakeEditor::default();
         let agent = FakeSshAgent::locked(PortError::MissingTool { tool: "ssh-add" });
 
-        let checks = doctor(&mux, &git, &forge, &editor, &agent);
+        let checks = doctor(&mux, &git, &forge, &FakeOpener::default(), &editor, &agent);
 
         assert!(!checks.iter().any(|c| c.name == "ssh agent"));
     }
@@ -452,11 +457,18 @@ mod tests {
         let forge = FakeForge::default();
         let editor = FakeEditor::default();
 
-        let checks = doctor(&mux, &git, &forge, &editor, &FakeSshAgent::default());
+        let checks = doctor(
+            &mux,
+            &git,
+            &forge,
+            &FakeOpener::default(),
+            &editor,
+            &FakeSshAgent::default(),
+        );
 
         assert_eq!(
             checks.iter().map(|c| c.name).collect::<Vec<_>>(),
-            vec!["tmux", "git", "gh", "gh auth", "editor"]
+            vec!["tmux", "git", "gh", "gh auth", "open", "editor"]
         );
         assert!(checks.iter().all(DoctorCheck::is_ok));
     }
@@ -468,7 +480,14 @@ mod tests {
         let forge = FakeForge::failing(PortError::MissingTool { tool: "gh" });
         let editor = FakeEditor::default();
 
-        let checks = doctor(&mux, &git, &forge, &editor, &FakeSshAgent::default());
+        let checks = doctor(
+            &mux,
+            &git,
+            &forge,
+            &FakeOpener::default(),
+            &editor,
+            &FakeSshAgent::default(),
+        );
 
         // One missing tool must not hide the state of the others: every check
         // still runs, and each reports its own verdict.
@@ -482,6 +501,7 @@ mod tests {
                 ("git", true),
                 ("gh", false),
                 ("gh auth", false),
+                ("open", true),
                 ("editor", true)
             ]
         );
@@ -500,12 +520,50 @@ mod tests {
             hint: "install the CLI from the app".to_owned(),
         });
 
-        let checks = doctor(&mux, &git, &forge, &editor, &FakeSshAgent::default());
+        let checks = doctor(
+            &mux,
+            &git,
+            &forge,
+            &FakeOpener::default(),
+            &editor,
+            &FakeSshAgent::default(),
+        );
 
         let editor_check = checks.iter().find(|c| c.name == "editor").unwrap();
         let message = editor_check.result.as_ref().unwrap_err().to_string();
         assert!(message.contains("zed"), "got: {message}");
         assert!(message.contains("install the CLI"), "got: {message}");
+    }
+
+    #[test]
+    fn doctor_reports_an_opener_that_cannot_start_apart_from_the_editor() {
+        // Opening a worktree and editing a file are configured separately, so
+        // a broken one must not be reported as the other.
+        let mux = FakeMultiplexer::default();
+        let git = FakeGitRepo::new("/Users/me/src/acme", "main");
+        let forge = FakeForge::default();
+        let opener = FakeOpener::failing(PortError::MissingProgram {
+            program: "herdr".to_owned(),
+            hint: "install herdr".to_owned(),
+        });
+
+        let checks = doctor(
+            &mux,
+            &git,
+            &forge,
+            &opener,
+            &FakeEditor::default(),
+            &FakeSshAgent::default(),
+        );
+
+        let open = checks.iter().find(|c| c.name == "open").unwrap();
+        assert!(open
+            .result
+            .as_ref()
+            .unwrap_err()
+            .to_string()
+            .contains("herdr"));
+        assert!(checks.iter().find(|c| c.name == "editor").unwrap().is_ok());
     }
 
     fn authored(

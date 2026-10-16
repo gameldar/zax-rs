@@ -10,9 +10,10 @@ pub fn run() -> Result<()> {
     let ctx = wiring::resolve()?;
     let tmux = wiring::tmux(&ctx.config)?;
 
+    let opener = wiring::opener(&ctx.config);
     let editor = wiring::editor(&ctx.config);
 
-    let checks = queries::doctor(&tmux, &ctx.git, &ctx.gh, &editor, &wiring::ssh());
+    let checks = queries::doctor(&tmux, &ctx.git, &ctx.gh, &opener, &editor, &wiring::ssh());
     let mut all_ok = true;
 
     for check in &checks {

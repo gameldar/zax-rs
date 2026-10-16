@@ -13,7 +13,7 @@ use zax_domain::{
 
 use crate::ports::{
     Clock, Editor, FileSystem, Forge, GitRepo, Multiplexer, PortError, ProcessRunner,
-    PullRequestHead, SshAgent, WorktreeEntry, WorktreeScanner,
+    PullRequestHead, SshAgent, WorktreeEntry, WorktreeOpener, WorktreeScanner,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -798,10 +798,10 @@ impl SshAgent for FakeSshAgent {
     }
 }
 
-/// An editor that records what it was asked to open.
+/// An editor that records what it was asked to edit.
 #[derive(Debug, Default)]
 pub struct FakeEditor {
-    pub opened: RefCell<Vec<PathBuf>>,
+    pub edited: RefCell<Vec<PathBuf>>,
     failure: Option<PortError>,
 }
 
@@ -817,7 +817,41 @@ impl FakeEditor {
 }
 
 impl Editor for FakeEditor {
-    fn open(&self, path: &Path) -> Result<(), PortError> {
+    fn edit(&self, file: &Path) -> Result<(), PortError> {
+        self.edited.borrow_mut().push(file.to_owned());
+        match &self.failure {
+            Some(error) => Err(error.clone()),
+            None => Ok(()),
+        }
+    }
+
+    fn probe(&self) -> Result<String, PortError> {
+        match &self.failure {
+            Some(error) => Err(error.clone()),
+            None => Ok("zed 0.0.0".to_owned()),
+        }
+    }
+}
+
+/// An opener that records which worktrees it was asked to open.
+#[derive(Debug, Default)]
+pub struct FakeOpener {
+    pub opened: RefCell<Vec<PathBuf>>,
+    failure: Option<PortError>,
+}
+
+impl FakeOpener {
+    /// An opener that cannot be started. The attempt is still recorded.
+    pub fn failing(error: PortError) -> Self {
+        Self {
+            failure: Some(error),
+            ..Self::default()
+        }
+    }
+}
+
+impl WorktreeOpener for FakeOpener {
+    fn open_worktree(&self, path: &Path) -> Result<(), PortError> {
         self.opened.borrow_mut().push(path.to_owned());
         match &self.failure {
             Some(error) => Err(error.clone()),

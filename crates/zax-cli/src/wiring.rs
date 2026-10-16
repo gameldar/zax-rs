@@ -132,7 +132,11 @@ pub fn ssh() -> SshAdapter {
 /// The one adapter not on `SystemExec`: an editor is handed to the user rather
 /// than questioned by zax, so it keeps whatever way of asking it came with.
 pub fn editor(config: &Config) -> EditorAdapter {
-    EditorCli::new(InteractiveExec, config.editor.command.clone())
+    let command = match &config.open {
+        zax_config::OpenConfig::Command(command) => command.clone(),
+        zax_config::OpenConfig::Herdr => None,
+    };
+    EditorCli::new(InteractiveExec, command)
 }
 
 /// The absolute path of the running binary, so panes re-invoke this build.

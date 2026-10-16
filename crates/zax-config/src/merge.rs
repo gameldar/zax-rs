@@ -1,7 +1,8 @@
 //! Layer merging. Your layer wins; arrays replace.
 
 use crate::raw::{
-    RawAgent, RawConfig, RawEditor, RawLayout, RawPrs, RawTickets, RawTmux, RawTodo, RawWorktree,
+    RawAgent, RawConfig, RawEditor, RawLayout, RawOpen, RawPrs, RawTickets, RawTmux, RawTodo,
+    RawWorktree,
 };
 
 /// Fold the layers in order, lowest precedence first.
@@ -16,6 +17,7 @@ fn fold_one(mut base: RawConfig, over: RawConfig) -> RawConfig {
     base.worktree = merge_worktree(base.worktree, over.worktree);
     base.tmux = merge_tmux(base.tmux, over.tmux);
     base.prs = merge_prs(base.prs, over.prs);
+    base.open = merge_open(base.open, over.open);
     base.editor = merge_editor(base.editor, over.editor);
     base.tickets = merge_tickets(base.tickets, over.tickets);
     base.todo = merge_todo(base.todo, over.todo);
@@ -27,6 +29,19 @@ fn merge_editor(base: Option<RawEditor>, over: Option<RawEditor>) -> Option<RawE
         (b, None) => b,
         (None, o) => o,
         (Some(mut b), Some(o)) => {
+            b.via = o.via.or(b.via);
+            b.command = o.command.or(b.command);
+            Some(b)
+        }
+    }
+}
+
+fn merge_open(base: Option<RawOpen>, over: Option<RawOpen>) -> Option<RawOpen> {
+    match (base, over) {
+        (b, None) => b,
+        (None, o) => o,
+        (Some(mut b), Some(o)) => {
+            b.via = o.via.or(b.via);
             b.command = o.command.or(b.command);
             Some(b)
         }

@@ -23,7 +23,9 @@ use std::path::{Path, PathBuf};
 
 pub use draft::{Draft, SaveError};
 pub use error::ConfigError;
-pub use parse::{Config, EditorConfig, TicketsConfig, TmuxConfig, TodoConfig, WorktreeConfig};
+pub use parse::{
+    Config, EditorConfig, OpenConfig, TicketsConfig, TmuxConfig, TodoConfig, WorktreeConfig,
+};
 use raw::RawConfig;
 use zax_domain::RootRepoName;
 

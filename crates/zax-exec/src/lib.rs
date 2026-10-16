@@ -11,6 +11,9 @@ use std::process::Command as StdCommand;
 use thiserror::Error;
 
 pub mod askpass;
+pub mod quote;
+
+pub use quote::shell_quote;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Output {

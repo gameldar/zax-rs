@@ -1,0 +1,19 @@
+[package]
+name = "zax-infra-herdr"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+zax-app.workspace = true
+zax-domain.workspace = true
+zax-exec.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

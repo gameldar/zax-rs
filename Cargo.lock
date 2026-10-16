@@ -1193,6 +1193,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "zax-infra-herdr"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tempfile",
+ "zax-app",
+ "zax-domain",
+ "zax-exec",
+]
+
+[[package]]
 name = "zax-infra-ssh"
 version = "0.1.0"
 dependencies = [

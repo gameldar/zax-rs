@@ -3,7 +3,7 @@
 pub mod argv;
 pub mod conf;
 pub mod diagnostics;
-pub mod quote;
+pub use zax_exec::quote;
 
 use std::path::{Path, PathBuf};
 

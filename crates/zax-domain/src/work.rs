@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use crate::branch::BranchName;
 use crate::forge::MyPullRequest;
 use crate::repo::RootRepoName;
-use crate::session::LiveSession;
+use crate::session::{LiveSession, SessionName};
 use crate::ticket::{StatusCategory, Ticket, TicketKey};
 
 /// A worktree under the configured root, in any repository.
@@ -126,10 +126,13 @@ fn work_for(key: &TicketKey, work: &WorkIndex) -> TicketWork {
         .cloned()
         .collect();
     // `Path::starts_with` compares whole components, so `OMEGA-1-ab` is not
-    // inside `OMEGA-1-a`, while a session started in a subdirectory is.
+    // inside `OMEGA-1-a`, while a session started in a subdirectory is. The
+    // panel serves every ticket, so where it was started counts for none.
+    let panel = SessionName::panel();
     let sessions: Vec<&LiveSession> = work
         .sessions
         .iter()
+        .filter(|s| s.name != panel)
         .filter(|s| worktrees.iter().any(|w| s.path.starts_with(&w.path)))
         .collect();
     let prs = work
@@ -251,6 +254,24 @@ mod tests {
         let row = &join(vec![ticket("OMEGA-1", StatusCategory::ToDo)], &work)[0];
         assert_eq!(row.work.live_sessions, 1);
         assert!(row.work.attached);
+    }
+
+    #[test]
+    fn the_panel_is_not_an_agent_running_in_the_worktree_it_started_in() {
+        // The panel shows every ticket; that it was started from inside one
+        // ticket's worktree says nothing about that ticket's work.
+        let work = WorkIndex {
+            worktrees: vec![worktree("omega", "OMEGA-1-a")],
+            sessions: vec![LiveSession {
+                name: SessionName::panel(),
+                attached: true,
+                path: PathBuf::from("/w/omega/OMEGA-1-a"),
+            }],
+            ..WorkIndex::default()
+        };
+        let row = &join(vec![ticket("OMEGA-1", StatusCategory::ToDo)], &work)[0];
+        assert_eq!(row.work.live_sessions, 0);
+        assert!(!row.work.attached);
     }
 
     #[test]

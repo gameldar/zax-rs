@@ -59,6 +59,16 @@ impl SessionName {
         Self(format!("{}-{}", first.0, slot.get()))
     }
 
+    /// The one panes-only session, shared by every repository and worktree.
+    ///
+    /// Not derived: it shows the same panes wherever it was started from, so
+    /// a second worktree must find this one rather than build its own. It
+    /// cannot collide with a derived name, which always ends in `-` and eight
+    /// hex digits.
+    pub fn panel() -> Self {
+        Self(format!("{}panel", Self::PREFIX))
+    }
+
     pub fn parse(raw: &str) -> Result<Self, SessionNameError> {
         let rest = raw
             .strip_prefix(Self::PREFIX)
@@ -460,5 +470,14 @@ mod tests {
             SessionName::parse("zax-"),
             Err(SessionNameError::NotAZaxSession(_))
         ));
+    }
+
+    #[test]
+    fn the_panel_is_one_zax_session_shared_by_every_worktree() {
+        let panel = SessionName::panel();
+        assert_eq!(panel.as_str(), "zax-panel");
+        assert_eq!(SessionName::parse("zax-panel").unwrap(), panel);
+        // A derived name always ends in `-<8 hex>`, which `panel` does not.
+        assert_ne!(SessionName::derive(&repo(), &branch()), panel);
     }
 }

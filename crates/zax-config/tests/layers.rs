@@ -36,7 +36,7 @@ fn all_three_layers_are_read_in_order() {
     let config = zax_config::load(&config_home, &repo_dir, &repo, "/home/me").unwrap();
 
     assert_eq!(config.tmux.prefix, "C-q", "your layer wins");
-    assert_eq!(config.layout.agent().argv(), ["claude"]);
+    assert_eq!(config.layout.agent().unwrap().argv(), ["claude"]);
     assert_eq!(config.worktree.hooks.len(), 1);
 }
 

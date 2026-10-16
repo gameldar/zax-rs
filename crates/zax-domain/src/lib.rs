@@ -25,7 +25,7 @@ pub use forge::{
 };
 pub use layout::{
     format_duration, parse_duration, BuiltinPane, BuiltinPaneError, Command, CommandError,
-    DurationError, LayoutSpec, PaneKind, PaneSize, PaneSizeError, PaneSpec,
+    DurationError, LayoutSpec, PaneKind, PaneSize, PaneSizeError, PaneSpec, RootPane,
 };
 pub use prs_filter::{PrFilter, RepoPattern, RepoPatternError};
 pub use remote::Transport;

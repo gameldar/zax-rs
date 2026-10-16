@@ -224,7 +224,9 @@ impl SettingKey {
     /// One line, shown when the row is selected.
     pub fn help(self) -> &'static str {
         match self {
-            Self::AgentCommand => "the agent and its arguments, run in pane 0",
+            Self::AgentCommand => {
+                "the agent run in pane 0; empty runs no agent, just the panes as one shared panel"
+            }
             Self::WorktreeRoot => "every worktree lives under <root>/<repo>/<branch>",
             Self::WorktreeCopy => "paths copied into a new worktree, relative to the repository",
             Self::WorktreeHooks => "shell commands run in a new worktree, in order",
@@ -613,6 +615,15 @@ mod tests {
         // The default depends on `editor.via`, so it says both rather than
         // claiming Zed for someone editing through herdr.
         assert_eq!(row.display_effective(), "zed -e (nvim with via = herdr)");
+    }
+
+    #[test]
+    fn the_agent_command_says_that_empty_means_panes_only() {
+        assert!(
+            SettingKey::AgentCommand.help().contains("empty"),
+            "{}",
+            SettingKey::AgentCommand.help()
+        );
     }
 
     #[test]

@@ -214,7 +214,7 @@ max_age = "14d"
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `agent.command` | `["claude"]` | What runs in pane 0 |
+| `agent.command` | `["claude"]` | What runs in pane 0. `[]` runs no agent: the panes alone, as one shared panel (see [The panel](#the-panel)) |
 | `layout.panes` | `prs-for-review`, `branch-status` and `my-prs`, at 30%, 55% and 64% | The context panes around the agent |
 | `worktree.root` | `~/src/worktrees` | Where worktrees are created |
 | `worktree.copy` | none | Gitignored-but-required files to copy into a new worktree |
@@ -702,6 +702,9 @@ command = ["nvim"]
 `zax doctor` reports the herdr server's version, and fails when no server is
 running.
 
+herdr runs the agents itself, so the zax side wants no agent pane. Set
+`agent.command = []` for a session of panes alone; see [The panel](#the-panel).
+
 ### Credentials
 
 zax captures the output of every tool it runs, so no tool it runs may ask a
@@ -762,6 +765,54 @@ zax session kill zax-acme-topic-1a2b3c4d-2
 ```
 
 Killing one session does not tear down the server other worktrees are using.
+
+### The panel
+
+With `agent.command = []` there is no agent, and `zax session start` builds
+the panes alone: the first entry in `[[layout.panes]]` is pane 0 and every
+later one stacks below its predecessor, full width. The first entry's `size`
+has nothing to split and is ignored.
+
+```toml
+[agent]
+command = []
+
+[[layout.panes]]
+kind = "builtin"
+name = "todo"
+
+[[layout.panes]]
+kind = "builtin"
+name = "tickets"
+size = "75%"
+
+[[layout.panes]]
+kind = "builtin"
+name = "prs-for-review"
+size = "67%"
+
+[[layout.panes]]
+kind = "builtin"
+name = "my-prs"
+size = "50%"
+```
+
+This session is `zax-panel`, one for every repository and worktree, because
+its panes are the same wherever it was started. `zax session start` attaches
+to a running panel even when another terminal is already showing it, and
+builds one only when none is running, and two starts at once end up on the
+same panel. Start it from inside any git repository: zax reads its config from
+that repository's layers, and the panel's panes start in that repository's own
+checkout rather than in the worktree you started from, so removing that
+worktree later does not pull the panes' directory away. A running panel keeps
+the layout it was built with until it is killed. It is tied to no branch, so a detached
+HEAD does not stop it, and the tickets pane does not count it as an agent in
+whichever worktree it was started from. Stop it with
+`zax session kill zax-panel`.
+
+`branch-status` shows the pull request of the worktree the session was started
+in, so it reads oddly in a panel that serves every space; leave it out.
+`agent.command = []` with no panes at all is refused.
 
 ## Layout of the repository
 

@@ -347,3 +347,69 @@ fn a_start_while_the_session_is_attached_builds_a_second_one() {
     );
     assert!(tmux.session_exists(&expected).unwrap());
 }
+
+/// Each pane's left edge, from the live server, to tell a column from a row.
+fn pane_lefts(socket: &str, conf: &Path, session: &SessionName) -> Vec<String> {
+    let output = Command::new("tmux")
+        .args([
+            "-L",
+            socket,
+            "-f",
+            &conf.to_string_lossy(),
+            "list-panes",
+            "-t",
+            &format!("{}:0", session.as_str()),
+            "-F",
+            "#{pane_left}",
+        ])
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::to_owned)
+        .collect()
+}
+
+#[test]
+fn a_panes_only_layout_is_one_full_width_column_in_the_panel_session() {
+    if !tmux_available() {
+        eprintln!("skipping: tmux is not on PATH (run inside `nix develop`)");
+        return;
+    }
+
+    let tmp = TempDir::new().unwrap();
+    let socket = socket_name("panel");
+    let _guard = TmuxServerGuard::new(&socket);
+    let repo = git_fixture(tmp.path());
+    let conf_dir = tmp.path().join("conf");
+    let tmux = tmux_cli(&socket, &conf_dir);
+    let conf_path = conf_dir.join("tmux.conf");
+    let git = GitCli::new(SystemExec, repo.clone());
+
+    let sleep = ZaxCommand::new(vec!["sleep".to_owned(), "30".to_owned()]).unwrap();
+    let pane = |size| PaneSpec {
+        kind: PaneKind::Raw {
+            command: sleep.clone(),
+        },
+        size,
+    };
+    let layout = LayoutSpec::panes_only(
+        pane(Some(PaneSize::percent(30).unwrap())),
+        vec![pane(Some(PaneSize::percent(67).unwrap())), pane(None)],
+    );
+
+    let outcome = StartSession::new(&tmux, &git)
+        .run(StartSessionRequest {
+            cwd: repo.clone(),
+            zax_bin: std::path::PathBuf::from("/bin/true"),
+            layout,
+            inside_multiplexer: false,
+        })
+        .unwrap();
+
+    let panel = SessionName::panel();
+    assert_eq!(outcome, StartSessionOutcome::Created(panel.clone()));
+    assert_eq!(pane_indexes(&socket, &conf_path, &panel), ["0", "1", "2"]);
+    // Stacked, not side by side: every pane starts at the left edge.
+    assert_eq!(pane_lefts(&socket, &conf_path, &panel), ["0", "0", "0"]);
+}

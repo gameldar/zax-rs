@@ -154,11 +154,21 @@ pub struct PaneSpec {
     pub size: Option<PaneSize>,
 }
 
-/// The agent command plus the context panes around it. Pane 0 is always the
-/// agent, so it is not in `panes`.
+/// What runs in pane 0, the pane a session is created with.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RootPane {
+    /// The agent, with the context panes in a column beside it.
+    Agent(Command),
+    /// No agent: the first context pane, with the rest stacked below it. This
+    /// is the panel that sits beside a workspace manager such as herdr, which
+    /// runs the agents itself.
+    Context(PaneKind),
+}
+
+/// Pane 0 plus the panes that split from it. Pane 0 is not in `panes`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LayoutSpec {
-    agent: Command,
+    root: RootPane,
     panes: Vec<PaneSpec>,
 }
 
@@ -167,13 +177,36 @@ impl LayoutSpec {
     /// and panes do not share a budget, so there is no cross-pane rule left to
     /// check.
     pub fn new(agent: Command, panes: Vec<PaneSpec>) -> Self {
-        Self { agent, panes }
+        Self {
+            root: RootPane::Agent(agent),
+            panes,
+        }
     }
 
-    pub fn agent(&self) -> &Command {
-        &self.agent
+    /// A session of panes alone. The first is pane 0, so there is nothing for
+    /// its size to be a share of and the size is dropped; taking the first
+    /// pane apart from the rest is what makes a layout with no panes at all
+    /// impossible to build.
+    pub fn panes_only(first: PaneSpec, rest: Vec<PaneSpec>) -> Self {
+        Self {
+            root: RootPane::Context(first.kind),
+            panes: rest,
+        }
     }
 
+    pub fn root(&self) -> &RootPane {
+        &self.root
+    }
+
+    /// The agent, when the layout has one.
+    pub fn agent(&self) -> Option<&Command> {
+        match &self.root {
+            RootPane::Agent(command) => Some(command),
+            RootPane::Context(_) => None,
+        }
+    }
+
+    /// Every pane after pane 0.
     pub fn panes(&self) -> &[PaneSpec] {
         &self.panes
     }
@@ -303,7 +336,7 @@ mod tests {
     fn a_layout_with_no_context_panes_is_valid() {
         let agent = Command::new(vec!["claude".to_owned()]).unwrap();
         let layout = LayoutSpec::new(agent, vec![]);
-        assert_eq!(layout.agent().program(), "claude");
+        assert_eq!(layout.agent().unwrap().program(), "claude");
         assert!(layout.panes().is_empty());
     }
 
@@ -382,5 +415,26 @@ mod tests {
         for builtin in BuiltinPane::ALL {
             assert_eq!(BuiltinPane::parse(builtin.as_str()).unwrap(), builtin);
         }
+    }
+
+    #[test]
+    fn a_panes_only_layout_has_no_agent_and_its_first_pane_is_the_root() {
+        let first = PaneSpec {
+            kind: PaneKind::Builtin(BuiltinPane::Todo),
+            size: Some(PaneSize::percent(30).unwrap()),
+        };
+        let rest = vec![PaneSpec {
+            kind: PaneKind::Builtin(BuiltinPane::Tickets),
+            size: Some(PaneSize::percent(80).unwrap()),
+        }];
+
+        let layout = LayoutSpec::panes_only(first, rest.clone());
+
+        assert_eq!(layout.agent(), None);
+        assert_eq!(
+            layout.root(),
+            &RootPane::Context(PaneKind::Builtin(BuiltinPane::Todo))
+        );
+        assert_eq!(layout.panes(), rest.as_slice());
     }
 }

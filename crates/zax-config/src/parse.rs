@@ -101,16 +101,13 @@ const VIA_CHOICES: &str = "command, herdr";
 /// `home` is the value `~` expands to. It is a parameter rather than a lookup so
 /// this function stays pure and testable.
 pub fn from_raw(raw: RawConfig, home: &str) -> Result<Config, ConfigError> {
-    let agent = match raw.agent.and_then(|a| a.command) {
-        Some(argv) => Command::new(argv).map_err(|e| ConfigError::Invalid {
-            field: "agent.command",
-            detail: e.to_string(),
-        })?,
-        None => Command::new(vec![DEFAULT_AGENT.to_owned()]).map_err(|e| ConfigError::Invalid {
-            field: "agent.command",
-            detail: e.to_string(),
-        })?,
-    };
+    // An empty list is no agent at all, as an empty command is elsewhere in
+    // this file: the panes are then the whole session.
+    let agent = optional_command(
+        raw.agent.and_then(|a| a.command),
+        &[DEFAULT_AGENT],
+        "agent.command",
+    )?;
 
     let panes = match raw.layout.and_then(|l| l.panes) {
         Some(raw_panes) => raw_panes
@@ -120,7 +117,18 @@ pub fn from_raw(raw: RawConfig, home: &str) -> Result<Config, ConfigError> {
         None => default_panes()?,
     };
 
-    let layout = LayoutSpec::new(agent, panes);
+    let layout = match agent {
+        Some(agent) => LayoutSpec::new(agent, panes),
+        None => {
+            let mut panes = panes.into_iter();
+            let first = panes.next().ok_or_else(|| ConfigError::Invalid {
+                field: "agent.command",
+                detail: "is empty, so the panes are the whole session, but layout.panes has none"
+                    .to_owned(),
+            })?;
+            LayoutSpec::panes_only(first, panes.collect())
+        }
+    };
 
     let raw_worktree = raw.worktree.unwrap_or_default();
     let root_text = raw_worktree
@@ -508,7 +516,7 @@ mod tests {
     use std::path::PathBuf;
     use std::time::Duration;
 
-    use zax_domain::{BuiltinPane, PaneKind};
+    use zax_domain::{BuiltinPane, PaneKind, RootPane};
 
     use super::*;
     use crate::raw::RawConfig;
@@ -566,9 +574,34 @@ mod tests {
     }
 
     #[test]
+    fn an_empty_agent_command_makes_the_panes_the_whole_session() {
+        let config = config_from(
+            "[agent]\ncommand = []\n\n[[layout.panes]]\nkind = \"builtin\"\nname = \"todo\"\nsize = \"30%\"\n\n[[layout.panes]]\nkind = \"builtin\"\nname = \"tickets\"\nsize = \"80%\"",
+        );
+        assert_eq!(config.layout.agent(), None);
+        assert_eq!(
+            config.layout.root(),
+            &RootPane::Context(PaneKind::Builtin(BuiltinPane::Todo))
+        );
+        assert_eq!(config.layout.panes().len(), 1);
+        assert_eq!(
+            config.layout.panes()[0].kind,
+            PaneKind::Builtin(BuiltinPane::Tickets)
+        );
+    }
+
+    #[test]
+    fn no_agent_and_no_panes_is_refused() {
+        let raw: RawConfig = toml::from_str("[agent]\ncommand = []\n[layout]\npanes = []").unwrap();
+        let err = from_raw(raw, "/home/me").unwrap_err().to_string();
+        assert!(err.contains("agent.command"), "got: {err}");
+        assert!(err.contains("layout.panes"), "got: {err}");
+    }
+
+    #[test]
     fn an_empty_config_yields_the_documented_defaults() {
         let config = config_from("");
-        assert_eq!(config.layout.agent().argv(), ["claude"]);
+        assert_eq!(config.layout.agent().unwrap().argv(), ["claude"]);
         assert_eq!(config.layout.panes().len(), 3);
         assert_eq!(
             config.layout.panes()[0].kind,

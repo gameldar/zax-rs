@@ -6,8 +6,8 @@ use std::path::{Path, PathBuf};
 
 use thiserror::Error;
 use zax_domain::{
-    choose_session, format_duration, Command, CommandError, LayoutSpec, PaneKind, SessionChoice,
-    SessionName, SessionSlot,
+    choose_session, format_duration, Command, CommandError, LayoutSpec, PaneKind, RootPane,
+    SessionChoice, SessionName, SessionSlot,
 };
 
 use crate::ports::{GitRepo, Multiplexer, PortError};
@@ -72,21 +72,23 @@ impl<'a, M: Multiplexer, G: GitRepo> StartSession<'a, M, G> {
             return Err(StartSessionError::InsideMultiplexer);
         }
 
-        let repo = self.git.root_repo_name()?;
-        let branch = self
-            .git
-            .current_branch()?
-            .ok_or(StartSessionError::DetachedHead)?;
-        // A detached session is an agent someone left and wants back. An
-        // attached one belongs to another agent thread in this worktree, which
-        // wants its own agent rather than a mirror of that one.
-        let name = match choose_session(&repo, &branch, &self.mux.list_sessions()?) {
-            SessionChoice::Reattach(name) => {
+        // The panel outlives any one worktree, and removing the one it was
+        // started from must not pull its panes' directory away, so it is
+        // rooted in the repository's own checkout.
+        let (pick, root, cwd) = match req.layout.root() {
+            RootPane::Agent(agent) => (self.pick_agent_session()?, agent.clone(), req.cwd.clone()),
+            RootPane::Context(kind) => (
+                self.pick_panel()?,
+                pane_command(&req.zax_bin, kind)?,
+                self.git.main_worktree()?,
+            ),
+        };
+        let name = match pick {
+            Pick::Attach(name) => {
                 self.mux.attach(&name)?;
                 return Ok(StartSessionOutcome::Attached(name));
             }
-            SessionChoice::Create(name) => name,
-            SessionChoice::Full => return Err(StartSessionError::AllSlotsInUse),
+            Pick::Create(name) => name,
         };
 
         // The creation is deliberately outside the teardown below. The choice
@@ -96,14 +98,21 @@ impl<'a, M: Multiplexer, G: GitRepo> StartSession<'a, M, G> {
         // winner's live agent. Killing the name on that failure would
         // destroy a running session and its scrollback. Nothing is torn down
         // unless this call is the one that created it.
-        self.mux
-            .create_session(&name, &req.cwd, req.layout.agent())?;
+        if let Err(error) = self.mux.create_session(&name, &cwd, &root) {
+            // Two panel starts at once can both find no panel. The one panel
+            // is what the loser wanted anyway, so it attaches to the winner's.
+            if req.layout.agent().is_none() && self.mux.session_exists(&name)? {
+                self.mux.attach(&name)?;
+                return Ok(StartSessionOutcome::Attached(name));
+            }
+            return Err(error.into());
+        }
 
         // A session that is only half built must not survive. It would be
         // listed, detached, on the next start, so a later invocation would
         // take the reattach branch above and silently hand the user a session
         // missing its panes, with no error and no way to finish it.
-        if let Err(error) = self.build_panes(&name, &req) {
+        if let Err(error) = self.build_panes(&name, &req, &cwd) {
             // Best effort, and its own failure is deliberately discarded: the
             // session was created moments ago in this same call and holds
             // nothing the user can have touched, so reporting a teardown
@@ -122,23 +131,68 @@ impl<'a, M: Multiplexer, G: GitRepo> StartSession<'a, M, G> {
         Ok(StartSessionOutcome::Created(name))
     }
 
-    /// Everything around the agent pane, in a session that already exists.
+    /// One of this worktree's agent sessions. A detached session is an agent
+    /// someone left and wants back. An attached one belongs to another agent
+    /// thread in this worktree, which wants its own agent rather than a
+    /// mirror of that one.
+    fn pick_agent_session(&self) -> Result<Pick, StartSessionError> {
+        let repo = self.git.root_repo_name()?;
+        let branch = self
+            .git
+            .current_branch()?
+            .ok_or(StartSessionError::DetachedHead)?;
+        match choose_session(&repo, &branch, &self.mux.list_sessions()?) {
+            SessionChoice::Reattach(name) => Ok(Pick::Attach(name)),
+            SessionChoice::Create(name) => Ok(Pick::Create(name)),
+            SessionChoice::Full => Err(StartSessionError::AllSlotsInUse),
+        }
+    }
+
+    /// The one panel, which serves every worktree. A running one is attached
+    /// to even while someone else is looking at it: that is another view of
+    /// the same panes, not a reason to build a second set. It is tied to no
+    /// branch, so a detached HEAD does not matter.
+    fn pick_panel(&self) -> Result<Pick, StartSessionError> {
+        let name = SessionName::panel();
+        if self.mux.session_exists(&name)? {
+            Ok(Pick::Attach(name))
+        } else {
+            Ok(Pick::Create(name))
+        }
+    }
+
+    /// Everything after pane 0, in a session that already exists.
     fn build_panes(
         &self,
         name: &SessionName,
         req: &StartSessionRequest,
+        cwd: &Path,
     ) -> Result<(), StartSessionError> {
+        // Beside an agent the first pane splits it sideways, so the agent
+        // keeps the left. Every other pane, and every pane of a panel, stacks
+        // below its predecessor.
+        let beside_agent = req.layout.agent().is_some();
         for (index, pane) in req.layout.panes().iter().enumerate() {
             let command = pane_command(&req.zax_bin, &pane.kind)?;
-            // Pane 0 is the agent. The first context pane splits it
-            // horizontally; every later one stacks below its predecessor.
             let target_pane = u32::try_from(index).unwrap_or(u32::MAX);
-            self.mux
-                .split_pane(name, target_pane, index == 0, pane.size, &req.cwd, &command)?;
+            self.mux.split_pane(
+                name,
+                target_pane,
+                beside_agent && index == 0,
+                pane.size,
+                cwd,
+                &command,
+            )?;
         }
 
         Ok(())
     }
+}
+
+/// Which session `run` settled on.
+enum Pick {
+    Attach(SessionName),
+    Create(SessionName),
 }
 
 /// The command that actually runs in a context pane.
@@ -530,5 +584,157 @@ mod tests {
         )
         .unwrap();
         assert_eq!(cmd.argv(), ["/bin/zax", "pane", "branch-status"]);
+    }
+
+    fn panel_layout() -> LayoutSpec {
+        LayoutSpec::panes_only(
+            PaneSpec {
+                kind: PaneKind::Builtin(BuiltinPane::Todo),
+                size: Some(PaneSize::percent(30).unwrap()),
+            },
+            vec![
+                PaneSpec {
+                    kind: PaneKind::Builtin(BuiltinPane::Tickets),
+                    size: Some(PaneSize::percent(80).unwrap()),
+                },
+                PaneSpec {
+                    kind: PaneKind::Builtin(BuiltinPane::MyPrs),
+                    size: None,
+                },
+            ],
+        )
+    }
+
+    fn zax_pane(name: &str) -> Vec<String> {
+        vec![
+            "/nix/store/abc/bin/zax".to_owned(),
+            "pane".to_owned(),
+            name.to_owned(),
+        ]
+    }
+
+    #[test]
+    fn a_panes_only_layout_builds_one_stacked_panel_session() {
+        let mux = FakeMultiplexer::default();
+        let git = FakeGitRepo::new("/Users/me/src/acme", "OMEGA-1963-stamp");
+        // Started from a linked worktree, but rooted in the repository's own
+        // checkout: the panel outlives any one worktree, and removing the one
+        // it was started from must not pull its panes' directory away.
+        let cwd = PathBuf::from("/Users/me/src/acme");
+        let name = "zax-panel".to_owned();
+
+        let outcome = StartSession::new(&mux, &git)
+            .run(StartSessionRequest {
+                layout: panel_layout(),
+                ..request()
+            })
+            .unwrap();
+
+        assert_eq!(
+            outcome,
+            StartSessionOutcome::Created(zax_domain::SessionName::panel())
+        );
+        assert_eq!(
+            mux.calls(),
+            vec![
+                // The first pane is the session's root, so its size has
+                // nothing to split and is not used.
+                MuxCall::CreateSession {
+                    name: name.clone(),
+                    cwd: cwd.clone(),
+                    argv: zax_pane("todo"),
+                },
+                // With no agent beside them, every pane stacks downward.
+                MuxCall::SplitPane {
+                    name: name.clone(),
+                    target_pane: 0,
+                    horizontal: false,
+                    size: Some(80),
+                    cwd: cwd.clone(),
+                    argv: zax_pane("tickets"),
+                },
+                MuxCall::SplitPane {
+                    name: name.clone(),
+                    target_pane: 1,
+                    horizontal: false,
+                    size: None,
+                    cwd: cwd.clone(),
+                    argv: zax_pane("my-prs"),
+                },
+                MuxCall::SelectPane {
+                    name: name.clone(),
+                    index: 0
+                },
+                MuxCall::Attach { name },
+            ]
+        );
+    }
+
+    #[test]
+    fn a_running_panel_is_attached_to_even_when_someone_else_is_watching_it() {
+        // One panel serves every space: a second terminal on it is another
+        // view of the same panes, not a reason to build a second set.
+        let git = FakeGitRepo::new("/Users/me/src/acme", "OMEGA-1963-stamp");
+        let panel = zax_domain::SessionName::panel();
+        let mux = FakeMultiplexer::with_attached_sessions([panel.clone()]);
+
+        let outcome = StartSession::new(&mux, &git)
+            .run(StartSessionRequest {
+                layout: panel_layout(),
+                ..request()
+            })
+            .unwrap();
+
+        assert_eq!(outcome, StartSessionOutcome::Attached(panel.clone()));
+        assert_eq!(
+            mux.calls(),
+            vec![MuxCall::Attach {
+                name: panel.as_str().to_owned()
+            }]
+        );
+    }
+
+    #[test]
+    fn a_panel_does_not_care_that_head_is_detached() {
+        // It is not tied to a branch, so a detached checkout is no reason to
+        // refuse it.
+        let mux = FakeMultiplexer::default();
+        let git = FakeGitRepo::detached("/Users/me/src/acme");
+
+        let outcome = StartSession::new(&mux, &git).run(StartSessionRequest {
+            layout: panel_layout(),
+            ..request()
+        });
+
+        assert!(
+            matches!(outcome, Ok(StartSessionOutcome::Created(_))),
+            "{outcome:?}"
+        );
+    }
+
+    #[test]
+    fn a_panel_start_that_loses_the_race_attaches_to_the_winners_panel() {
+        // Two starts at once both see no panel; the loser's create collides
+        // with the winner's, and the one panel is what both should end up on.
+        let git = FakeGitRepo::new("/Users/me/src/acme", "OMEGA-1963-stamp");
+        let panel = zax_domain::SessionName::panel();
+        let mux =
+            FakeMultiplexer::with_sessions([panel.clone()]).pretending_no_session_exists_once();
+
+        let outcome = StartSession::new(&mux, &git)
+            .run(StartSessionRequest {
+                layout: panel_layout(),
+                ..request()
+            })
+            .unwrap();
+
+        assert_eq!(outcome, StartSessionOutcome::Attached(panel.clone()));
+        assert_eq!(
+            mux.calls().last(),
+            Some(&MuxCall::Attach {
+                name: panel.as_str().to_owned()
+            })
+        );
+        assert_eq!(mux.live_sessions(), [panel.as_str()], "nothing torn down");
     }
 }

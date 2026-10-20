@@ -224,6 +224,7 @@ mod tests {
                 is_draft: false,
                 created_at: t(100),
                 checks: CheckState::Pending,
+                author: None,
             },
             review: ReviewState::ChangesRequested,
             unresolved_threads: 2,

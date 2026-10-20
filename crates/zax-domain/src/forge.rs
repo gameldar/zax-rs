@@ -103,6 +103,9 @@ pub struct PullRequest {
     pub is_draft: bool,
     pub created_at: SystemTime,
     pub checks: CheckState,
+    /// The login that opened it. Absent when the account has since been
+    /// deleted: GitHub reports no author rather than a placeholder.
+    pub author: Option<String>,
 }
 
 impl PullRequest {
@@ -225,13 +228,17 @@ pub enum BranchView {
     Detached,
     OnBranch {
         branch: BranchName,
-        status: Option<PullRequestStatus>,
+        // Boxed: a status is several times the size of the detached variant.
+        status: Option<Box<PullRequestStatus>>,
     },
 }
 
 impl BranchView {
     pub fn on_branch(branch: BranchName, status: Option<PullRequestStatus>) -> Self {
-        Self::OnBranch { branch, status }
+        Self::OnBranch {
+            branch,
+            status: status.map(Box::new),
+        }
     }
 
     pub fn branch(&self) -> Option<&BranchName> {
@@ -244,7 +251,7 @@ impl BranchView {
     pub fn status(&self) -> Option<&PullRequestStatus> {
         match self {
             Self::Detached => None,
-            Self::OnBranch { status, .. } => status.as_ref(),
+            Self::OnBranch { status, .. } => status.as_deref(),
         }
     }
 }
@@ -329,6 +336,7 @@ mod tests {
             is_draft: false,
             created_at: UNIX_EPOCH + Duration::from_secs(1_700_000_000),
             checks: CheckState::Passing,
+            author: None,
         }
     }
 

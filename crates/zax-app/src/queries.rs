@@ -229,6 +229,7 @@ mod tests {
             is_draft: false,
             created_at: UNIX_EPOCH + Duration::from_secs(1_700_000_000),
             checks: CheckState::Passing,
+            author: None,
         }
     }
 

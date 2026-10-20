@@ -201,6 +201,7 @@ mod tests {
                 is_draft: false,
                 created_at: UNIX_EPOCH,
                 checks: CheckState::Passing,
+                author: None,
             },
             review,
             unresolved_threads: 0,

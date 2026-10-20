@@ -142,13 +142,22 @@ impl PrsForReviewPane {
         let name_budget = reference_budget.saturating_sub(display_width(&number));
         let reference = format!("{}{}", truncate(pr.repo.name(), name_budget), number);
 
+        // The author is context as well, and the first thing to give way: it
+        // takes only what the reference left of the budget.
+        let author_budget = reference_budget.saturating_sub(display_width(&reference));
+        let author = pr
+            .author
+            .as_deref()
+            .map(|login| author_suffix(login, author_budget))
+            .unwrap_or_default();
+
         // Whatever the reference did not need goes to the title. Everything is
         // measured in COLUMNS: the slug parser deliberately does not restrict a
         // repository name's charset, so counting characters would hand the
         // title a budget several columns too large and push the row past the
         // pane. The glyph is measured rather than assumed to be one column, so
         // a future two-column glyph cannot quietly break the arithmetic.
-        let fixed = essential + display_width(&reference);
+        let fixed = essential + display_width(&reference) + display_width(&author);
         let title_budget = usize::from(width).saturating_sub(fixed);
         let title = truncate(&pr.title, title_budget);
 
@@ -162,6 +171,7 @@ impl PrsForReviewPane {
             Span::styled(check, check_style(pr.checks).patch(base)),
             Span::styled(" ", base),
             Span::styled(reference, base.fg(Color::Cyan)),
+            Span::styled(author, base.fg(Color::DarkGray)),
             Span::styled(" ", base),
             Span::styled(title, base),
             Span::styled(draft.to_owned(), base.fg(Color::DarkGray)),
@@ -201,6 +211,21 @@ impl PrsForReviewPane {
             _ => PaneAction::None,
         }
     }
+}
+
+/// ` (login)` within `budget` columns, or nothing when not even one character
+/// of the login would fit between the parentheses.
+fn author_suffix(login: &str, budget: usize) -> String {
+    // A space and two parentheses.
+    const FRAME: usize = 3;
+    if budget <= FRAME {
+        return String::new();
+    }
+    let login = truncate(login, budget - FRAME);
+    if login.is_empty() {
+        return String::new();
+    }
+    format!(" ({login})")
 }
 
 #[cfg(test)]
@@ -250,6 +275,7 @@ mod tests {
             is_draft: draft,
             created_at: t(100),
             checks,
+            author: Some("gameldar".to_owned()),
         }
     }
 
@@ -310,6 +336,41 @@ mod tests {
         assert!(first.contains("Stamp"), "got: {first:?}");
         assert!(first.contains("3d"), "got: {first:?}");
         assert!(first.contains(crate::chrome::GLYPH_PASS), "got: {first:?}");
+    }
+
+    #[test]
+    fn a_row_names_the_author_after_the_reference() {
+        let buffer = draw(&loaded(), t(100));
+        let first = row(&buffer, 1);
+        assert!(
+            first.contains("omega#1963 (gameldar) Stamp"),
+            "got: {first:?}"
+        );
+    }
+
+    #[test]
+    fn a_pull_request_without_an_author_shows_no_parentheses() {
+        let mut orphan = pr("acme/omega", 1963, false, CheckState::Passing);
+        orphan.author = None;
+        let mut pane = PrsForReviewPane::new();
+        pane.apply(Ok(vec![orphan]), t(100));
+        let first = row(&draw(&pane, t(100)), 1);
+        assert!(first.contains("omega#1963 Stamp"), "got: {first:?}");
+    }
+
+    #[test]
+    fn the_author_gives_way_before_the_repository_name() {
+        let mut pane = PrsForReviewPane::new();
+        pane.apply(
+            Ok(vec![pr("acme/omega", 1963, false, CheckState::Passing)]),
+            t(100),
+        );
+        let pr = pane.rows().first().expect("one row").clone();
+        // Glyph, three separators and `now` leave exactly `omega#1963`.
+        let built = pane.row(&pr, false, 1 + 3 + 3 + 10, t(100));
+        let rendered: String = built.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(rendered.contains("omega#1963"), "got: {rendered:?}");
+        assert!(!rendered.contains('('), "got: {rendered:?}");
     }
 
     #[test]
@@ -544,6 +605,7 @@ mod tests {
                 is_draft: false,
                 created_at: t(100),
                 checks: CheckState::Passing,
+                author: Some("gameldar".to_owned()),
             }]),
             t(100),
         );

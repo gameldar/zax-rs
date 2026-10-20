@@ -9,6 +9,7 @@
           "isDraft": false,
           "createdAt": "2026-09-15T09:12:33Z",
           "repository": { "nameWithOwner": "acme/omega" },
+          "author": { "login": "gameldar" },
           "commits": {
             "nodes": [
               { "commit": { "statusCheckRollup": { "state": "SUCCESS" } } }
@@ -22,6 +23,7 @@
           "isDraft": true,
           "createdAt": "2026-09-17T22:01:00Z",
           "repository": { "nameWithOwner": "acme/south" },
+          "author": null,
           "commits": {
             "nodes": [
               { "commit": { "statusCheckRollup": { "state": "FAILURE" } } }

@@ -154,6 +154,7 @@ mod tests {
             is_draft: false,
             created_at: now() - age,
             checks: CheckState::Passing,
+            author: None,
         }
     }
 

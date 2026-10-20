@@ -23,8 +23,11 @@ fn a_search_response_becomes_pull_requests() {
         UNIX_EPOCH + Duration::from_secs(1_789_463_553)
     );
 
+    assert_eq!(prs[0].author.as_deref(), Some("gameldar"));
+
     assert_eq!(prs[1].checks, CheckState::Failing);
     assert!(prs[1].is_draft);
+    assert_eq!(prs[1].author, None, "a deleted account has no author");
 
     assert_eq!(prs[2].checks, CheckState::None, "no rollup means no checks");
 }

@@ -74,6 +74,7 @@ struct PrNode {
     #[serde(rename = "reviewDecision")]
     review_decision: Option<String>,
     repository: Option<RepoRef>,
+    author: Option<Login>,
     commits: Option<Nodes<CommitNode>>,
     #[serde(rename = "reviewThreads")]
     review_threads: Option<Nodes<ThreadNode>>,
@@ -124,6 +125,7 @@ impl PrNode {
             && self.mergeable.is_none()
             && self.review_decision.is_none()
             && self.repository.is_none()
+            && self.author.is_none()
             && self.commits.is_none()
             && self.review_threads.is_none()
     }
@@ -270,6 +272,9 @@ fn to_pull_request(node: PrNode) -> Result<PullRequest, String> {
         is_draft: node.is_draft.unwrap_or(false),
         created_at: parse_timestamp(node.created_at.as_deref()),
         checks: check_state(node.commits.as_ref()),
+        // Null for a deleted account, which is routine rather than a shape
+        // change, so it is carried as absent.
+        author: node.author.map(|a| a.login),
     })
 }
 

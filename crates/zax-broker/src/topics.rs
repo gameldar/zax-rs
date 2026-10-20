@@ -146,6 +146,9 @@ struct PrDto {
     unresolved_threads: u32,
     mergeable: String,
     head: Option<String>,
+    // Defaulted so a broker that predates the field still decodes.
+    #[serde(default)]
+    author: Option<String>,
 }
 
 fn path_to_string(path: &Path) -> String {
@@ -269,6 +272,7 @@ fn pr_to_dto(s: &PullRequestStatus) -> PrDto {
         unresolved_threads: s.unresolved_threads,
         mergeable: mergeable_name(s.mergeable).to_owned(),
         head: s.head.as_ref().map(|b| b.as_str().to_owned()),
+        author: s.pr.author.clone(),
     }
 }
 
@@ -299,6 +303,7 @@ fn pr_from_dto(p: PrDto) -> Option<PullRequestStatus> {
             is_draft: p.is_draft,
             created_at: fetched_at(p.created_at),
             checks,
+            author: p.author,
         },
         review,
         unresolved_threads: p.unresolved_threads,
@@ -505,6 +510,7 @@ mod tests {
                     is_draft: true,
                     created_at: UNIX_EPOCH + Duration::from_secs(1_700_000_000),
                     checks: CheckState::Failing,
+                    author: None,
                 },
                 review: ReviewState::ChangesRequested,
                 unresolved_threads: 2,

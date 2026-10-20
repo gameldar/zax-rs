@@ -19,6 +19,7 @@ query($q: String!) {
         isDraft
         createdAt
         repository { nameWithOwner }
+        author { login }
         commits(last: 1) {
           nodes { commit { statusCheckRollup { state } } }
         }
@@ -47,6 +48,7 @@ query($owner: String!, $name: String!, $branch: String!) {
         mergeable
         reviewDecision
         repository { nameWithOwner }
+        author { login }
         commits(last: 1) {
           nodes { commit { statusCheckRollup { state } } }
         }
@@ -80,6 +82,7 @@ query($q: String!) {
         mergeable
         reviewDecision
         repository { nameWithOwner }
+        author { login }
         commits(last: 1) {
           nodes { commit { statusCheckRollup { state } } }
         }

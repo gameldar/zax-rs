@@ -333,6 +333,7 @@ mod tests {
                 is_draft: draft,
                 created_at: t(100),
                 checks,
+                author: None,
             },
             review,
             unresolved_threads: threads,

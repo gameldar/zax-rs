@@ -213,7 +213,7 @@ impl WorktreePath {
 /// a leading `.` only occurs in a relative path, which the caller has already
 /// rejected. A `.` is inert anyway: `/a/./b` resolves to `/a/b` and cannot
 /// escape the directory the caller asked for.
-fn has_parent_traversal(path: &Path) -> bool {
+pub(crate) fn has_parent_traversal(path: &Path) -> bool {
     use std::path::Component;
 
     path.components().any(|c| matches!(c, Component::ParentDir))

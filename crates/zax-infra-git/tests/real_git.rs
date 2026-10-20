@@ -5,10 +5,10 @@ use std::path::Path;
 use std::process::Command;
 
 use tempfile::TempDir;
-use zax_app::GitRepo;
-use zax_domain::BranchName;
+use zax_app::{CheckoutInspector, GitRepo};
+use zax_domain::{BranchName, CheckoutProbe};
 use zax_exec::SystemExec;
-use zax_infra_git::GitCli;
+use zax_infra_git::{GitCheckouts, GitCli};
 
 fn git(dir: &Path, args: &[&str]) {
     let status = Command::new("git")
@@ -114,6 +114,22 @@ fn a_directory_that_is_not_a_repository_fails_with_gits_own_message() {
     assert!(
         err.to_string().contains("not a git repository"),
         "expected git's own message, got: {err}"
+    );
+}
+
+/// The classification `wiring::resolve` leans on, against the real binary:
+/// a directory outside any repository has to read as outside one, or a
+/// repo-less session would fail where it is meant to start.
+#[test]
+fn a_directory_outside_any_repository_reads_as_outside_one() {
+    let tmp = TempDir::new().unwrap();
+    let cli = GitCli::new(SystemExec, tmp.path().to_owned());
+
+    let err = cli.repo_name().unwrap_err();
+
+    assert!(
+        zax_infra_git::is_outside_repository(&err),
+        "expected git's no-repository answer, got: {err}"
     );
 }
 
@@ -246,4 +262,145 @@ fn real_git_reports_the_origin_url_and_its_absence() {
         cli.remote_url("origin").unwrap(),
         Some("git@github.com:gameldar/zax.git".to_owned())
     );
+}
+
+#[test]
+fn a_main_checkout_reports_its_toplevel_and_origin() {
+    let (_tmp, repo) = fixture();
+    git(
+        &repo,
+        &["remote", "add", "origin", "git@github.com:acme/omega.git"],
+    );
+    let checkouts = GitCheckouts::new(SystemExec);
+
+    assert_eq!(
+        checkouts.inspect(&repo).unwrap(),
+        CheckoutProbe::Main {
+            top: repo.canonicalize().unwrap(),
+            origin_url: Some("git@github.com:acme/omega.git".to_owned()),
+        }
+    );
+}
+
+#[test]
+fn a_main_checkout_without_origin_has_none() {
+    let (_tmp, repo) = fixture();
+    let checkouts = GitCheckouts::new(SystemExec);
+
+    assert_eq!(
+        checkouts.inspect(&repo).unwrap(),
+        CheckoutProbe::Main {
+            top: repo.canonicalize().unwrap(),
+            origin_url: None,
+        }
+    );
+}
+
+#[test]
+fn a_linked_worktree_is_reported_as_one() {
+    let (tmp, repo) = fixture();
+    let main_cli = GitCli::new(SystemExec, repo.clone());
+    let branch = BranchName::parse_local("OMEGA-1963-stamp").unwrap();
+    let target = tmp
+        .path()
+        .join("worktrees")
+        .join("acme")
+        .join("OMEGA-1963-stamp");
+    main_cli
+        .add_worktree_new_branch(&target, &branch, None)
+        .unwrap();
+
+    let checkouts = GitCheckouts::new(SystemExec);
+    assert_eq!(
+        checkouts.inspect(&target).unwrap(),
+        CheckoutProbe::LinkedWorktree
+    );
+}
+
+#[test]
+fn a_plain_file_under_the_root_is_not_a_checkout() {
+    let tmp = TempDir::new().unwrap();
+    let file = tmp.path().join("notes.txt");
+    std::fs::write(&file, "hi\n").unwrap();
+    let checkouts = GitCheckouts::new(SystemExec);
+
+    assert_eq!(
+        checkouts.inspect(&file).unwrap(),
+        CheckoutProbe::NotACheckout
+    );
+}
+
+#[test]
+fn a_missing_path_is_absent() {
+    let tmp = TempDir::new().unwrap();
+    let missing = tmp.path().join("nope");
+    let checkouts = GitCheckouts::new(SystemExec);
+
+    assert_eq!(checkouts.inspect(&missing).unwrap(), CheckoutProbe::Absent);
+}
+
+#[test]
+fn a_directory_inside_another_repository_is_not_a_checkout() {
+    // A plain subdirectory of a repo still answers `--show-toplevel`
+    // successfully, naming the enclosing repo. Without the toplevel
+    // comparison this would be misread as that repo's main checkout.
+    let (_tmp, repo) = fixture();
+    let sub = repo.join("sub");
+    std::fs::create_dir(&sub).unwrap();
+    let checkouts = GitCheckouts::new(SystemExec);
+
+    assert_eq!(
+        checkouts.inspect(&sub).unwrap(),
+        CheckoutProbe::NotACheckout
+    );
+}
+
+#[test]
+fn the_probe_reports_the_canonical_toplevel() {
+    let (tmp, repo) = fixture();
+    let link = tmp.path().join("link-to-acme");
+    std::os::unix::fs::symlink(&repo, &link).unwrap();
+    let checkouts = GitCheckouts::new(SystemExec);
+
+    match checkouts.inspect(&link).unwrap() {
+        CheckoutProbe::Main { top, .. } => assert_eq!(top, repo.canonicalize().unwrap()),
+        other => panic!("expected a main checkout, got {other:?}"),
+    }
+}
+
+/// A `projects.root` of symlinks into other volumes is an ordinary way to
+/// keep checkouts, and the probe already follows a symlink to its canonical
+/// toplevel - so dropping one here would lose the checkout before anything
+/// got the chance to inspect it.
+#[test]
+fn subdirectories_lists_a_symlink_to_a_directory() {
+    let tmp = TempDir::new().unwrap();
+    let real = tmp.path().join("elsewhere");
+    std::fs::create_dir(&real).unwrap();
+    let link = tmp.path().join("omega");
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+    let dangling = tmp.path().join("gone");
+    std::os::unix::fs::symlink(tmp.path().join("nowhere"), &dangling).unwrap();
+    let checkouts = GitCheckouts::new(SystemExec);
+
+    let found = checkouts.subdirectories(tmp.path()).unwrap();
+
+    assert!(found.contains(&link), "got: {found:?}");
+    // A link that leads nowhere is not a directory, which is an answer and
+    // not a reason to lose the rest of the listing.
+    assert!(!found.contains(&dangling), "got: {found:?}");
+}
+
+#[test]
+fn subdirectories_lists_only_directories() {
+    let tmp = TempDir::new().unwrap();
+    std::fs::create_dir(tmp.path().join("a")).unwrap();
+    std::fs::write(tmp.path().join("b"), "file\n").unwrap();
+    std::fs::create_dir(tmp.path().join("c")).unwrap();
+    let checkouts = GitCheckouts::new(SystemExec);
+
+    let mut found = checkouts.subdirectories(tmp.path()).unwrap();
+    found.sort();
+
+    assert_eq!(found, vec![tmp.path().join("a"), tmp.path().join("c")]);
 }

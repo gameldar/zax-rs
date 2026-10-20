@@ -5,8 +5,9 @@
 //! right for a command that is about to act on the config - and useless for the
 //! one command whose job is to fix it. A modal unreachable because of the
 //! mistake it exists to repair would be no use at all, so this resolves the
-//! three paths without requiring a successful load and shows the parse error on
-//! the modal's error line instead.
+//! layer paths on its own - all three inside a repository, the global one
+//! alone outside - without requiring a successful load, and shows the parse
+//! error on the modal's error line instead.
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -29,54 +30,95 @@ use crate::{guard, wiring};
 const TICK: Duration = Duration::from_millis(250);
 
 pub fn run(command: Option<ConfigCommand>) -> Result<()> {
-    let context = Resolution::resolve()?;
-    let draft = Draft::open(
-        &context.config_home,
-        &context.main_worktree,
-        &context.repo,
-        &context.home,
-    )?;
+    let resolution = Resolution::resolve()?;
+    let draft = match &resolution {
+        Resolution::Repo {
+            config_home,
+            main_worktree,
+            repo,
+            home,
+        } => Draft::open(config_home, main_worktree, repo, home)?,
+        Resolution::Global { config_home, home } => Draft::open_global(config_home, home)?,
+    };
 
     match command {
         Some(ConfigCommand::Show) => {
             print!("{}", show(&draft.view()));
             Ok(())
         }
-        None => edit(draft, guard::inside_multiplexer_now()),
+        None => {
+            let inside_session = guard::inside_multiplexer_now();
+            let modal = match resolution {
+                Resolution::Repo { .. } => ConfigModal::new(inside_session),
+                Resolution::Global { .. } => ConfigModal::global_only(inside_session),
+            };
+            edit(draft, modal)
+        }
     }
 }
 
 /// Everything the draft needs, resolved without loading the config.
-struct Resolution {
-    config_home: PathBuf,
-    main_worktree: PathBuf,
-    repo: RootRepoName,
-    home: String,
+///
+/// A repository gives all three layers to edit. Outside one there is no
+/// checkout to read `.zax.toml` from and no key to derive the personal
+/// override's path, so the only layer left is the global one - and only
+/// when it already turns the `projects` feature on, since that is the one
+/// reason to run `zax config` with nothing to configure a session for.
+enum Resolution {
+    Repo {
+        config_home: PathBuf,
+        main_worktree: PathBuf,
+        repo: RootRepoName,
+        home: String,
+    },
+    Global {
+        config_home: PathBuf,
+        home: String,
+    },
 }
 
 impl Resolution {
     fn resolve() -> Result<Self> {
         let cwd = std::env::current_dir().context("could not read the current directory")?;
         let git = GitCli::new(SystemExec, cwd);
-        let repo = git
-            .repo_name()
-            .context("this directory is not inside a git repository")?;
-        let main_worktree = {
-            use zax_app::GitRepo;
-            git.main_worktree()?
-        };
-        Ok(Self {
-            config_home: wiring::config_home()?,
-            main_worktree,
-            repo,
-            home: wiring::home()?.to_string_lossy().into_owned(),
-        })
+        let config_home = wiring::config_home()?;
+        let home = wiring::home()?.to_string_lossy().into_owned();
+
+        match git.repo_name() {
+            Ok(repo) => {
+                let main_worktree = {
+                    use zax_app::GitRepo;
+                    git.main_worktree()?
+                };
+                Ok(Self::Repo {
+                    config_home,
+                    main_worktree,
+                    repo,
+                    home,
+                })
+            }
+            // Not inside a repository is not itself an error: `projects.root`
+            // exists so zax can still find one, and the global layer is the
+            // only one that can hold it. A global config that parses decides
+            // it, through the one refusal `wiring` owns.
+            //
+            // One that does not parse decides nothing: it cannot say whether
+            // `projects` is on, and this is the command that repairs it, so
+            // the modal opens on it with the parse error on its error line
+            // rather than the command failing the way every other command
+            // rightly does.
+            Err(error) => {
+                if let Ok(config) = zax_config::load_global(&config_home, &home) {
+                    wiring::outside_repository(&config, error)?;
+                }
+                Ok(Self::Global { config_home, home })
+            }
+        }
     }
 }
 
 /// The pane loop's shape, with no fetch thread: there is nothing to wait on.
-fn edit(mut draft: Draft, inside_session: bool) -> Result<()> {
-    let mut modal = ConfigModal::new(inside_session);
+fn edit(mut draft: Draft, mut modal: ConfigModal) -> Result<()> {
     let mut screen = Screen::enter()?;
 
     loop {
@@ -231,6 +273,15 @@ mod tests {
 
         fn repo_text(&self) -> String {
             std::fs::read_to_string(self.main_worktree.join(".zax.toml")).unwrap()
+        }
+
+        /// The global layer alone, as it is opened outside a repository.
+        fn global_draft(&self) -> Draft {
+            Draft::open_global(&self.config_home, "/home/me").unwrap()
+        }
+
+        fn global_text(&self) -> String {
+            std::fs::read_to_string(zax_config::global_config_path(&self.config_home)).unwrap()
         }
     }
 
@@ -483,5 +534,31 @@ mod tests {
         let view = draft.view();
         assert_eq!(view.panes.origin, Origin::Layer(LayerSlot::Personal));
         assert!(show(&view).contains("1 pane "), "got:\n{}", show(&view));
+    }
+
+    #[test]
+    fn a_global_only_draft_saves_projects_root() {
+        let fixture = Fixture::new(None);
+        let mut draft = fixture.global_draft();
+        let mut modal = ConfigModal::global_only(false);
+
+        drive(
+            &mut draft,
+            &mut modal,
+            vec![
+                ConfigAction::Set {
+                    slot: LayerSlot::Global,
+                    key: SettingKey::ProjectsRoot,
+                    value: SettingValue::Scalar("~/src".to_owned()),
+                },
+                ConfigAction::Save,
+            ],
+        );
+
+        assert!(
+            fixture.global_text().contains("root = "),
+            "got:\n{}",
+            fixture.global_text()
+        );
     }
 }

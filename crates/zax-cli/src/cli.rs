@@ -77,6 +77,10 @@ pub enum WorktreeCommand {
         /// Create the worktree but do not open it in the editor.
         #[arg(long)]
         no_open: bool,
+        /// An owner/name slug or a path to a main checkout; defaults to this
+        /// repository.
+        #[arg(long)]
+        repo: Option<String>,
     },
     /// Put a pull request's head branch in a worktree, then copy and hooks.
     Review {
@@ -91,6 +95,10 @@ pub enum WorktreeCommand {
         /// Create the worktree but do not open it in the editor.
         #[arg(long)]
         no_open: bool,
+        /// An owner/name slug or a path to a main checkout; defaults to this
+        /// repository.
+        #[arg(long)]
+        repo: Option<String>,
     },
     /// List the worktrees zax manages for this repository.
     List,
@@ -192,6 +200,7 @@ mod tests {
                         from,
                         no_hooks,
                         no_open,
+                        repo: _,
                     },
             } => {
                 assert_eq!(branch, "OMEGA-1963-stamp");
@@ -200,6 +209,48 @@ mod tests {
                 assert!(!no_open, "a new worktree opens in the editor by default");
             }
             other => panic!("expected worktree new, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn worktree_new_takes_a_repo() {
+        let cli = Cli::try_parse_from([
+            "zax",
+            "worktree",
+            "new",
+            "OMEGA-1-x",
+            "--repo",
+            "/h/src/omega",
+        ])
+        .unwrap();
+        match cli.command {
+            Commands::Worktree {
+                command: WorktreeCommand::New { repo, .. },
+            } => {
+                assert_eq!(repo.as_deref(), Some("/h/src/omega"));
+            }
+            other => panic!("expected worktree new, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn worktree_review_takes_a_repo() {
+        let cli = Cli::try_parse_from([
+            "zax",
+            "worktree",
+            "review",
+            "1963",
+            "--repo",
+            "acme/omega",
+        ])
+        .unwrap();
+        match cli.command {
+            Commands::Worktree {
+                command: WorktreeCommand::Review { repo, .. },
+            } => {
+                assert_eq!(repo.as_deref(), Some("acme/omega"));
+            }
+            other => panic!("expected worktree review, got {other:?}"),
         }
     }
 

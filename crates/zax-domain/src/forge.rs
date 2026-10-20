@@ -20,6 +20,8 @@ pub enum RepoSlugError {
     Malformed(String),
     #[error("repository `{0}` contains a control character")]
     ControlCharacter(String),
+    #[error("`{0}` names a directory, not a repository")]
+    PathComponent(String),
 }
 
 impl RepoSlug {
@@ -34,7 +36,10 @@ impl RepoSlug {
     ///
     /// Control characters are the exception because a NUL cannot survive
     /// `exec` at all: the spawn fails with a bare "invalid input parameter"
-    /// that names neither the repository nor the argument it came from.
+    /// that names neither the repository nor the argument it came from. So
+    /// are `.` and `..`, because a slug's name is joined onto `projects.root`
+    /// to make a candidate path: no forge has a repository called `..`, and
+    /// accepting one would put back the traversal `ProjectsRoot` rejects.
     pub fn parse(raw: &str) -> Result<Self, RepoSlugError> {
         let malformed = || RepoSlugError::Malformed(raw.to_owned());
         let (owner, name) = raw.split_once('/').ok_or_else(malformed)?;
@@ -43,6 +48,9 @@ impl RepoSlug {
         }
         if raw.chars().any(char::is_control) {
             return Err(RepoSlugError::ControlCharacter(raw.to_owned()));
+        }
+        if matches!(owner, "." | "..") || matches!(name, "." | "..") {
+            return Err(RepoSlugError::PathComponent(raw.to_owned()));
         }
         Ok(Self {
             owner: owner.to_owned(),
@@ -56,6 +64,53 @@ impl RepoSlug {
 
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    /// Read a slug out of a remote URL, in any of the spellings git accepts
+    /// for a push or fetch URL: scp syntax (`user@host:owner/name[.git]`),
+    /// `ssh://[user@]host[:port]/owner/name[.git]`, or `http(s)://host/owner/
+    /// name[.git][/]`. Anything else - a bare filesystem path, a host with no
+    /// owner, three or more path segments - is `None` rather than a guess,
+    /// because a remote this cannot read must not be reported as some other
+    /// repository.
+    pub fn from_remote_url(url: &str) -> Option<Self> {
+        let trimmed = url.trim();
+
+        let path = if let Some(rest) = trimmed.strip_prefix("ssh://") {
+            rest.split_once('/')?.1
+        } else if let Some(rest) = trimmed.strip_prefix("https://") {
+            rest.split_once('/')?.1
+        } else if let Some(rest) = trimmed.strip_prefix("http://") {
+            rest.split_once('/')?.1
+        } else {
+            // scp syntax: `user@host:owner/name`. The colon has to come before
+            // any slash, or this is a path that merely contains one.
+            let (host, path) = trimmed.split_once(':')?;
+            if host.contains('/') {
+                return None;
+            }
+            path
+        };
+
+        let path = path.strip_suffix('/').unwrap_or(path);
+        let path = path.strip_suffix(".git").unwrap_or(path);
+
+        let mut segments = path.split('/');
+        let owner = segments.next()?;
+        let name = segments.next()?;
+        if owner.is_empty() || name.is_empty() || segments.next().is_some() {
+            return None;
+        }
+
+        Self::parse(&format!("{owner}/{name}")).ok()
+    }
+
+    /// Whether two slugs name the same repository, ignoring case: GitHub
+    /// treats `Owner/Name` and `owner/name` as one repository, so a project
+    /// override or an origin check must too.
+    pub fn same_repository(&self, other: &Self) -> bool {
+        self.owner.to_lowercase() == other.owner.to_lowercase()
+            && self.name.to_lowercase() == other.name.to_lowercase()
     }
 }
 
@@ -359,6 +414,23 @@ mod tests {
     }
 
     #[test]
+    fn a_slug_component_that_is_a_relative_path_is_refused() {
+        // `Projects::candidate` joins the name onto `projects.root`, which
+        // went to some trouble to reject `..`; a name of `..` would put the
+        // traversal straight back.
+        for bad in ["owner/..", "owner/.", "../name", "./name", "../.."] {
+            assert!(
+                matches!(RepoSlug::parse(bad), Err(RepoSlugError::PathComponent(_))),
+                "expected `{bad}` to be rejected"
+            );
+        }
+
+        // A name that merely starts with a dot is a real repository name.
+        assert!(RepoSlug::parse("owner/.github").is_ok());
+        assert!(RepoSlug::parse("owner/..omega").is_ok());
+    }
+
+    #[test]
     fn a_pull_request_reports_its_age_against_an_injected_clock() {
         let now = UNIX_EPOCH + Duration::from_secs(1_700_259_200);
         assert_eq!(pr().age(now), Duration::from_secs(259_200));
@@ -462,6 +534,53 @@ mod tests {
         // Too strict here rejects real repositories; too loose only passes a
         // bad name to gh, which reports it better than this crate could.
         assert!(RepoSlug::parse("café/résumé").is_ok());
+    }
+
+    #[test]
+    fn every_common_origin_spelling_parses_to_its_slug() {
+        let urls = [
+            "git@github.com:acme/omega.git",
+            "git@github.com:acme/omega",
+            "https://github.com/acme/omega",
+            "https://github.com/acme/omega.git",
+            "https://github.com/acme/omega.git/",
+            "ssh://git@github.com/acme/omega.git",
+            "ssh://git@github.com:22/acme/omega.git",
+            " https://github.com/acme/omega\n",
+        ];
+        for url in urls {
+            assert_eq!(
+                RepoSlug::from_remote_url(url).map(|slug| slug.to_string()),
+                Some("acme/omega".to_owned()),
+                "expected `{url}` to parse"
+            );
+        }
+    }
+
+    #[test]
+    fn a_remote_that_names_no_owner_and_name_is_none() {
+        for url in [
+            "/srv/git/omega.git",
+            "https://github.com/acme",
+            "https://github.com/a/b/c",
+            "",
+        ] {
+            assert_eq!(
+                RepoSlug::from_remote_url(url),
+                None,
+                "expected `{url}` to be None"
+            );
+        }
+    }
+
+    #[test]
+    fn slugs_compare_without_regard_to_case() {
+        let acme_capitalised = RepoSlug::parse("Acme/Omega").unwrap();
+        let acme = RepoSlug::parse("acme/omega").unwrap();
+        let someone = RepoSlug::parse("someone/omega").unwrap();
+
+        assert!(acme_capitalised.same_repository(&acme));
+        assert!(!acme.same_repository(&someone));
     }
 
     #[test]

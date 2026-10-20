@@ -1,13 +1,13 @@
 //! `zax worktree new | review | list | rm`.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use zax_app::{
     queries, CreateReviewWorktree, CreateReviewWorktreeRequest, CreateWorktree,
-    CreateWorktreeRequest, Provisioning, WorktreeOpener,
+    CreateWorktreeRequest, Provisioning, ResolveCheckout, WorktreeOpener,
 };
-use zax_domain::{BranchName, PrRef};
+use zax_domain::{BranchName, PrRef, RepoTarget, WorktreeRoot};
 
 use crate::cli::WorktreeCommand;
 use crate::marked;
@@ -20,36 +20,90 @@ pub fn run(command: WorktreeCommand) -> Result<()> {
             from,
             no_hooks,
             no_open,
-        } => new(branch, from, no_hooks, no_open),
+            repo,
+        } => new(branch, from, no_hooks, no_open, repo),
         WorktreeCommand::Review {
             pr,
             no_hooks,
             force,
             no_open,
-        } => review(pr, no_hooks, force, no_open),
+            repo,
+        } => review(pr, no_hooks, force, no_open, repo),
         WorktreeCommand::List => list(),
         WorktreeCommand::Rm { branch, force } => remove(branch, force),
     }
 }
 
-fn provisioning(config: &zax_config::Config, run_hooks: bool) -> Provisioning {
-    Provisioning {
-        copy: config.worktree.copy.clone(),
-        hooks: config.worktree.hooks.clone(),
-        run_hooks,
+/// `worktree.root` is always the session's own: new worktrees have to land
+/// where this session's tickets pane and `W` popup look for them, whichever
+/// repository they belong to. `copy` and `hooks` are the target repository's
+/// own setup, since that is what its worktree actually needs copied and run.
+fn provisioning_and_root(
+    session: &zax_config::Config,
+    target: &zax_config::Config,
+    run_hooks: bool,
+) -> (WorktreeRoot, Provisioning) {
+    (
+        session.worktree.root.clone(),
+        Provisioning {
+            copy: target.worktree.copy.clone(),
+            hooks: target.worktree.hooks.clone(),
+            run_hooks,
+        },
+    )
+}
+
+/// `--repo`, parsed once at the boundary into a `RepoTarget`. A leading `~`
+/// is expanded here, since `RepoTarget::parse` deliberately leaves that to
+/// the caller that knows the home directory.
+fn parse_repo(repo: Option<String>, home: &Path) -> Result<Option<RepoTarget>> {
+    let Some(raw) = repo else {
+        return Ok(None);
+    };
+    let target = match RepoTarget::parse(&raw)? {
+        RepoTarget::Path(path) => RepoTarget::Path(expand_tilde(&path, home)),
+        slug => slug,
+    };
+    Ok(Some(target))
+}
+
+/// Both spellings `zax-config`'s `expand_home` accepts: `~/` and a bare `~`,
+/// so `--repo ~` means on the command line what it means in a config file.
+fn expand_tilde(path: &Path, home: &Path) -> PathBuf {
+    match path.to_str() {
+        Some("~") => home.to_owned(),
+        Some(text) => match text.strip_prefix("~/") {
+            Some(rest) => home.join(rest),
+            None => path.to_owned(),
+        },
+        None => path.to_owned(),
     }
 }
 
-fn new(branch: String, from: Option<String>, no_hooks: bool, no_open: bool) -> Result<()> {
+fn new(
+    branch: String,
+    from: Option<String>,
+    no_hooks: bool,
+    no_open: bool,
+    repo: Option<String>,
+) -> Result<()> {
     let ctx = wiring::resolve()?;
     let branch = BranchName::parse_local(&branch)?;
+    let repo = parse_repo(repo, &ctx.home)?;
+
+    let checkouts = wiring::checkouts();
+    let checkout = ResolveCheckout::new(&checkouts, ctx.config.projects.as_ref())
+        .for_new(repo.as_ref(), ctx.here())?;
+    let target = wiring::target_at(&ctx, checkout.as_ref())?;
+    let (root, provisioning) =
+        provisioning_and_root(&ctx.config, &target.provisioning_config, !no_hooks);
 
     let outcome =
-        CreateWorktree::new(&ctx.git, &RealFs, &RealRunner).run(CreateWorktreeRequest {
+        CreateWorktree::new(&target.git, &RealFs, &RealRunner).run(CreateWorktreeRequest {
             branch,
             base: from,
-            root: ctx.config.worktree.root.clone(),
-            provisioning: provisioning(&ctx.config, !no_hooks),
+            root,
+            provisioning,
         })?;
 
     report(&outcome);
@@ -61,15 +115,32 @@ fn new(branch: String, from: Option<String>, no_hooks: bool, no_open: bool) -> R
     Ok(())
 }
 
-fn review(pr: String, no_hooks: bool, force: bool, no_open: bool) -> Result<()> {
+fn review(
+    pr: String,
+    no_hooks: bool,
+    force: bool,
+    no_open: bool,
+    repo: Option<String>,
+) -> Result<()> {
     let ctx = wiring::resolve()?;
     let pr = PrRef::parse(&pr)?;
+    let repo = parse_repo(repo, &ctx.home)?;
 
-    let outcome = CreateReviewWorktree::new(&ctx.git, &ctx.gh, &RealFs, &RealRunner).run(
+    let checkouts = wiring::checkouts();
+    let checkout = ResolveCheckout::new(&checkouts, ctx.config.projects.as_ref()).for_review(
+        &pr,
+        repo.as_ref(),
+        ctx.here(),
+    )?;
+    let target = wiring::target_at(&ctx, checkout.as_ref())?;
+    let (root, provisioning) =
+        provisioning_and_root(&ctx.config, &target.provisioning_config, !no_hooks);
+
+    let outcome = CreateReviewWorktree::new(&target.git, &target.gh, &RealFs, &RealRunner).run(
         CreateReviewWorktreeRequest {
             pr,
-            root: ctx.config.worktree.root.clone(),
-            provisioning: provisioning(&ctx.config, !no_hooks),
+            root,
+            provisioning,
             force,
         },
     )?;
@@ -130,9 +201,10 @@ fn report(outcome: &zax_app::CreateWorktreeOutcome) {
 
 fn list() -> Result<()> {
     let ctx = wiring::resolve()?;
-    let entries = queries::list_worktrees(&ctx.git, &ctx.config.worktree.root, &ctx.repo)?;
+    let repo = ctx.require_repo()?;
+    let entries = queries::list_worktrees(&repo.git, &ctx.config.worktree.root, &repo.name)?;
     if entries.is_empty() {
-        println!("no zax worktrees for {}", ctx.repo);
+        println!("no zax worktrees for {}", repo.name);
     }
     for entry in entries {
         let branch = entry
@@ -149,8 +221,13 @@ fn remove(branch: String, force: bool) -> Result<()> {
     let ctx = wiring::resolve()?;
     // Parsed leniently: an old branch that breaks the rule can still be removed.
     let branch = BranchName::parse_foreign(&branch)?;
-    let path =
-        queries::remove_worktree(&ctx.git, &RealFs, &ctx.config.worktree.root, &branch, force)?;
+    let path = queries::remove_worktree(
+        &ctx.require_repo()?.git,
+        &RealFs,
+        &ctx.config.worktree.root,
+        &branch,
+        force,
+    )?;
     println!("removed {}", path.as_path().display());
     Ok(())
 }
@@ -162,8 +239,62 @@ mod tests {
 
     use zax_app::testing::FakeOpener;
     use zax_app::PortError;
+    use zax_domain::{RepoTarget, WorktreeRoot};
 
-    use super::open_worktree;
+    use super::{open_worktree, parse_repo, provisioning_and_root};
+
+    fn config() -> zax_config::Config {
+        zax_config::parse::from_raw(zax_config::raw::RawConfig::default(), "/h").unwrap()
+    }
+
+    #[test]
+    fn a_repo_path_has_its_tilde_expanded_against_the_home_directory() {
+        let home = Path::new("/h");
+
+        assert_eq!(
+            parse_repo(Some("~/src/omega".to_owned()), home).unwrap(),
+            Some(RepoTarget::Path(PathBuf::from("/h/src/omega")))
+        );
+        // A bare `~` is the home directory itself, as the config layer reads
+        // it; left alone it reaches the inspector as a literal `~` and comes
+        // back as "absent".
+        assert_eq!(
+            parse_repo(Some("~".to_owned()), home).unwrap(),
+            Some(RepoTarget::Path(PathBuf::from("/h")))
+        );
+        assert_eq!(
+            parse_repo(Some("/srv/omega".to_owned()), home).unwrap(),
+            Some(RepoTarget::Path(PathBuf::from("/srv/omega")))
+        );
+        assert_eq!(
+            parse_repo(Some("acme/omega".to_owned()), home).unwrap(),
+            Some(RepoTarget::Slug(
+                zax_domain::RepoSlug::parse("acme/omega").unwrap()
+            ))
+        );
+        assert_eq!(parse_repo(None, home).unwrap(), None);
+    }
+
+    #[test]
+    fn copy_and_hooks_come_from_the_target_but_the_root_from_the_session() {
+        let target_hook = zax_domain::Command::new(vec!["target-hook".to_owned()]).unwrap();
+
+        let mut session = config();
+        session.worktree.root = WorktreeRoot::new(PathBuf::from("/w")).unwrap();
+        session.worktree.hooks =
+            vec![zax_domain::Command::new(vec!["session-hook".to_owned()]).unwrap()];
+
+        let mut target = config();
+        target.worktree.root = WorktreeRoot::new(PathBuf::from("/other")).unwrap();
+        target.worktree.copy = vec![PathBuf::from(".env")];
+        target.worktree.hooks = vec![target_hook.clone()];
+
+        let (root, provisioning) = provisioning_and_root(&session, &target, true);
+
+        assert_eq!(root, WorktreeRoot::new(PathBuf::from("/w")).unwrap());
+        assert_eq!(provisioning.copy, vec![PathBuf::from(".env")]);
+        assert_eq!(provisioning.hooks, vec![target_hook]);
+    }
 
     #[test]
     fn a_finished_worktree_is_handed_to_the_opener() {

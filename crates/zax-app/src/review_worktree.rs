@@ -232,7 +232,10 @@ where
         };
 
         let current_repo = self.forge.current_repo()?;
-        if pull_request_repo == current_repo {
+        // Case-insensitively: a URL keeps the casing it was pasted with and
+        // the forge answers with the canonical one, so the same repository
+        // routinely arrives spelled two ways.
+        if pull_request_repo.same_repository(&current_repo) {
             return Ok(());
         }
         Err(CreateReviewWorktreeError::WrongRepository {
@@ -391,6 +394,29 @@ mod tests {
             "nothing may be fetched into this repository"
         );
         assert!(git.added.borrow().is_empty());
+    }
+
+    #[test]
+    fn a_pull_request_url_in_another_case_is_still_this_repository() {
+        // The URL keeps whatever casing was pasted; `gh repo view` answers
+        // with GitHub's canonical casing. GitHub reads the two as one
+        // repository, so comparing them literally would refuse a pull request
+        // of the very repository zax is standing in.
+        let git = FakeGitRepo::new("/Users/me/src/omega", "main");
+        let fs = FakeFs::default();
+        let runner = FakeRunner::default();
+        let (forge, req) = request("fix-ingest", false);
+        let forge = forge.in_repository("Acme/Omega");
+        let req = CreateReviewWorktreeRequest {
+            pr: PrRef::parse("https://github.com/acme/omega/pull/42").unwrap(),
+            ..req
+        };
+
+        CreateReviewWorktree::new(&git, &forge, &fs, &runner)
+            .run(req)
+            .unwrap();
+
+        assert_eq!(git.fetched.borrow().len(), 1);
     }
 
     #[test]

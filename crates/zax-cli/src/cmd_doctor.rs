@@ -8,12 +8,13 @@ use crate::wiring;
 
 pub fn run() -> Result<()> {
     let ctx = wiring::resolve()?;
+    let repo = ctx.require_repo()?;
     let tmux = wiring::tmux(&ctx.config)?;
 
     let opener = wiring::opener(&ctx.config);
     let editor = wiring::editor(&ctx.config);
 
-    let checks = queries::doctor(&tmux, &ctx.git, &ctx.gh, &opener, &editor, &wiring::ssh());
+    let checks = queries::doctor(&tmux, &repo.git, &ctx.gh, &opener, &editor, &wiring::ssh());
     let mut all_ok = true;
 
     for check in &checks {
@@ -46,13 +47,11 @@ pub fn run() -> Result<()> {
     // check that covers a wrong path, a bad build and a protocol mismatch.
     if let Some(provider) = &ctx.config.tickets.provider {
         // Probed exactly as the broker will run it, relative path anchored.
-        let main_worktree = {
-            use zax_app::GitRepo;
-            ctx.git.main_worktree()?
-        };
-        let home = crate::wiring::home().ok();
-        let argv =
-            crate::cmd_tickets::anchor_provider(provider.argv(), &main_worktree, home.as_deref());
+        let argv = crate::cmd_tickets::anchor_provider(
+            provider.argv(),
+            &ctx.provider_anchor(),
+            Some(ctx.home.as_path()),
+        );
         match zax_broker::provider_source::probe(argv) {
             Ok(detail) => println!("ok    {:<8} {detail}", "tickets"),
             Err(error) => {

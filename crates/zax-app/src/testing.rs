@@ -7,13 +7,13 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use zax_domain::{
-    BranchName, Command, LiveSession, PaneSize, PrFilter, PrRef, PullRequest, PullRequestStatus,
-    RepoSlug, RootRepoName, SessionName, Worktree, WorktreeRoot,
+    BranchName, CheckoutProbe, Command, LiveSession, PaneSize, PrFilter, PrRef, PullRequest,
+    PullRequestStatus, RepoSlug, RootRepoName, SessionName, Worktree, WorktreeRoot,
 };
 
 use crate::ports::{
-    Clock, Editor, FileSystem, Forge, GitRepo, Multiplexer, PortError, ProcessRunner,
-    PullRequestHead, SshAgent, WorktreeEntry, WorktreeOpener, WorktreeScanner,
+    CheckoutInspector, Clock, Editor, FileSystem, Forge, GitRepo, Multiplexer, PortError,
+    ProcessRunner, PullRequestHead, SshAgent, WorktreeEntry, WorktreeOpener, WorktreeScanner,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -651,6 +651,71 @@ impl FileSystem for FakeFs {
             .borrow_mut()
             .push((from.to_owned(), to.to_owned()));
         Ok(())
+    }
+}
+
+/// A `CheckoutInspector` whose answers are planted by the test, keyed by
+/// path. A path nobody planted inspects as `Absent`, so a test only has to
+/// name the paths it cares about.
+#[derive(Default)]
+pub struct FakeCheckouts {
+    probes: RefCell<HashMap<PathBuf, CheckoutProbe>>,
+    children: RefCell<HashMap<PathBuf, Vec<PathBuf>>>,
+    pub inspected: RefCell<Vec<PathBuf>>,
+}
+
+impl FakeCheckouts {
+    pub fn with_main(
+        self,
+        path: impl Into<PathBuf>,
+        top: impl Into<PathBuf>,
+        origin_url: Option<&str>,
+    ) -> Self {
+        self.probes.borrow_mut().insert(
+            path.into(),
+            CheckoutProbe::Main {
+                top: top.into(),
+                origin_url: origin_url.map(str::to_owned),
+            },
+        );
+        self
+    }
+
+    pub fn with_linked(self, path: impl Into<PathBuf>) -> Self {
+        self.probes
+            .borrow_mut()
+            .insert(path.into(), CheckoutProbe::LinkedWorktree);
+        self
+    }
+
+    pub fn with_plain(self, path: impl Into<PathBuf>) -> Self {
+        self.probes
+            .borrow_mut()
+            .insert(path.into(), CheckoutProbe::NotACheckout);
+        self
+    }
+
+    pub fn with_children(self, dir: impl Into<PathBuf>, paths: &[&str]) -> Self {
+        self.children
+            .borrow_mut()
+            .insert(dir.into(), paths.iter().map(PathBuf::from).collect());
+        self
+    }
+}
+
+impl CheckoutInspector for FakeCheckouts {
+    fn inspect(&self, path: &Path) -> Result<CheckoutProbe, PortError> {
+        self.inspected.borrow_mut().push(path.to_owned());
+        Ok(self
+            .probes
+            .borrow()
+            .get(path)
+            .cloned()
+            .unwrap_or(CheckoutProbe::Absent))
+    }
+
+    fn subdirectories(&self, dir: &Path) -> Result<Vec<PathBuf>, PortError> {
+        Ok(self.children.borrow().get(dir).cloned().unwrap_or_default())
     }
 }
 

@@ -6,6 +6,7 @@ use zax_app::{GitRepo, PortError, WorktreeEntry};
 use zax_domain::{BranchName, RootRepoName};
 use zax_exec::{Exec, ExecError, Output};
 
+pub use checkouts::GitCheckouts;
 pub use scan::FsWorktreeScanner;
 
 const TOOL: &str = "git";
@@ -62,6 +63,18 @@ fn map_exec_error(error: ExecError) -> PortError {
         ExecError::NotFound { .. } => PortError::MissingTool { tool: TOOL },
         ExecError::Io { detail, .. } => PortError::Unparseable { tool: TOOL, detail },
     }
+}
+
+/// A remote that is not configured is an answer, not a failure: a fresh
+/// repository with no origin simply needs no credential for one. Shared with
+/// `checkouts`, which asks the same question from a path that is not
+/// necessarily `self.cwd`.
+fn parse_remote_url(out: &Output) -> Option<String> {
+    if !out.ok() {
+        return None;
+    }
+    let url = out.trimmed_stdout().trim();
+    Some(url.to_owned()).filter(|url| !url.is_empty())
 }
 
 impl<E: Exec> GitRepo for GitCli<E> {
@@ -143,13 +156,7 @@ impl<E: Exec> GitRepo for GitCli<E> {
 
     fn remote_url(&self, remote: &str) -> Result<Option<String>, PortError> {
         let out = self.run(argv::remote_url(remote))?;
-        // A remote that is not configured is an answer, not a failure: a fresh
-        // repository with no origin simply needs no credential for one.
-        if !out.ok() {
-            return Ok(None);
-        }
-        let url = out.trimmed_stdout().trim();
-        Ok(Some(url.to_owned()).filter(|url| !url.is_empty()))
+        Ok(parse_remote_url(&out))
     }
 
     fn fetch(&self, remote: &str, refspec: &str) -> Result<(), PortError> {
@@ -185,7 +192,25 @@ impl<E: Exec> GitRepo for GitCli<E> {
     }
 }
 
+/// Whether a failed repository query is git answering "there is no
+/// repository here" rather than failing to answer at all.
+///
+/// Only git knows how it says this, so the reading lives with the adapter.
+/// Everything else - no git on PATH, a `safe.directory` refusal, an
+/// unreadable `.git` - is a repository zax could not look at, which is not
+/// the same thing as a directory outside one and must not be reported as
+/// one.
+pub fn is_outside_repository(error: &PortError) -> bool {
+    match error {
+        PortError::CommandFailed { tool, stderr, .. } if *tool == TOOL => {
+            stderr.contains("not a git repository")
+        }
+        _ => false,
+    }
+}
+
 pub mod argv;
+pub mod checkouts;
 pub mod porcelain;
 pub mod scan;
 
@@ -204,6 +229,39 @@ mod tests {
             exec,
             PathBuf::from("/Users/me/src/worktrees/acme/topic"),
         )
+    }
+
+    fn git_failed(stderr: &str) -> PortError {
+        PortError::CommandFailed {
+            tool: TOOL,
+            status: 128,
+            stderr: stderr.to_owned(),
+        }
+    }
+
+    #[test]
+    fn only_gits_own_no_repository_answer_reads_as_outside_a_repository() {
+        assert!(is_outside_repository(&git_failed(
+            "fatal: not a git repository (or any of the parent directories): .git"
+        )));
+        assert!(is_outside_repository(&git_failed(
+            "fatal: not a git repository: /srv/elsewhere/.git"
+        )));
+
+        // A repository git refuses to read is still a repository.
+        assert!(!is_outside_repository(&git_failed(
+            "fatal: detected dubious ownership in repository at '/h/src/omega'"
+        )));
+        assert!(!is_outside_repository(&git_failed(
+            "fatal: could not read Permission denied"
+        )));
+        assert!(!is_outside_repository(&PortError::MissingTool {
+            tool: TOOL
+        }));
+        assert!(!is_outside_repository(&PortError::Unparseable {
+            tool: TOOL,
+            detail: "nothing like a path".to_owned()
+        }));
     }
 
     #[test]

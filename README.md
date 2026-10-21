@@ -91,8 +91,8 @@ title is what drives Zed's in-progress indicator for a thread. tmux's own
 | `zax session start` | Reattach to a detached session in this worktree, or build a new one |
 | `zax session list` | The zax sessions on the dedicated socket |
 | `zax session kill [name]` | Kill a session. Defaults to this worktree's own, when it has only one |
-| `zax worktree new <branch> [--from <base>] [--no-hooks] [--no-open]` | Branch plus worktree at the canonical path, then copy, hooks and the editor |
-| `zax worktree review <pr\|url> [--force] [--no-hooks] [--no-open]` | A pull request's head branch in a worktree, then copy, hooks and the editor |
+| `zax worktree new <branch> [--from <base>] [--no-hooks] [--no-open] [--repo <target>]` | Branch plus worktree at the canonical path, then copy, hooks and the editor |
+| `zax worktree review <pr\|url> [--force] [--no-hooks] [--no-open] [--repo <target>]` | A pull request's head branch in a worktree, then copy, hooks and the editor |
 | `zax worktree list` | The worktrees zax manages for this repository |
 | `zax worktree rm <branch> [--force]` | Remove one |
 | `zax pane prs-for-review \| branch-status \| my-prs \| tickets \| todo` | Built-in pane processes, normally launched by `session start` |
@@ -195,6 +195,12 @@ root  = "~/src/worktrees"
 copy  = [".env", ".envrc"]
 hooks = ["direnv allow", "bundle install"]
 
+[projects]
+root = "~/src"
+
+[projects.paths]
+"gameldar/zed-ai-extensions" = "~/src/tools/zed-ai-extensions"
+
 [open]
 command = ["zed", "-e"]
 
@@ -219,6 +225,8 @@ max_age = "14d"
 | `worktree.root` | `~/src/worktrees` | Where worktrees are created |
 | `worktree.copy` | none | Gitignored-but-required files to copy into a new worktree |
 | `worktree.hooks` | none | Shell scripts run in a new worktree |
+| `projects.root` | none | The directory of base checkouts zax looks in for a repository other than this one, used by `--repo` and by a ticket's worktree (see [Worktrees in another repository](#worktrees-in-another-repository)). Global layer only |
+| `projects.paths` | none | `owner/name = path` overrides for a checkout not at `<root>/<name>`. Global layer only; edited by hand, not the config editor |
 | `tmux.prefix` | `C-Space` | Prefix key for zax's tmux server |
 | `prs.include` / `prs.exclude` | none | Which repositories `prs-for-review` and `my-prs` show |
 | `prs.max_age` | none | Hide pull requests older than this, in `prs-for-review` only |
@@ -673,6 +681,53 @@ everything else zax runs is told not to ask.
 such as the todo pane's `o`. A config that sets `[editor] command` and has no
 `[open]` table gets a `note` from `zax doctor` saying so.
 
+### Worktrees in another repository
+
+By default `zax worktree new` and `zax worktree review` make their worktree
+in the repository you are already in. Both commands take `--repo <target>`
+to target a different repository instead: an owner/name slug or a path to a
+main checkout; defaults to this repository.
+
+A path is taken as the checkout itself, regardless of configuration - it
+only has to be a main checkout, whatever repository it turns out to be.
+Resolving an `owner/name` slug to anything other than the repository you are
+already in needs `projects.root` set to a directory of base checkouts:
+
+1. If the current directory is inside a repository whose `origin` is that
+   `owner/name`, its main checkout is used, and `projects.root` is not even
+   consulted.
+2. Otherwise, when `projects.paths` has an override for it, that override's
+   path is the only one tried - it is a statement about exactly where that
+   repository lives, not a first guess that falls back to the convention
+   below if it turns out to be wrong.
+3. With no override configured for it, `<projects.root>/<name>` is tried
+   instead.
+4. Whichever path is tried has to exist, be a main checkout rather than a
+   linked worktree, and have an `origin` remote that parses to that
+   `owner/name` - compared case-insensitively.
+5. A miss or a mismatch is an error naming the slug, every path tried and why
+   each one failed; with `projects.root` unset, it also says to set it.
+
+A worktree made in another repository takes `worktree.copy` and
+`worktree.hooks` from that repository's own config chain, since its `copy`
+paths are relative to its main checkout. `worktree.root` is not read from
+there: it stays the value this session resolved, so a per-repository
+`worktree.root` in the target is not what decides where the worktree lands.
+That keeps new worktrees where the tickets pane and the `W` popup already
+look for them.
+
+`zax worktree review` resolves the same way without `--repo`, given a pull
+request URL: the URL's own `owner/name` is what gets resolved. A bare pull
+request number still means the repository you are in, as it always has;
+given outside any repository, it is refused and asks for the URL instead.
+
+The tickets pane's `w` has no `owner/name` to resolve - a ticket belongs to
+no particular repository - so instead of guessing it asks: when the ticket
+has no worktree yet and `projects.root` is configured, `w` lists every main
+checkout found under `projects.root` plus every `projects.paths` override.
+Type to filter the list by name, `↑`/`↓` to move the selection, `Enter` to
+start the worktree there, `Esc` to cancel.
+
 ### Opening in herdr
 
 zax's panes can run beside [herdr](https://herdr.dev) rather than inside it:
@@ -751,6 +806,16 @@ dedicated `-L zax` socket. The fingerprint is what keeps two worktrees whose
 names sanitise alike from sharing one, so `zax session kill` can never tear
 down the wrong agent.
 
+With `projects.root` configured, `zax session start` works outside any git
+repository too. There is no repository or branch to name the session from,
+so it is named from the directory instead: `zax-<directory>-<fingerprint>`,
+with a sixteen-hex-digit fingerprint rather than eight, so a directory-named
+session can never be mistaken for a repo-and-branch one. Reattaching to a
+detached session, and opening another slot once every one is attached, both
+work the same way, keyed on the directory rather than the worktree. Without
+`projects.root` set, starting outside a repository is refused with a hint to
+set it.
+
 A worktree can run several agents side by side. `zax session start` reattaches
 to the lowest-numbered session in the worktree that nobody is attached to, and
 only when every one is attached does it build another, suffixed `-2`, `-3` and
@@ -804,7 +869,9 @@ builds one only when none is running, and two starts at once end up on the
 same panel. Start it from inside any git repository: zax reads its config from
 that repository's layers, and the panel's panes start in that repository's own
 checkout rather than in the worktree you started from, so removing that
-worktree later does not pull the panes' directory away. A running panel keeps
+worktree later does not pull the panes' directory away. With `projects.root`
+configured the panel can start outside a repository too: there is no checkout
+to root the panes in, so they start in the cwd instead. A running panel keeps
 the layout it was built with until it is killed. It is tied to no branch, so a detached
 HEAD does not stop it, and the tickets pane does not count it as an agent in
 whichever worktree it was started from. Stop it with

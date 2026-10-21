@@ -9,7 +9,8 @@ use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 use zax_domain::{
-    branch_slug, join, Attention, Ticket, TicketKey, TicketRank, TicketRow, Transition, WorkIndex,
+    branch_slug, join, Attention, BranchName, RepoChoices, Ticket, TicketKey, TicketRank,
+    TicketRow, Transition, WorkIndex,
 };
 
 use crate::action::PaneAction;
@@ -18,6 +19,7 @@ use crate::chrome::{error_line, header_line};
 use crate::fmt::{display_width, truncate};
 use crate::my_prs_pane::{attention_glyph, attention_style};
 use crate::pr_fields::{check_glyph, check_style};
+use crate::repo_picker::{RepoPicker, RepoPickerAction};
 
 const TITLE: &str = "Tickets";
 const SEPARATOR: &str = " · ";
@@ -48,6 +50,11 @@ pub struct TicketsPane {
     selected: usize,
     focused: bool,
     picker: Option<Picker>,
+    /// `projects.root` is configured, so `w` asks which checkout a new
+    /// worktree goes in instead of starting it in whatever repository the
+    /// session happened to start in.
+    repo_choice: bool,
+    repo_picker: Option<RepoPicker>,
     notice: Option<String>,
 }
 
@@ -67,6 +74,8 @@ impl TicketsPane {
             selected: 0,
             focused: false,
             picker: None,
+            repo_choice: false,
+            repo_picker: None,
             notice: None,
         }
     }
@@ -142,6 +151,19 @@ impl TicketsPane {
         self.picker = Some(Picker { key, transitions });
     }
 
+    /// Whether `projects.root` is configured: with it on, `w` asks which
+    /// checkout to start work in rather than guessing from where the session
+    /// started.
+    pub fn set_repo_choice(&mut self, enabled: bool) {
+        self.repo_choice = enabled;
+    }
+
+    /// The host already has the checkouts to offer (`ResolveCheckout::list`);
+    /// showing them is all that is left to do here.
+    pub fn show_repo_picker(&mut self, branch: BranchName, choices: RepoChoices) {
+        self.repo_picker = Some(RepoPicker::new(branch, choices));
+    }
+
     /// A one-line message about the last keystroke, cleared by the next one.
     pub fn notice(&mut self, message: String) {
         self.notice = Some(message);
@@ -157,6 +179,13 @@ impl TicketsPane {
 
     pub fn render(&self, frame: &mut Frame, area: Rect, now: SystemTime) {
         if area.height == 0 || area.width == 0 {
+            return;
+        }
+        // Unlike the transition picker, the choice of repository can be a
+        // long list, so it takes the whole pane rather than squeezing onto
+        // the header line.
+        if let Some(picker) = &self.repo_picker {
+            picker.render(frame, area);
             return;
         }
         let mut lines = vec![self.top_line(area.width, now)];
@@ -307,6 +336,19 @@ impl TicketsPane {
 
     pub fn on_key(&mut self, key: KeyEvent) -> PaneAction {
         self.notice = None;
+        if let Some(mut picker) = self.repo_picker.take() {
+            return match picker.on_key(key) {
+                RepoPickerAction::Choose(path) => PaneAction::StartWork {
+                    branch: picker.branch().clone(),
+                    repo: Some(path),
+                },
+                RepoPickerAction::Cancel => PaneAction::None,
+                RepoPickerAction::None => {
+                    self.repo_picker = Some(picker);
+                    PaneAction::None
+                }
+            };
+        }
         if let Some(picker) = self.picker.take() {
             return match key.code {
                 KeyCode::Char(c @ '1'..='9') => {
@@ -395,7 +437,8 @@ impl TicketsPane {
             };
         }
         match branch_slug(&row.ticket.key, &row.ticket.summary) {
-            Ok(branch) => PaneAction::StartWork { branch },
+            Ok(branch) if self.repo_choice => PaneAction::ChooseRepo { branch },
+            Ok(branch) => PaneAction::StartWork { branch, repo: None },
             Err(e) => {
                 self.notice = Some(e.to_string());
                 PaneAction::None
@@ -660,7 +703,8 @@ mod tests {
         assert_eq!(
             pane.on_key(key(KeyCode::Char('w'))),
             PaneAction::StartWork {
-                branch: BranchName::parse_local("OMEGA-1-make-it-go").unwrap()
+                branch: BranchName::parse_local("OMEGA-1-make-it-go").unwrap(),
+                repo: None,
             }
         );
         let work = WorkIndex {
@@ -675,6 +719,100 @@ mod tests {
                 others: 1
             }
         );
+    }
+
+    #[test]
+    fn w_asks_for_a_repo_when_projects_are_configured() {
+        let mut pane = pane_with(
+            vec![ticket("OMEGA-1", StatusCategory::ToDo, "Make it go")],
+            WorkIndex::default(),
+        );
+        pane.set_repo_choice(true);
+        assert_eq!(
+            pane.on_key(key(KeyCode::Char('w'))),
+            PaneAction::ChooseRepo {
+                branch: BranchName::parse_local("OMEGA-1-make-it-go").unwrap()
+            }
+        );
+    }
+
+    #[test]
+    fn w_starts_work_directly_without_projects() {
+        let mut pane = pane_with(
+            vec![ticket("OMEGA-1", StatusCategory::ToDo, "Make it go")],
+            WorkIndex::default(),
+        );
+        pane.set_repo_choice(false);
+        assert_eq!(
+            pane.on_key(key(KeyCode::Char('w'))),
+            PaneAction::StartWork {
+                branch: BranchName::parse_local("OMEGA-1-make-it-go").unwrap(),
+                repo: None,
+            }
+        );
+    }
+
+    #[test]
+    fn an_existing_worktree_opens_without_the_picker() {
+        let work = WorkIndex {
+            worktrees: vec![worktree("OMEGA-1-a")],
+            ..WorkIndex::default()
+        };
+        let mut pane = pane_with(vec![ticket("OMEGA-1", StatusCategory::ToDo, "x")], work);
+        pane.set_repo_choice(true);
+        assert_eq!(
+            pane.on_key(key(KeyCode::Char('w'))),
+            PaneAction::OpenWorktree {
+                path: PathBuf::from("/w/omega/OMEGA-1-a"),
+                others: 0
+            }
+        );
+    }
+
+    fn repo_choices(preselected: Option<usize>) -> RepoChoices {
+        RepoChoices {
+            checkouts: vec![accept_checkout(CheckoutProbe::Main {
+                top: PathBuf::from("/h/src/omega"),
+                origin_url: None,
+            })
+            .unwrap()],
+            preselected,
+        }
+    }
+
+    #[test]
+    fn choosing_a_repo_starts_work_there() {
+        let mut pane = pane_with(
+            vec![ticket("OMEGA-1", StatusCategory::ToDo, "Make it go")],
+            WorkIndex::default(),
+        );
+        let branch = BranchName::parse_local("OMEGA-1-go").unwrap();
+        pane.show_repo_picker(branch.clone(), repo_choices(None));
+        assert_eq!(
+            pane.on_key(key(KeyCode::Enter)),
+            PaneAction::StartWork {
+                branch,
+                repo: Some(PathBuf::from("/h/src/omega")),
+            }
+        );
+    }
+
+    #[test]
+    fn cancelling_the_picker_aborts() {
+        let mut pane = pane_with(
+            vec![
+                ticket("OMEGA-1", StatusCategory::ToDo, "x"),
+                ticket("OMEGA-2", StatusCategory::ToDo, "y"),
+            ],
+            WorkIndex::default(),
+        );
+        let branch = BranchName::parse_local("OMEGA-1-go").unwrap();
+        pane.show_repo_picker(branch, repo_choices(None));
+        assert_eq!(pane.on_key(key(KeyCode::Esc)), PaneAction::None);
+        // The picker is gone, not merely hidden: the next `j` moves the
+        // ticket list rather than being swallowed by the picker again.
+        assert_eq!(pane.on_key(key(KeyCode::Char('j'))), PaneAction::None);
+        assert_eq!(pane.selected, 1);
     }
 
     #[test]

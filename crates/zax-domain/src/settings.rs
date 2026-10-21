@@ -100,6 +100,8 @@ pub enum SettingKey {
     WorktreeRoot,
     WorktreeCopy,
     WorktreeHooks,
+    ProjectsRoot,
+    ProjectsPaths,
     OpenVia,
     OpenCommand,
     EditorVia,
@@ -116,11 +118,13 @@ pub enum SettingKey {
 impl SettingKey {
     /// Display order: grouped as the TOML is, with the repo key last because it
     /// is the one setting that is about zax's own bookkeeping.
-    pub const ALL: [SettingKey; 15] = [
+    pub const ALL: [SettingKey; 17] = [
         SettingKey::AgentCommand,
         SettingKey::WorktreeRoot,
         SettingKey::WorktreeCopy,
         SettingKey::WorktreeHooks,
+        SettingKey::ProjectsRoot,
+        SettingKey::ProjectsPaths,
         SettingKey::OpenVia,
         SettingKey::OpenCommand,
         SettingKey::EditorVia,
@@ -139,6 +143,7 @@ impl SettingKey {
         match self {
             Self::AgentCommand => Some("agent"),
             Self::WorktreeRoot | Self::WorktreeCopy | Self::WorktreeHooks => Some("worktree"),
+            Self::ProjectsRoot | Self::ProjectsPaths => Some("projects"),
             Self::OpenVia | Self::OpenCommand => Some("open"),
             Self::EditorVia | Self::EditorCommand => Some("editor"),
             Self::TicketsProvider => Some("tickets"),
@@ -157,6 +162,8 @@ impl SettingKey {
             Self::WorktreeRoot => "root",
             Self::WorktreeCopy => "copy",
             Self::WorktreeHooks => "hooks",
+            Self::ProjectsRoot => "root",
+            Self::ProjectsPaths => "paths",
             Self::TicketsProvider => "provider",
             Self::TodoFile => "file",
             Self::TmuxPrefix => "prefix",
@@ -174,6 +181,8 @@ impl SettingKey {
             Self::WorktreeRoot => "worktree.root",
             Self::WorktreeCopy => "worktree.copy",
             Self::WorktreeHooks => "worktree.hooks",
+            Self::ProjectsRoot => "projects.root",
+            Self::ProjectsPaths => "projects.paths",
             Self::OpenVia => "open.via",
             Self::OpenCommand => "open.command",
             Self::EditorVia => "editor.via",
@@ -206,12 +215,14 @@ impl SettingKey {
             Self::AgentCommand
             | Self::WorktreeCopy
             | Self::WorktreeHooks
+            | Self::ProjectsPaths
             | Self::OpenCommand
             | Self::EditorCommand
             | Self::TicketsProvider
             | Self::PrsInclude
             | Self::PrsExclude => SettingShape::List,
             Self::WorktreeRoot
+            | Self::ProjectsRoot
             | Self::OpenVia
             | Self::EditorVia
             | Self::TodoFile
@@ -230,6 +241,12 @@ impl SettingKey {
             Self::WorktreeRoot => "every worktree lives under <root>/<repo>/<branch>",
             Self::WorktreeCopy => "paths copied into a new worktree, relative to the repository",
             Self::WorktreeHooks => "shell commands run in a new worktree, in order",
+            Self::ProjectsRoot => {
+                "the directory of base checkouts; PR and ticket worktrees are made in the checkout found here"
+            }
+            Self::ProjectsPaths => {
+                "owner/name = path overrides for checkouts not at <root>/<name>; edited by hand"
+            }
             Self::OpenVia => "command runs open.command; herdr opens the worktree as a herdr space",
             Self::OpenCommand => "what a worktree opens in, path appended; empty opens nothing",
             Self::EditorVia => "command runs editor.command; herdr runs it in a herdr space",
@@ -254,6 +271,8 @@ impl SettingKey {
             Self::AgentCommand => "claude",
             Self::WorktreeRoot => "~/src/worktrees",
             Self::WorktreeCopy | Self::WorktreeHooks | Self::PrsExclude => "[]",
+            Self::ProjectsRoot => "(unset: off)",
+            Self::ProjectsPaths => "(none)",
             Self::OpenVia | Self::EditorVia => "command",
             Self::OpenCommand => "zed -e",
             Self::EditorCommand => "zed -e (nvim with via = herdr)",
@@ -274,12 +293,21 @@ impl SettingKey {
     pub fn allowed_slots(self) -> &'static [LayerSlot] {
         match self {
             Self::RepoKeyName => &[LayerSlot::Repo],
+            Self::ProjectsRoot => &[LayerSlot::Global],
+            // Read-only everywhere: the modal has no map editor, so this is
+            // never a slot an edit may land in.
+            Self::ProjectsPaths => &[],
             _ => &LayerSlot::ALL,
         }
     }
 
     pub fn allows(self, slot: LayerSlot) -> bool {
         self.allowed_slots().contains(&slot)
+    }
+
+    /// Whether the modal may ever write this setting, in any layer.
+    pub fn is_read_only(self) -> bool {
+        matches!(self, Self::ProjectsPaths)
     }
 
     /// Whether a running session can pick up a change to this setting.
@@ -569,7 +597,10 @@ pub struct LayerInfo {
 pub struct ConfigView {
     pub settings: Vec<SettingRow>,
     pub panes: PanesView,
-    pub layers: [LayerInfo; 3],
+    /// The layers this draft has open. A draft with no repository context
+    /// shows the global layer alone; one that could read `.zax.toml` shows
+    /// all three.
+    pub layers: Vec<LayerInfo>,
     /// A rendered message rather than a `ConfigError`: that type lives in
     /// `zax-config`, which the domain may not depend on, and the modal only
     /// ever displays it.
@@ -755,9 +786,31 @@ mod tests {
     }
 
     #[test]
+    fn projects_root_is_a_global_only_scalar() {
+        // `projects.root` says where zax looks for *other* repositories'
+        // checkouts, so a repo or a personal override must not be able to
+        // redirect that search - only the global layer may set it.
+        assert!(SettingKey::ProjectsRoot.allows(LayerSlot::Global));
+        assert!(!SettingKey::ProjectsRoot.allows(LayerSlot::Repo));
+        assert!(!SettingKey::ProjectsRoot.allows(LayerSlot::Personal));
+        assert_eq!(SettingKey::ProjectsRoot.full_name(), "projects.root");
+    }
+
+    #[test]
+    fn projects_paths_is_read_only_everywhere() {
+        // The modal has no map editor, so `projects.paths` is edited by hand
+        // and the modal must never offer to write it anywhere.
+        assert!(SettingKey::ProjectsPaths.is_read_only());
+        assert!(SettingKey::ProjectsPaths.allowed_slots().is_empty());
+    }
+
+    #[test]
     fn every_other_setting_may_be_written_in_any_layer() {
         for key in SettingKey::ALL {
-            if key == SettingKey::RepoKeyName {
+            if key == SettingKey::RepoKeyName
+                || key == SettingKey::ProjectsRoot
+                || key == SettingKey::ProjectsPaths
+            {
                 continue;
             }
             for slot in LayerSlot::ALL {
@@ -788,6 +841,7 @@ mod tests {
                 SettingKey::AgentCommand,
                 SettingKey::WorktreeCopy,
                 SettingKey::WorktreeHooks,
+                SettingKey::ProjectsPaths,
                 SettingKey::OpenCommand,
                 SettingKey::EditorCommand,
                 SettingKey::TicketsProvider,
@@ -914,7 +968,7 @@ mod tests {
                 origin: Origin::Default,
                 changed: false,
             },
-            layers: [
+            layers: vec![
                 LayerInfo {
                     slot: LayerSlot::Global,
                     path: PathBuf::from("/g"),

@@ -221,3 +221,79 @@ fn your_layer_can_narrow_the_review_queue_a_repo_did_not_ask_about() {
         Some(std::time::Duration::from_secs(30 * 86_400))
     );
 }
+
+#[test]
+fn projects_are_read_from_the_global_layer() {
+    let tmp = TempDir::new().unwrap();
+    let config_home = tmp.path().join("config");
+    let repo_dir = tmp.path().join("src").join("acme");
+    let repo = RootRepoName::parse("acme").unwrap();
+
+    write(
+        &zax_config::global_config_path(&config_home),
+        "[projects]\nroot = \"/h/src\"\n",
+    );
+
+    let config = zax_config::load(&config_home, &repo_dir, &repo, "/home/me").unwrap();
+
+    assert_eq!(config.projects.unwrap().root.as_path(), Path::new("/h/src"));
+}
+
+#[test]
+fn a_repository_may_not_redirect_where_zax_looks_for_projects() {
+    let tmp = TempDir::new().unwrap();
+    let config_home = tmp.path().join("config");
+    let repo_dir = tmp.path().join("src").join("acme");
+    let repo = RootRepoName::parse("acme").unwrap();
+
+    write(
+        &zax_config::repo_config_path(&repo_dir),
+        "[projects]\nroot = \"/evil\"\n",
+    );
+
+    let err = zax_config::load(&config_home, &repo_dir, &repo, "/home/me").unwrap_err();
+    match err {
+        zax_config::ConfigError::InvalidLayer { field, path, .. } => {
+            assert_eq!(field, "projects.root");
+            assert_eq!(path, zax_config::repo_config_path(&repo_dir));
+        }
+        other => panic!("expected InvalidLayer, got {other}"),
+    }
+}
+
+#[test]
+fn a_personal_override_may_not_set_projects_either() {
+    let tmp = TempDir::new().unwrap();
+    let config_home = tmp.path().join("config");
+    let repo_dir = tmp.path().join("src").join("acme");
+    let repo = RootRepoName::parse("acme").unwrap();
+
+    write(
+        &zax_config::override_config_path(&config_home, "acme"),
+        "[projects.paths]\n\"gameldar/zed-ai-extensions\" = \"/h/src/z\"\n",
+    );
+
+    let err = zax_config::load(&config_home, &repo_dir, &repo, "/home/me").unwrap_err();
+    match err {
+        zax_config::ConfigError::InvalidLayer { field, .. } => {
+            assert_eq!(field, "projects.paths");
+        }
+        other => panic!("expected InvalidLayer, got {other}"),
+    }
+}
+
+#[test]
+fn the_global_layer_loads_on_its_own() {
+    let tmp = TempDir::new().unwrap();
+    let config_home = tmp.path().join("config");
+
+    write(
+        &zax_config::global_config_path(&config_home),
+        "[projects]\nroot = \"/h/src\"\n[tmux]\nprefix = \"C-q\"\n",
+    );
+
+    let config = zax_config::load_global(&config_home, "/home/me").unwrap();
+
+    assert_eq!(config.tmux.prefix, "C-q");
+    assert_eq!(config.projects.unwrap().root.as_path(), Path::new("/h/src"));
+}

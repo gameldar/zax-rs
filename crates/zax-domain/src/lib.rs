@@ -7,6 +7,7 @@ pub mod branch;
 pub mod date;
 pub mod forge;
 pub mod layout;
+pub mod projects;
 pub mod prs_filter;
 pub mod remote;
 pub mod repo;
@@ -27,6 +28,11 @@ pub use layout::{
     format_duration, parse_duration, BuiltinPane, BuiltinPaneError, Command, CommandError,
     DurationError, LayoutSpec, PaneKind, PaneSize, PaneSizeError, PaneSpec, RootPane,
 };
+pub use projects::{
+    accept as accept_checkout, verify as verify_checkout, CheckoutProbe, MainCheckout, NoCheckout,
+    ProjectPaths, ProjectPathsError, Projects, ProjectsRoot, ProjectsRootError, Rejection,
+    RepoChoices, RepoTarget, RepoTargetError,
+};
 pub use prs_filter::{PrFilter, RepoPattern, RepoPatternError};
 pub use remote::Transport;
 pub use repo::{
@@ -34,8 +40,8 @@ pub use repo::{
     WorktreeRootError,
 };
 pub use session::{
-    choose_session, worktree_sessions, LiveSession, SessionChoice, SessionName, SessionNameError,
-    SessionSlot,
+    choose_directory_session, choose_session, worktree_sessions, LiveSession, SessionChoice,
+    SessionName, SessionNameError, SessionSlot,
 };
 pub use settings::{
     ConfigView, LayerInfo, LayerSlot, Origin, PaneEdit, PaneField, PaneKindTag, PanesView, Pending,

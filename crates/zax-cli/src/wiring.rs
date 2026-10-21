@@ -5,10 +5,10 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use zax_app::{Editor, FileSystem, PortError, WorktreeOpener};
 use zax_config::{Config, EditorConfig, OpenConfig};
-use zax_domain::{RootRepoName, TodoFile};
+use zax_domain::{MainCheckout, RootRepoName, TodoFile};
 use zax_exec::{InteractiveExec, SystemExec, SystemHandover};
 use zax_infra_editor::EditorCli;
-use zax_infra_git::GitCli;
+use zax_infra_git::{GitCheckouts, GitCli};
 use zax_infra_github::GhCli;
 use zax_infra_herdr::{HerdrCli, HerdrEditor};
 use zax_infra_ssh::SshAddCli;
@@ -19,12 +19,74 @@ pub type Gh = GhCli<SystemExec>;
 pub type Tmux = TmuxCli<SystemExec, SystemHandover>;
 pub type SshAdapter = SshAddCli<SystemExec>;
 
+/// What `resolve` found about the repository the cwd is in, when it is in
+/// one at all.
+pub struct RepoContext {
+    pub git: Git,
+    pub name: RootRepoName,
+    pub main_worktree: PathBuf,
+}
+
 pub struct Resolved {
     pub cwd: PathBuf,
-    pub git: Git,
     pub gh: Gh,
-    pub repo: RootRepoName,
+    /// `None` outside a git repository, which `projects.root` makes a legal
+    /// place to run zax from. A command that cannot do without a repository
+    /// asks for one through `require_repo`.
+    pub repo: Option<RepoContext>,
     pub config: Config,
+    pub config_home: PathBuf,
+    pub home: PathBuf,
+}
+
+impl Resolved {
+    /// The repository a command needs but this session was not run inside.
+    pub fn require_repo(&self) -> Result<&RepoContext> {
+        self.repo
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("this needs a git repository; run it inside one"))
+    }
+
+    /// The cwd repository's main worktree, for `ResolveCheckout`'s rule that
+    /// the current checkout wins outright before any candidate is looked
+    /// at. `None` outside a repository, where there is no current checkout
+    /// to prefer.
+    pub fn here(&self) -> Option<&Path> {
+        self.repo.as_ref().map(|repo| repo.main_worktree.as_path())
+    }
+
+    /// Where a relative tickets provider path is anchored: the main
+    /// worktree inside a repository, or the global config directory outside
+    /// one, since that is the one directory a repo-less session is still
+    /// tied to.
+    pub fn provider_anchor(&self) -> PathBuf {
+        match &self.repo {
+            Some(repo) => repo.main_worktree.clone(),
+            None => self.config_home.join("zax"),
+        }
+    }
+}
+
+/// `Ok` when the global config has turned `projects` on; otherwise the one
+/// refusal for a directory that is neither a git repository nor opted into
+/// working outside one.
+///
+/// `cause` is git's own answer to the repository query, kept in the chain
+/// rather than replaced by the hint: "not a git repository" is not the only
+/// reason the query can fail, and whichever it was is the first thing the
+/// reader needs.
+///
+/// The hint names what `projects.root` actually buys - a session outside a
+/// repository - because the repository-only commands reach this too, and
+/// setting it does not make `worktree list` or `doctor` work.
+pub fn outside_repository(global: &Config, cause: PortError) -> Result<()> {
+    if global.projects.is_some() {
+        return Ok(());
+    }
+    Err(cause).context(
+        "this directory is not inside a git repository\n\
+         set projects.root in ~/.config/zax/config.toml to start a session outside a repository",
+    )
 }
 
 pub fn home() -> Result<PathBuf> {
@@ -74,34 +136,109 @@ pub fn runtime_dir() -> Result<PathBuf> {
     }
 }
 
-/// Resolve everything that depends on the current directory.
+/// Resolve everything that depends on the current directory. Outside a git
+/// repository this still succeeds, provided the global config has turned
+/// `projects` on: a zax session is often panes alone, tied to no
+/// repository, and it is each command's own job to ask for one, through
+/// `Resolved::require_repo`, when it cannot do without it.
 pub fn resolve() -> Result<Resolved> {
     let cwd = std::env::current_dir().context("could not read the current directory")?;
     let git = GitCli::new(SystemExec, cwd.clone());
     let gh = GhCli::new(SystemExec, cwd.clone());
+    let home = home()?;
+    let config_home = config_home()?;
 
-    let repo = git
-        .repo_name()
-        .context("this directory is not inside a git repository")?;
-    let main_worktree = {
-        use zax_app::GitRepo;
-        git.main_worktree()?
+    let repo_name = match git.repo_name() {
+        Ok(name) => Ok(name),
+        // Only git saying there is no repository here opens the repo-less
+        // path. Any other failure is a repository zax could not read - no
+        // git on PATH, a `safe.directory` refusal, a corrupt `.git` - and
+        // reporting it as an absent repository would leave the user with a
+        // session rooted at the cwd and no word of what was ignored.
+        Err(error) if zax_infra_git::is_outside_repository(&error) => Err(error),
+        Err(error) => return Err(error.into()),
     };
 
-    let home = home()?;
-    let config = zax_config::load(
-        &config_home()?,
-        &main_worktree,
-        &repo,
-        &home.to_string_lossy(),
-    )?;
+    let (repo, config) = match repo_name {
+        Ok(name) => {
+            let main_worktree = {
+                use zax_app::GitRepo;
+                git.main_worktree()?
+            };
+            let config =
+                zax_config::load(&config_home, &main_worktree, &name, &home.to_string_lossy())?;
+            (
+                Some(RepoContext {
+                    git,
+                    name,
+                    main_worktree,
+                }),
+                config,
+            )
+        }
+        Err(cause) => {
+            let global = zax_config::load_global(&config_home, &home.to_string_lossy())?;
+            outside_repository(&global, cause)?;
+            (None, global)
+        }
+    };
 
     Ok(Resolved {
         cwd,
-        git,
         gh,
         repo,
         config,
+        config_home,
+        home,
+    })
+}
+
+/// The real `CheckoutInspector`, for `ResolveCheckout`.
+pub fn checkouts() -> GitCheckouts<SystemExec> {
+    GitCheckouts::new(SystemExec)
+}
+
+/// What a command works against once it knows which repository that is: the
+/// cwd repository, or a checkout `ResolveCheckout` found elsewhere. Carrying
+/// its own `git`/`gh` and config is what lets a command run against a
+/// repository that is not the cwd's without building adapters itself.
+pub struct Target {
+    pub git: Git,
+    pub gh: Gh,
+    /// The target repository's own config chain: its `worktree.copy` and
+    /// `worktree.hooks`, not `worktree.root`, which stays the session's.
+    pub provisioning_config: Config,
+}
+
+/// `checkout` is `ResolveCheckout`'s verdict: `None` means the cwd repository,
+/// today's single-repository behaviour, so its `git`/`gh` and `ctx.config`
+/// are reused as they always were; `Some` means another repository, read
+/// through its own adapters and its own config chain.
+pub fn target_at(ctx: &Resolved, checkout: Option<&MainCheckout>) -> Result<Target> {
+    let Some(checkout) = checkout else {
+        ctx.require_repo()?;
+        return Ok(Target {
+            git: GitCli::new(SystemExec, ctx.cwd.clone()),
+            gh: GhCli::new(SystemExec, ctx.cwd.clone()),
+            provisioning_config: ctx.config.clone(),
+        });
+    };
+
+    let path = checkout.path().to_owned();
+    let git = GitCli::new(SystemExec, path.clone());
+    let gh = GhCli::new(SystemExec, path.clone());
+    let repo_name = git.repo_name()?;
+    let provisioning_config = zax_config::load(
+        &ctx.config_home,
+        &path,
+        &repo_name,
+        &ctx.home.to_string_lossy(),
+    )?;
+
+    Ok(Target {
+        git,
+        gh,
+        provisioning_config,
     })
 }
 
@@ -344,5 +481,83 @@ mod tests {
         assert_eq!(herdr_program_from(Some("/opt/herdr".into())), "/opt/herdr");
         assert_eq!(herdr_program_from(Some("".into())), "herdr");
         assert_eq!(herdr_program_from(None), "herdr");
+    }
+
+    fn global_config(projects: Option<zax_config::raw::RawProjects>) -> Config {
+        let raw = zax_config::raw::RawConfig {
+            projects,
+            ..Default::default()
+        };
+        zax_config::parse::from_raw(raw, "/h").unwrap()
+    }
+
+    fn no_repository_here() -> PortError {
+        PortError::CommandFailed {
+            tool: "git",
+            status: 128,
+            stderr: "fatal: not a git repository (or any of the parent directories): .git"
+                .to_owned(),
+        }
+    }
+
+    #[test]
+    fn outside_a_repository_with_projects_is_allowed() {
+        let global = global_config(Some(zax_config::raw::RawProjects {
+            root: Some("/h/src".to_owned()),
+            paths: None,
+        }));
+        assert!(outside_repository(&global, no_repository_here()).is_ok());
+    }
+
+    #[test]
+    fn outside_a_repository_without_projects_hints_at_a_session_outside_one() {
+        let err = outside_repository(&global_config(None), no_repository_here()).unwrap_err();
+        let message = format!("{err:#}");
+        assert!(
+            message.contains("not inside a git repository"),
+            "got: {message}"
+        );
+        assert!(
+            message.contains("to start a session outside a repository"),
+            "got: {message}"
+        );
+        // Git's own answer survives as the cause, so whichever failure it was
+        // is still in the printed chain.
+        assert!(
+            message.contains("not a git repository (or any of the parent"),
+            "got: {message}"
+        );
+    }
+
+    /// No process runs at construction, so a real adapter stands in for the
+    /// fakes other tests use.
+    fn resolved_without_repo() -> Resolved {
+        Resolved {
+            cwd: PathBuf::from("/h"),
+            gh: GhCli::new(SystemExec, PathBuf::from("/h")),
+            repo: None,
+            config: global_config(None),
+            config_home: PathBuf::from("/h/.config"),
+            home: PathBuf::from("/h"),
+        }
+    }
+
+    #[test]
+    fn a_command_that_needs_a_repository_says_so_outside_one() {
+        let err = resolved_without_repo()
+            .require_repo()
+            .err()
+            .unwrap()
+            .to_string();
+        assert_eq!(err, "this needs a git repository; run it inside one");
+    }
+
+    #[test]
+    fn a_repo_less_provider_anchors_at_the_global_config_directory() {
+        let resolved = Resolved {
+            config_home: PathBuf::from("/c"),
+            ..resolved_without_repo()
+        };
+        assert_eq!(resolved.provider_anchor(), PathBuf::from("/c/zax"));
     }
 }

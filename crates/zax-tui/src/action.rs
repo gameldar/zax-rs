@@ -22,8 +22,16 @@ pub enum PaneAction {
     /// Open a file in the editor.
     OpenFile(PathBuf),
     Quit,
-    /// `zax worktree new <branch>` in the current repository.
+    /// `zax worktree new <branch> [--repo <path>]`. `repo` is `None` in
+    /// today's single-repository behaviour, and the checkout chosen by
+    /// `ChooseRepo` otherwise.
     StartWork {
+        branch: BranchName,
+        repo: Option<PathBuf>,
+    },
+    /// A ticket belongs to no repository, so before starting work the host
+    /// is asked which checkout under `projects.root` to put it in.
+    ChooseRepo {
         branch: BranchName,
     },
     /// Open an existing worktree in the editor. `others` counts the ticket's

@@ -6,15 +6,24 @@ use std::path::{Path, PathBuf};
 
 use thiserror::Error;
 use zax_domain::{
-    choose_session, format_duration, Command, CommandError, LayoutSpec, PaneKind, RootPane,
-    SessionChoice, SessionName, SessionSlot,
+    choose_directory_session, choose_session, format_duration, Command, CommandError, LayoutSpec,
+    PaneKind, RootPane, SessionChoice, SessionName, SessionSlot,
 };
 
 use crate::ports::{GitRepo, Multiplexer, PortError};
 
+/// Where a session's root and panes come from. `Repository` borrows the git
+/// adapter that names the session from the worktree's repo and branch;
+/// `Directory` carries no adapter at all, because a session with no
+/// repository behind it has no git to ask and is rooted in the cwd instead.
+pub enum SessionPlace<'a, G> {
+    Repository(&'a G),
+    Directory,
+}
+
 pub struct StartSession<'a, M, G> {
     mux: &'a M,
-    git: &'a G,
+    place: SessionPlace<'a, G>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -63,8 +72,8 @@ impl From<CommandError> for StartSessionError {
 }
 
 impl<'a, M: Multiplexer, G: GitRepo> StartSession<'a, M, G> {
-    pub fn new(mux: &'a M, git: &'a G) -> Self {
-        Self { mux, git }
+    pub fn new(mux: &'a M, place: SessionPlace<'a, G>) -> Self {
+        Self { mux, place }
     }
 
     pub fn run(&self, req: StartSessionRequest) -> Result<StartSessionOutcome, StartSessionError> {
@@ -73,15 +82,26 @@ impl<'a, M: Multiplexer, G: GitRepo> StartSession<'a, M, G> {
         }
 
         // The panel outlives any one worktree, and removing the one it was
-        // started from must not pull its panes' directory away, so it is
-        // rooted in the repository's own checkout.
+        // started from must not pull its panes' directory away, so inside a
+        // repository it is rooted in the repository's own checkout. Outside
+        // one there is no checkout to prefer, so it is rooted in the cwd.
         let (pick, root, cwd) = match req.layout.root() {
-            RootPane::Agent(agent) => (self.pick_agent_session()?, agent.clone(), req.cwd.clone()),
-            RootPane::Context(kind) => (
-                self.pick_panel()?,
-                pane_command(&req.zax_bin, kind)?,
-                self.git.main_worktree()?,
+            RootPane::Agent(agent) => (
+                self.pick_agent_session(&req.cwd)?,
+                agent.clone(),
+                req.cwd.clone(),
             ),
+            RootPane::Context(kind) => {
+                let panel_cwd = match &self.place {
+                    SessionPlace::Repository(git) => git.main_worktree()?,
+                    SessionPlace::Directory => req.cwd.clone(),
+                };
+                (
+                    self.pick_panel()?,
+                    pane_command(&req.zax_bin, kind)?,
+                    panel_cwd,
+                )
+            }
         };
         let name = match pick {
             Pick::Attach(name) => {
@@ -131,17 +151,26 @@ impl<'a, M: Multiplexer, G: GitRepo> StartSession<'a, M, G> {
         Ok(StartSessionOutcome::Created(name))
     }
 
-    /// One of this worktree's agent sessions. A detached session is an agent
-    /// someone left and wants back. An attached one belongs to another agent
-    /// thread in this worktree, which wants its own agent rather than a
-    /// mirror of that one.
-    fn pick_agent_session(&self) -> Result<Pick, StartSessionError> {
-        let repo = self.git.root_repo_name()?;
-        let branch = self
-            .git
-            .current_branch()?
-            .ok_or(StartSessionError::DetachedHead)?;
-        match choose_session(&repo, &branch, &self.mux.list_sessions()?) {
+    /// One of this worktree's agent sessions, or one of this directory's
+    /// outside a repository. A detached session is an agent someone left and
+    /// wants back. An attached one belongs to another agent thread, which
+    /// wants its own agent rather than a mirror of that one.
+    ///
+    /// Outside a repository there is no branch to go detached, so `cwd`
+    /// names the session instead and `DetachedHead` cannot arise here.
+    fn pick_agent_session(&self, cwd: &Path) -> Result<Pick, StartSessionError> {
+        let live = self.mux.list_sessions()?;
+        let choice = match &self.place {
+            SessionPlace::Repository(git) => {
+                let repo = git.root_repo_name()?;
+                let branch = git
+                    .current_branch()?
+                    .ok_or(StartSessionError::DetachedHead)?;
+                choose_session(&repo, &branch, &live)
+            }
+            SessionPlace::Directory => choose_directory_session(cwd, &live),
+        };
+        match choice {
             SessionChoice::Reattach(name) => Ok(Pick::Attach(name)),
             SessionChoice::Create(name) => Ok(Pick::Create(name)),
             SessionChoice::Full => Err(StartSessionError::AllSlotsInUse),
@@ -296,7 +325,7 @@ mod tests {
         };
 
         assert_eq!(
-            StartSession::new(&mux, &git).run(req),
+            StartSession::new(&mux, SessionPlace::Repository(&git)).run(req),
             Err(StartSessionError::InsideMultiplexer)
         );
         assert!(mux.calls().is_empty(), "nothing should have been attempted");
@@ -307,7 +336,7 @@ mod tests {
         let mux = FakeMultiplexer::default();
         let git = FakeGitRepo::detached("/Users/me/src/acme");
         assert_eq!(
-            StartSession::new(&mux, &git).run(request()),
+            StartSession::new(&mux, SessionPlace::Repository(&git)).run(request()),
             Err(StartSessionError::DetachedHead)
         );
     }
@@ -321,7 +350,9 @@ mod tests {
         );
         let mux = FakeMultiplexer::with_sessions([name.clone()]);
 
-        let outcome = StartSession::new(&mux, &git).run(request()).unwrap();
+        let outcome = StartSession::new(&mux, SessionPlace::Repository(&git))
+            .run(request())
+            .unwrap();
 
         assert_eq!(outcome, StartSessionOutcome::Attached(name.clone()));
         assert_eq!(
@@ -347,7 +378,9 @@ mod tests {
         );
         let mux = FakeMultiplexer::with_attached_sessions([first]);
 
-        let outcome = StartSession::new(&mux, &git).run(request()).unwrap();
+        let outcome = StartSession::new(&mux, SessionPlace::Repository(&git))
+            .run(request())
+            .unwrap();
 
         assert_eq!(outcome, StartSessionOutcome::Created(second.clone()));
         assert!(
@@ -377,7 +410,7 @@ mod tests {
         );
 
         assert_eq!(
-            StartSession::new(&mux, &git).run(request()),
+            StartSession::new(&mux, SessionPlace::Repository(&git)).run(request()),
             Err(StartSessionError::AllSlotsInUse)
         );
         assert!(mux.calls().is_empty(), "nothing should have been attempted");
@@ -390,7 +423,9 @@ mod tests {
         let cwd = PathBuf::from("/Users/me/src/worktrees/acme/OMEGA-1963-stamp");
         let name = session_name(&git);
 
-        let outcome = StartSession::new(&mux, &git).run(request()).unwrap();
+        let outcome = StartSession::new(&mux, SessionPlace::Repository(&git))
+            .run(request())
+            .unwrap();
         assert!(matches!(outcome, StartSessionOutcome::Created(_)));
 
         assert_eq!(
@@ -461,7 +496,7 @@ mod tests {
         let bare = LayoutSpec::new(Command::new(vec!["claude".to_owned()]).unwrap(), vec![]);
         let name = session_name(&git);
 
-        let outcome = StartSession::new(&mux, &git)
+        let outcome = StartSession::new(&mux, SessionPlace::Repository(&git))
             .run(StartSessionRequest {
                 layout: bare,
                 ..request()
@@ -500,7 +535,9 @@ mod tests {
         let git = FakeGitRepo::new("/Users/me/src/acme", "OMEGA-1963-stamp");
         let name = session_name(&git);
 
-        let error = StartSession::new(&mux, &git).run(request()).unwrap_err();
+        let error = StartSession::new(&mux, SessionPlace::Repository(&git))
+            .run(request())
+            .unwrap_err();
         assert!(
             matches!(error, StartSessionError::Port(_)),
             "got: {error:?}"
@@ -530,7 +567,9 @@ mod tests {
         let live = zax_domain::SessionName::parse(&name).unwrap();
         let mux = FakeMultiplexer::with_sessions([live.clone()]).pretending_no_session_exists();
 
-        let error = StartSession::new(&mux, &git).run(request()).unwrap_err();
+        let error = StartSession::new(&mux, SessionPlace::Repository(&git))
+            .run(request())
+            .unwrap_err();
         assert!(
             error.to_string().contains("duplicate session"),
             "the collision itself is what the user must be told: {error:?}"
@@ -557,7 +596,9 @@ mod tests {
         let git = FakeGitRepo::new("/Users/me/src/acme", "OMEGA-1963-stamp");
         let name = session_name(&git);
 
-        let error = StartSession::new(&mux, &git).run(request()).unwrap_err();
+        let error = StartSession::new(&mux, SessionPlace::Repository(&git))
+            .run(request())
+            .unwrap_err();
         assert!(
             matches!(error, StartSessionError::Port(_)),
             "got: {error:?}"
@@ -623,7 +664,7 @@ mod tests {
         let cwd = PathBuf::from("/Users/me/src/acme");
         let name = "zax-panel".to_owned();
 
-        let outcome = StartSession::new(&mux, &git)
+        let outcome = StartSession::new(&mux, SessionPlace::Repository(&git))
             .run(StartSessionRequest {
                 layout: panel_layout(),
                 ..request()
@@ -678,7 +719,7 @@ mod tests {
         let panel = zax_domain::SessionName::panel();
         let mux = FakeMultiplexer::with_attached_sessions([panel.clone()]);
 
-        let outcome = StartSession::new(&mux, &git)
+        let outcome = StartSession::new(&mux, SessionPlace::Repository(&git))
             .run(StartSessionRequest {
                 layout: panel_layout(),
                 ..request()
@@ -701,10 +742,11 @@ mod tests {
         let mux = FakeMultiplexer::default();
         let git = FakeGitRepo::detached("/Users/me/src/acme");
 
-        let outcome = StartSession::new(&mux, &git).run(StartSessionRequest {
-            layout: panel_layout(),
-            ..request()
-        });
+        let outcome =
+            StartSession::new(&mux, SessionPlace::Repository(&git)).run(StartSessionRequest {
+                layout: panel_layout(),
+                ..request()
+            });
 
         assert!(
             matches!(outcome, Ok(StartSessionOutcome::Created(_))),
@@ -721,7 +763,7 @@ mod tests {
         let mux =
             FakeMultiplexer::with_sessions([panel.clone()]).pretending_no_session_exists_once();
 
-        let outcome = StartSession::new(&mux, &git)
+        let outcome = StartSession::new(&mux, SessionPlace::Repository(&git))
             .run(StartSessionRequest {
                 layout: panel_layout(),
                 ..request()
@@ -736,5 +778,117 @@ mod tests {
             })
         );
         assert_eq!(mux.live_sessions(), [panel.as_str()], "nothing torn down");
+    }
+
+    /// A request for a session with no repository behind it: `cwd` is the
+    /// only thing left to root it in.
+    fn directory_request() -> StartSessionRequest {
+        StartSessionRequest {
+            cwd: PathBuf::from("/Users/me/notes"),
+            ..request()
+        }
+    }
+
+    #[test]
+    fn a_panel_started_outside_a_repository_is_rooted_at_the_cwd() {
+        let mux = FakeMultiplexer::default();
+        let cwd = PathBuf::from("/Users/me/notes");
+        let name = "zax-panel".to_owned();
+
+        let outcome = StartSession::new(&mux, SessionPlace::<FakeGitRepo>::Directory)
+            .run(StartSessionRequest {
+                layout: panel_layout(),
+                ..directory_request()
+            })
+            .unwrap();
+
+        assert_eq!(
+            outcome,
+            StartSessionOutcome::Created(zax_domain::SessionName::panel())
+        );
+        assert_eq!(
+            mux.calls(),
+            vec![
+                MuxCall::CreateSession {
+                    name: name.clone(),
+                    cwd: cwd.clone(),
+                    argv: zax_pane("todo"),
+                },
+                MuxCall::SplitPane {
+                    name: name.clone(),
+                    target_pane: 0,
+                    horizontal: false,
+                    size: Some(80),
+                    cwd: cwd.clone(),
+                    argv: zax_pane("tickets"),
+                },
+                MuxCall::SplitPane {
+                    name: name.clone(),
+                    target_pane: 1,
+                    horizontal: false,
+                    size: None,
+                    cwd: cwd.clone(),
+                    argv: zax_pane("my-prs"),
+                },
+                MuxCall::SelectPane {
+                    name: name.clone(),
+                    index: 0
+                },
+                MuxCall::Attach { name },
+            ]
+        );
+    }
+
+    #[test]
+    fn an_agent_session_outside_a_repository_is_named_from_the_directory() {
+        let mux = FakeMultiplexer::default();
+        let cwd = PathBuf::from("/Users/me/notes");
+        let name = zax_domain::SessionName::derive_directory(&cwd);
+
+        let outcome = StartSession::new(&mux, SessionPlace::<FakeGitRepo>::Directory)
+            .run(directory_request())
+            .unwrap();
+
+        assert_eq!(outcome, StartSessionOutcome::Created(name));
+    }
+
+    #[test]
+    fn starting_again_from_the_same_directory_reattaches() {
+        let cwd = PathBuf::from("/Users/me/notes");
+        let name = zax_domain::SessionName::derive_directory(&cwd);
+        let mux = FakeMultiplexer::with_sessions([name.clone()]);
+
+        let outcome = StartSession::new(&mux, SessionPlace::<FakeGitRepo>::Directory)
+            .run(directory_request())
+            .unwrap();
+
+        assert_eq!(outcome, StartSessionOutcome::Attached(name.clone()));
+        assert_eq!(
+            mux.calls(),
+            vec![MuxCall::Attach {
+                name: name.as_str().to_owned()
+            }]
+        );
+    }
+
+    #[test]
+    fn an_existing_panel_is_attached_from_outside_a_repository_too() {
+        let panel = zax_domain::SessionName::panel();
+        let mux = FakeMultiplexer::with_attached_sessions([panel.clone()]);
+
+        let outcome = StartSession::new(&mux, SessionPlace::<FakeGitRepo>::Directory)
+            .run(StartSessionRequest {
+                layout: panel_layout(),
+                ..directory_request()
+            })
+            .unwrap();
+
+        assert_eq!(outcome, StartSessionOutcome::Attached(panel.clone()));
+        assert_eq!(
+            mux.calls(),
+            vec![MuxCall::Attach {
+                name: panel.as_str().to_owned()
+            }]
+        );
     }
 }

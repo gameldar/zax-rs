@@ -6,7 +6,7 @@ use std::path::Path;
 use std::process::Command;
 
 use tempfile::TempDir;
-use zax_app::{Multiplexer, StartSession, StartSessionOutcome, StartSessionRequest};
+use zax_app::{Multiplexer, SessionPlace, StartSession, StartSessionOutcome, StartSessionRequest};
 use zax_domain::{
     BranchName, Command as ZaxCommand, LayoutSpec, PaneKind, PaneSize, PaneSpec, RootRepoName,
     SessionName,
@@ -165,7 +165,7 @@ fn a_session_is_built_with_one_pane_per_layout_entry() {
 
     let name = expected_session_name();
 
-    let outcome = StartSession::new(&tmux, &git)
+    let outcome = StartSession::new(&tmux, SessionPlace::Repository(&git))
         .run(StartSessionRequest {
             cwd: repo.clone(),
             zax_bin: std::path::PathBuf::from("/bin/true"),
@@ -227,11 +227,15 @@ fn a_second_start_attaches_instead_of_rebuilding() {
 
     let name = expected_session_name();
 
-    let first = StartSession::new(&tmux, &git).run(request()).unwrap();
+    let first = StartSession::new(&tmux, SessionPlace::Repository(&git))
+        .run(request())
+        .unwrap();
     assert!(matches!(first, StartSessionOutcome::Created(_)));
     assert_eq!(pane_indexes(&socket, &conf_path, &name), ["0", "1"]);
 
-    let second = StartSession::new(&tmux, &git).run(request()).unwrap();
+    let second = StartSession::new(&tmux, SessionPlace::Repository(&git))
+        .run(request())
+        .unwrap();
     assert!(
         matches!(second, StartSessionOutcome::Attached(_)),
         "a second start must attach, not rebuild"
@@ -259,7 +263,7 @@ fn the_server_runs_on_our_socket_and_not_the_default_one() {
 
     let sleep = ZaxCommand::new(vec!["sleep".to_owned(), "30".to_owned()]).unwrap();
     let layout = LayoutSpec::new(sleep, vec![]);
-    StartSession::new(&tmux, &git)
+    StartSession::new(&tmux, SessionPlace::Repository(&git))
         .run(StartSessionRequest {
             cwd: repo,
             zax_bin: std::path::PathBuf::from("/bin/true"),
@@ -306,7 +310,9 @@ fn a_start_while_the_session_is_attached_builds_a_second_one() {
     };
 
     let first = expected_session_name();
-    StartSession::new(&tmux, &git).run(request()).unwrap();
+    StartSession::new(&tmux, SessionPlace::Repository(&git))
+        .run(request())
+        .unwrap();
 
     // A control-mode client is a real attached client without needing a pty.
     // It stays attached for as long as its stdin is open.
@@ -331,7 +337,9 @@ fn a_start_while_the_session_is_attached_builds_a_second_one() {
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
 
-    let second = StartSession::new(&tmux, &git).run(request()).unwrap();
+    let second = StartSession::new(&tmux, SessionPlace::Repository(&git))
+        .run(request())
+        .unwrap();
     let _ = client.kill();
     let _ = client.wait();
 
@@ -398,7 +406,7 @@ fn a_panes_only_layout_is_one_full_width_column_in_the_panel_session() {
         vec![pane(Some(PaneSize::percent(67).unwrap())), pane(None)],
     );
 
-    let outcome = StartSession::new(&tmux, &git)
+    let outcome = StartSession::new(&tmux, SessionPlace::Repository(&git))
         .run(StartSessionRequest {
             cwd: repo.clone(),
             zax_bin: std::path::PathBuf::from("/bin/true"),

@@ -1,5 +1,7 @@
 //! The TOML as written, before it becomes domain types.
 
+use std::collections::BTreeMap;
+
 use serde::Deserialize;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
@@ -17,6 +19,7 @@ pub struct RawConfig {
     pub editor: Option<RawEditor>,
     pub tickets: Option<RawTickets>,
     pub todo: Option<RawTodo>,
+    pub projects: Option<RawProjects>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
@@ -105,4 +108,14 @@ pub struct RawPrs {
     pub include: Option<Vec<String>>,
     pub exclude: Option<Vec<String>>,
     pub max_age: Option<String>,
+}
+
+/// The `[projects]` table: where zax finds the base checkout of a repository
+/// that is not the one it was started in. Honoured from the global layer
+/// only - see the module doc.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RawProjects {
+    pub root: Option<String>,
+    pub paths: Option<BTreeMap<String, String>>,
 }

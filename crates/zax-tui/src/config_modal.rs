@@ -57,12 +57,14 @@ enum Row {
 
 impl Row {
     /// Grouped as the TOML is, with the layout where a reader expects it.
-    const ALL: [Row; 16] = [
+    const ALL: [Row; 18] = [
         Row::Setting(SettingKey::AgentCommand),
         Row::Panes,
         Row::Setting(SettingKey::WorktreeRoot),
         Row::Setting(SettingKey::WorktreeCopy),
         Row::Setting(SettingKey::WorktreeHooks),
+        Row::Setting(SettingKey::ProjectsRoot),
+        Row::Setting(SettingKey::ProjectsPaths),
         Row::Setting(SettingKey::OpenVia),
         Row::Setting(SettingKey::OpenCommand),
         Row::Setting(SettingKey::EditorVia),
@@ -161,6 +163,9 @@ pub struct ConfigModal {
     /// Changes the wording of the restart notices: inside a session they speak
     /// of this session, standalone of the next `zax session start`.
     inside_session: bool,
+    /// The layers `tab`/`backtab` cycle through. Three in the usual modal; one,
+    /// so cycling is a no-op, when there is no repository to hold the other two.
+    slots: &'static [LayerSlot],
     target: LayerSlot,
     cursor: usize,
     screen: Screen,
@@ -172,8 +177,22 @@ impl ConfigModal {
     pub fn new(inside_session: bool) -> Self {
         Self {
             inside_session,
+            slots: &LayerSlot::ALL,
             // Your layer: the one edit that is always yours to make.
             target: LayerSlot::Personal,
+            cursor: 0,
+            screen: Screen::Settings,
+            notice: None,
+        }
+    }
+
+    /// A modal with no repository to read a repo or personal layer from:
+    /// everything lands in the global layer, and there is nowhere else to tab to.
+    pub fn global_only(inside_session: bool) -> Self {
+        Self {
+            inside_session,
+            slots: &[LayerSlot::Global],
+            target: LayerSlot::Global,
             cursor: 0,
             screen: Screen::Settings,
             notice: None,
@@ -261,11 +280,11 @@ impl ConfigModal {
 
         match key.code {
             KeyCode::Tab => {
-                self.target = self.target.next();
+                self.target = next_in(self.slots, self.target);
                 return (ConfigAction::None, screen);
             }
             KeyCode::BackTab => {
-                self.target = self.target.previous();
+                self.target = previous_in(self.slots, self.target);
                 return (ConfigAction::None, screen);
             }
             KeyCode::Char('?') => {
@@ -1330,15 +1349,21 @@ impl ConfigModal {
         if let Err(error) = &view.status {
             return error_line(&truncate(error, usize::from(width).saturating_sub(2)));
         }
-        let marks = LayerSlot::ALL
+        // The slots this modal edits, not every slot there is: a global-only
+        // modal has no R or P column to mark, and columns that can never say
+        // anything only invite looking for the Tab that would reach them.
+        let marks = self
+            .slots
+            .iter()
             .map(|slot| {
-                let dirty = view.layer(slot).is_some_and(|layer| layer.dirty);
+                let dirty = view.layer(*slot).is_some_and(|layer| layer.dirty);
                 format!(
                     "{} {}",
                     slot.initial(),
                     if dirty { "*" } else { GLYPH_NONE }
                 )
             })
+            .collect::<Vec<_>>()
             .join("   ");
         let right = if view.any_dirty() {
             format!("unsaved in {} - s to save", dirty_layers(view))
@@ -1355,7 +1380,31 @@ impl ConfigModal {
 const ORIGIN_COLUMN_AT: usize = 56;
 const LABEL_WIDTH: usize = 18;
 
+/// The next slot in `slots` after `current`, wrapping around. `current` is
+/// always one of `slots` by construction, so this never has to invent one.
+fn next_in(slots: &[LayerSlot], current: LayerSlot) -> LayerSlot {
+    let len = slots.len().max(1);
+    let pos = slots.iter().position(|slot| *slot == current).unwrap_or(0);
+    slots.get((pos + 1) % len).copied().unwrap_or(current)
+}
+
+fn previous_in(slots: &[LayerSlot], current: LayerSlot) -> LayerSlot {
+    let len = slots.len().max(1);
+    let pos = slots.iter().position(|slot| *slot == current).unwrap_or(0);
+    slots.get((pos + len - 1) % len).copied().unwrap_or(current)
+}
+
+/// Why a row would not open or clear. A read-only key is never on any layer's
+/// allowed list, so it reaches the same code path as a key on the wrong layer -
+/// but "switch the layer with tab" is no help when no layer would work, so it
+/// gets its own wording naming where it actually lives.
 fn refusal(key: SettingKey) -> String {
+    if key.is_read_only() {
+        return format!(
+            "`{}` is edited by hand in ~/.config/zax/config.toml",
+            key.full_name()
+        );
+    }
     let slots: Vec<&str> = key.allowed_slots().iter().map(|s| s.label()).collect();
     format!(
         "`{}` is only read from the {} layer; switch the layer with tab",
@@ -1727,7 +1776,7 @@ mod tests {
                 origin: Origin::Default,
                 changed: false,
             },
-            layers: [
+            layers: vec![
                 layer(LayerSlot::Global, false),
                 layer(LayerSlot::Repo, false),
                 layer(LayerSlot::Personal, false),
@@ -2777,5 +2826,74 @@ mod tests {
                 builtin.as_str()
             );
         }
+    }
+
+    #[test]
+    fn a_global_only_modal_stays_on_the_global_layer() {
+        let mut modal = ConfigModal::global_only(false);
+        let view = empty_view();
+        assert_eq!(modal.target(), LayerSlot::Global);
+
+        press(&mut modal, &view, &[key(KeyCode::Tab)]);
+
+        assert_eq!(modal.target(), LayerSlot::Global);
+    }
+
+    #[test]
+    fn a_global_only_modal_marks_only_the_layer_it_edits() {
+        // Tab is a no-op there, so an R or P column could never say anything
+        // and only sends the reader looking for the key that reaches it.
+        let view = empty_view();
+        let all = screen(&ConfigModal::new(false), &view);
+        assert!(
+            all.contains("G \u{b7}   R \u{b7}   P \u{b7}"),
+            "got:\n{all}"
+        );
+
+        let global_only = screen(&ConfigModal::global_only(false), &view);
+        assert!(global_only.contains("G \u{b7}"), "got:\n{global_only}");
+        assert!(!global_only.contains("R \u{b7}"), "got:\n{global_only}");
+        assert!(!global_only.contains("P \u{b7}"), "got:\n{global_only}");
+    }
+
+    #[test]
+    fn editing_projects_paths_is_refused_with_where_to_edit_it() {
+        let mut modal = ConfigModal::new(false);
+        let view = empty_view();
+        select(&mut modal, &view, "paths");
+
+        press(&mut modal, &view, &[key(KeyCode::Enter)]);
+
+        let text = screen(&modal, &view);
+        assert!(text.contains("edited by hand"), "got:\n{text}");
+    }
+
+    #[test]
+    fn clearing_projects_paths_is_refused_with_where_to_edit_it() {
+        // The clear key is the other reachable path to the same refusal, and
+        // it is easy to fix one and leave the other broken.
+        let mut modal = ConfigModal::new(false);
+        let view = empty_view();
+        select(&mut modal, &view, "paths");
+
+        press(&mut modal, &view, &[key(KeyCode::Char('x'))]);
+
+        let text = screen(&modal, &view);
+        assert!(text.contains("edited by hand"), "got:\n{text}");
+    }
+
+    #[test]
+    fn projects_root_can_only_be_edited_in_the_global_layer() {
+        let mut modal = ConfigModal::new(false);
+        let view = empty_view();
+        assert_eq!(modal.target(), LayerSlot::Personal);
+        // "root" alone also matches worktree.root, which comes first.
+        select(&mut modal, &view, "hooks");
+        press(&mut modal, &view, &[key(KeyCode::Char('j'))]);
+
+        press(&mut modal, &view, &[key(KeyCode::Enter)]);
+
+        let text = screen(&modal, &view);
+        assert!(text.contains("global"), "got:\n{text}");
     }
 }

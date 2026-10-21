@@ -1,7 +1,7 @@
 //! `zax session start | list | kill`.
 
 use anyhow::{bail, Result};
-use zax_app::{Multiplexer, StartSession, StartSessionOutcome, StartSessionRequest};
+use zax_app::{Multiplexer, SessionPlace, StartSession, StartSessionOutcome, StartSessionRequest};
 use zax_domain::{worktree_sessions, BranchName, SessionName};
 
 use crate::cli::SessionCommand;
@@ -20,7 +20,14 @@ fn start() -> Result<()> {
     let ctx = wiring::resolve()?;
     let tmux = wiring::tmux(&ctx.config)?;
 
-    let outcome = StartSession::new(&tmux, &ctx.git).run(StartSessionRequest {
+    // A panes-only session (a herdr panel, for instance) belongs to no
+    // repository, so starting one must not require being inside one.
+    let place = match &ctx.repo {
+        Some(repo) => SessionPlace::Repository(&repo.git),
+        None => SessionPlace::<wiring::Git>::Directory,
+    };
+
+    let outcome = StartSession::new(&tmux, place).run(StartSessionRequest {
         cwd: ctx.cwd.clone(),
         zax_bin: wiring::zax_bin()?,
         layout: ctx.config.layout.clone(),
@@ -60,11 +67,12 @@ fn kill(name: Option<String>) -> Result<()> {
         Some(raw) => SessionName::parse(&raw)?,
         None => {
             use zax_app::GitRepo;
-            let branch: BranchName = ctx.git.current_branch()?.ok_or_else(|| {
+            let repo = ctx.require_repo()?;
+            let branch: BranchName = repo.git.current_branch()?.ok_or_else(|| {
                 anyhow::anyhow!("HEAD is detached, so there is no session name to derive")
             })?;
             only_session(worktree_sessions(
-                &ctx.repo,
+                &repo.name,
                 &branch,
                 &tmux.list_sessions()?,
             ))?

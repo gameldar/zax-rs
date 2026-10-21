@@ -5,11 +5,13 @@ use std::path::PathBuf;
 
 use zax_domain::{
     parse_duration, BuiltinPane, Command, LayoutSpec, PaneKind, PaneSize, PaneSpec, PrFilter,
-    RepoPattern, TodoFile, WorktreeRoot,
+    ProjectPaths, Projects, ProjectsRoot, RepoPattern, RepoSlug, TodoFile, WorktreeRoot,
 };
 
 use crate::error::ConfigError;
-use crate::raw::{RawConfig, RawEditor, RawOpen, RawPane, RawPrs, RawTickets, RawTodo};
+use crate::raw::{
+    RawConfig, RawEditor, RawOpen, RawPane, RawProjects, RawPrs, RawTickets, RawTodo,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
@@ -21,6 +23,10 @@ pub struct Config {
     pub editor: EditorConfig,
     pub tickets: TicketsConfig,
     pub todo: TodoConfig,
+    /// Where to find the base checkout of a repository other than the one a
+    /// session started in. `None` means the feature is off - no `projects.root`
+    /// was set, in the global layer that alone may set it.
+    pub projects: Option<Projects>,
     /// Things worth saying about the config that are not errors, such as a
     /// key whose meaning has changed. `zax doctor` prints them.
     pub notices: Vec<String>,
@@ -180,6 +186,7 @@ pub fn from_raw(raw: RawConfig, home: &str) -> Result<Config, ConfigError> {
     let editor = editor_from_raw(raw.editor.unwrap_or_default())?;
     let tickets = tickets_from_raw(raw.tickets.unwrap_or_default())?;
     let todo = todo_from_raw(raw.todo.unwrap_or_default(), home)?;
+    let projects = projects_from_raw(raw.projects, home)?;
 
     Ok(Config {
         layout,
@@ -190,8 +197,54 @@ pub fn from_raw(raw: RawConfig, home: &str) -> Result<Config, ConfigError> {
         editor,
         tickets,
         todo,
+        projects,
         notices,
     })
+}
+
+/// An absent `root` is the feature off - and `paths` has nothing to override
+/// in that case, so it is refused rather than silently ignored.
+fn projects_from_raw(
+    raw: Option<RawProjects>,
+    home: &str,
+) -> Result<Option<Projects>, ConfigError> {
+    let Some(raw) = raw else { return Ok(None) };
+    let Some(root_text) = raw.root else {
+        return match raw.paths {
+            None => Ok(None),
+            Some(_) => Err(ConfigError::Invalid {
+                field: "projects.paths",
+                detail: "needs projects.root; without it the projects feature is off".to_owned(),
+            }),
+        };
+    };
+
+    let root = ProjectsRoot::new(PathBuf::from(expand_home(&root_text, home))).map_err(|e| {
+        ConfigError::Invalid {
+            field: "projects.root",
+            detail: e.to_string(),
+        }
+    })?;
+
+    let entries = raw
+        .paths
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(key, value)| {
+            let slug = RepoSlug::parse(&key).map_err(|e| ConfigError::Invalid {
+                field: "projects.paths",
+                detail: e.to_string(),
+            })?;
+            Ok((slug, PathBuf::from(expand_home(&value, home))))
+        })
+        .collect::<Result<Vec<_>, ConfigError>>()?;
+
+    let paths = ProjectPaths::new(entries).map_err(|e| ConfigError::Invalid {
+        field: "projects.paths",
+        detail: e.to_string(),
+    })?;
+
+    Ok(Some(Projects { root, paths }))
 }
 
 fn todo_from_raw(raw: RawTodo, home: &str) -> Result<TodoConfig, ConfigError> {
@@ -1061,5 +1114,59 @@ hooks = ["direnv allow", "bundle install"]
     fn a_relative_worktree_root_is_rejected() {
         let raw: RawConfig = toml::from_str("[worktree]\nroot = \"worktrees\"").unwrap();
         assert!(from_raw(raw, "/home/me").is_err());
+    }
+
+    #[test]
+    fn no_projects_table_turns_the_feature_off() {
+        assert_eq!(config_from("").projects, None);
+    }
+
+    #[test]
+    fn a_projects_root_expands_home() {
+        let config = config_from("[projects]\nroot = \"~/src\"");
+        assert_eq!(
+            config.projects.unwrap().root.as_path(),
+            std::path::Path::new("/home/me/src")
+        );
+    }
+
+    #[test]
+    fn projects_paths_parse_into_slug_keyed_overrides() {
+        let config = config_from(
+            "[projects]\nroot = \"~/src\"\n\n[projects.paths]\n\"gameldar/zed-ai-extensions\" = \"~/src/tools/zed-ai-extensions\"\n",
+        );
+        let projects = config.projects.unwrap();
+        let slug = zax_domain::RepoSlug::parse("gameldar/zed-ai-extensions").unwrap();
+        assert_eq!(
+            projects.paths.get(&slug),
+            Some(std::path::Path::new(
+                "/home/me/src/tools/zed-ai-extensions"
+            ))
+        );
+    }
+
+    #[test]
+    fn a_projects_path_key_that_is_not_owner_name_names_the_field() {
+        let err = err_from("[projects]\nroot = \"~/src\"\n\n[projects.paths]\nnorth = \"/x\"\n");
+        assert!(err.contains("projects.paths"), "got: {err}");
+    }
+
+    #[test]
+    fn projects_paths_without_a_root_is_refused() {
+        let err =
+            err_from("[projects.paths]\n\"gameldar/zed-ai-extensions\" = \"/h/src/tools/z\"\n");
+        assert!(err.contains("projects.root"), "got: {err}");
+    }
+
+    #[test]
+    fn a_relative_projects_root_is_refused() {
+        let err = err_from("[projects]\nroot = \"src\"");
+        assert!(err.contains("projects.root"), "got: {err}");
+    }
+
+    #[test]
+    fn an_unknown_projects_key_is_an_error() {
+        let err = toml::from_str::<RawConfig>("[projects]\nroots = \"/x\"").unwrap_err();
+        assert!(err.to_string().contains("roots"), "got: {err}");
     }
 }

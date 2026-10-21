@@ -24,6 +24,18 @@ pub fn common_dir() -> Vec<String> {
     ]
 }
 
+/// One process, three facts: the toplevel a path belongs to, and the two
+/// directories whose equality tells a main checkout from a linked worktree.
+pub fn checkout_probe() -> Vec<String> {
+    vec![
+        s("rev-parse"),
+        s("--path-format=absolute"),
+        s("--show-toplevel"),
+        s("--git-dir"),
+        s("--git-common-dir"),
+    ]
+}
+
 pub fn current_branch() -> Vec<String> {
     vec![s("symbolic-ref"), s("--quiet"), s("--short"), s("HEAD")]
 }
@@ -131,6 +143,20 @@ mod tests {
         assert_eq!(
             common_dir(),
             ["rev-parse", "--path-format=absolute", "--git-common-dir"]
+        );
+    }
+
+    #[test]
+    fn the_checkout_probe_asks_for_the_toplevel_and_both_git_dirs_in_one_call() {
+        assert_eq!(
+            checkout_probe(),
+            [
+                "rev-parse",
+                "--path-format=absolute",
+                "--show-toplevel",
+                "--git-dir",
+                "--git-common-dir",
+            ]
         );
     }
 

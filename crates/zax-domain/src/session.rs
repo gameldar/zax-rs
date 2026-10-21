@@ -1,7 +1,7 @@
 //! tmux session names, derived so that one worktree maps to one session.
 
 use std::fmt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use thiserror::Error;
 
@@ -53,6 +53,40 @@ impl SessionName {
     /// inside the last eight characters.
     pub fn derive_slot(repo: &RootRepoName, branch: &BranchName, slot: SessionSlot) -> Self {
         let first = Self::derive(repo, branch);
+        if slot == SessionSlot::FIRST {
+            return first;
+        }
+        Self(format!("{}-{}", first.0, slot.get()))
+    }
+
+    /// One directory, one session, for when there is no repository to name a
+    /// session from.
+    ///
+    /// This cannot be mistaken for [`SessionName::derive`]'s output, and by
+    /// length alone: with no slot suffix, a repo+branch name's last `-`
+    /// segment is exactly eight hex digits and a directory name's is exactly
+    /// sixteen. A slot suffix (from this or [`SessionName::derive_slot`]) is
+    /// one or two decimal digits, so it is never either of those lengths: a
+    /// suffixed name cannot equal an unsuffixed one, and two suffixed names
+    /// can only be equal if their suffixes are, which leaves the unsuffixed
+    /// comparison again.
+    pub fn derive_directory(dir: &Path) -> Self {
+        let last = dir
+            .file_name()
+            .map(|component| component.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "root".to_owned());
+        let name = format!(
+            "{}{}-{:016x}",
+            Self::PREFIX,
+            sanitize(&last),
+            fingerprint64(&dir.to_string_lossy()),
+        );
+        Self(name)
+    }
+
+    /// One of a directory's sessions, mirroring [`SessionName::derive_slot`].
+    pub fn derive_directory_slot(dir: &Path, slot: SessionSlot) -> Self {
+        let first = Self::derive_directory(dir);
         if slot == SessionSlot::FIRST {
             return first;
         }
@@ -155,15 +189,30 @@ pub fn choose_session(
     branch: &BranchName,
     live: &[LiveSession],
 ) -> SessionChoice {
-    let state = |name: &SessionName| live.iter().find(|s| &s.name == name).map(|s| s.attached);
+    choose_among(|slot| SessionName::derive_slot(repo, branch, slot), live)
+}
+
+/// Reattach to the lowest detached session in this directory, otherwise
+/// create the lowest free slot. Same rules as [`choose_session`], for when
+/// there is no repository to name the session from.
+pub fn choose_directory_session(dir: &Path, live: &[LiveSession]) -> SessionChoice {
+    choose_among(|slot| SessionName::derive_directory_slot(dir, slot), live)
+}
+
+fn choose_among(name: impl Fn(SessionSlot) -> SessionName, live: &[LiveSession]) -> SessionChoice {
+    let state = |candidate: &SessionName| {
+        live.iter()
+            .find(|s| &s.name == candidate)
+            .map(|s| s.attached)
+    };
     let mut free = None;
     for slot in SessionSlot::all() {
-        let name = SessionName::derive_slot(repo, branch, slot);
-        match state(&name) {
-            Some(false) => return SessionChoice::Reattach(name),
+        let candidate = name(slot);
+        match state(&candidate) {
+            Some(false) => return SessionChoice::Reattach(candidate),
             Some(true) => {}
             None => {
-                free.get_or_insert(name);
+                free.get_or_insert(candidate);
             }
         }
     }
@@ -205,6 +254,24 @@ fn fingerprint(repo: &str, branch: &str) -> u32 {
         hash = hash.wrapping_mul(PRIME);
     }
     ((hash >> 32) ^ hash) as u32
+}
+
+/// FNV-1a over `text`, as the full 64 bits, no fold.
+///
+/// Used for directory session names, which have no repo/branch pair to feed
+/// [`fingerprint`] - and the un-folded width is what keeps a directory name's
+/// last segment at sixteen hex digits rather than eight, so it can never be
+/// mistaken for one of [`SessionName::derive`]'s.
+fn fingerprint64(text: &str) -> u64 {
+    const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME: u64 = 0x100_0000_01b3;
+
+    let mut hash = OFFSET_BASIS;
+    for byte in text.bytes() {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(PRIME);
+    }
+    hash
 }
 
 /// Map everything tmux could misread onto `-`. Runs are deliberately not
@@ -479,5 +546,56 @@ mod tests {
         assert_eq!(SessionName::parse("zax-panel").unwrap(), panel);
         // A derived name always ends in `-<8 hex>`, which `panel` does not.
         assert_ne!(SessionName::derive(&repo(), &branch()), panel);
+    }
+
+    fn last_segment(name: &SessionName) -> &str {
+        name.as_str().rsplit('-').next().unwrap()
+    }
+
+    #[test]
+    fn a_directory_session_is_named_from_the_directory_and_fingerprinted() {
+        let name = SessionName::derive_directory(Path::new("/Users/me/notes"));
+        assert!(name.as_str().starts_with("zax-notes-"), "{name}");
+        let last = last_segment(&name);
+        assert_eq!(last.len(), 16, "{name}");
+        assert!(
+            last.chars()
+                .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
+            "{name}"
+        );
+        assert!(SessionName::parse(name.as_str()).is_ok());
+    }
+
+    #[test]
+    fn two_directories_with_one_name_get_two_sessions() {
+        let a = SessionName::derive_directory(Path::new("/a/notes"));
+        let b = SessionName::derive_directory(Path::new("/b/notes"));
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn a_directory_session_never_reads_as_a_worktree_session() {
+        let worktree = SessionName::derive(
+            &RootRepoName::parse("notes").unwrap(),
+            &BranchName::parse_local("x").unwrap(),
+        );
+        let directory = SessionName::derive_directory(Path::new("/notes"));
+        assert_ne!(worktree, directory);
+        assert_eq!(last_segment(&worktree).len(), 8);
+        assert_eq!(last_segment(&directory).len(), 16);
+    }
+
+    #[test]
+    fn starting_again_in_a_directory_reattaches_its_detached_session() {
+        let dir = Path::new("/Users/me/notes");
+        let first = SessionName::derive_directory(dir);
+        assert_eq!(
+            choose_directory_session(dir, &[live(&first, false)]),
+            SessionChoice::Reattach(first.clone())
+        );
+        assert_eq!(
+            choose_directory_session(dir, &[live(&first, true)]),
+            SessionChoice::Create(SessionName::derive_directory_slot(dir, slot(2)))
+        );
     }
 }

@@ -5,7 +5,7 @@
 //! and performs its row actions either through the broker (transitions) or
 //! by running zax and the worktree opener directly.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
@@ -13,7 +13,7 @@ use std::time::{Duration, Instant, SystemTime};
 use anyhow::{anyhow, Result};
 use ratatui::crossterm::event::{self, Event as TermEvent, KeyEventKind};
 use serde_json::json;
-use zax_app::WorktreeOpener;
+use zax_app::{ResolveCheckout, WorktreeOpener};
 use zax_broker::client::{binary_identity, Client, Event};
 use zax_broker::topics::{
     decode_tickets, decode_transitions, decode_work, fetched_at, TicketsSpec, WorkSpec, TICKETS,
@@ -44,12 +44,11 @@ pub fn run() -> Result<()> {
     let Some(provider) = ctx.config.tickets.provider.clone() else {
         return idle(TicketsPane::unconfigured());
     };
-    let main_worktree = {
-        use zax_app::GitRepo;
-        ctx.git.main_worktree()?
-    };
-    let home = wiring::home().ok();
-    let provider_argv = anchor_provider(provider.argv(), &main_worktree, home.as_deref());
+    let provider_argv = anchor_provider(
+        provider.argv(),
+        &ctx.provider_anchor(),
+        Some(ctx.home.as_path()),
+    );
     let provider_name = provider_label(&provider_argv);
     let zax = wiring::zax_bin()?;
     let zax_program = zax.to_string_lossy().into_owned();
@@ -73,6 +72,10 @@ pub fn run() -> Result<()> {
 
     let mut pane = TicketsPane::new();
     pane.set_focused(true);
+    // A ticket belongs to no repository; with `projects.root` configured
+    // there is more than one checkout `w` could mean, so it asks rather
+    // than guessing from where this session happened to start.
+    pane.set_repo_choice(ctx.config.projects.is_some());
     let mut screen = Screen::enter()?;
     let mut client: Option<Client> = None;
     let mut next_connect = Instant::now();
@@ -201,16 +204,37 @@ pub fn run() -> Result<()> {
                 },
                 // Off the UI thread: `worktree new` runs the repository's
                 // setup hooks, which can take minutes.
-                PaneAction::StartWork { branch } => match &starting {
+                PaneAction::StartWork { branch, repo } => match &starting {
                     Some((already, _)) => pane.notice(format!("already starting {already}")),
                     None => {
                         let branch = branch.as_str().to_owned();
                         pane.notice(format!("starting {branch}..."));
                         let done =
-                            spawn_start_work(SystemExec, zax_program.clone(), branch.clone());
+                            spawn_start_work(SystemExec, zax_program.clone(), branch.clone(), repo);
                         starting = Some((branch, done));
                     }
                 },
+                // A ticket's worktree can go in any checkout under
+                // `projects.root`, so `w` is answered with the list rather
+                // than starting work in a guess.
+                PaneAction::ChooseRepo { branch } => {
+                    let checkouts = wiring::checkouts();
+                    match ResolveCheckout::new(&checkouts, ctx.config.projects.as_ref())
+                        .list(ctx.here())
+                    {
+                        Ok(choices) if choices.checkouts.is_empty() => {
+                            let root = ctx
+                                .config
+                                .projects
+                                .as_ref()
+                                .map(|p| p.root.as_path().display().to_string())
+                                .unwrap_or_default();
+                            pane.notice(format!("no checkouts under {root}"));
+                        }
+                        Ok(choices) => pane.show_repo_picker(branch, choices),
+                        Err(e) => pane.notice(format!("repos: {e}")),
+                    }
+                }
                 PaneAction::OpenWorktree { path, others } => match opener.open_worktree(&path) {
                     Err(e) => pane.notice(format!("open: {e}")),
                     Ok(()) if others > 0 => {
@@ -302,10 +326,11 @@ fn spawn_start_work<E: Exec + Send + 'static>(
     exec: E,
     zax: String,
     branch: String,
+    repo: Option<PathBuf>,
 ) -> Receiver<Option<String>> {
     let (tx, rx) = mpsc::channel();
     thread::spawn(move || {
-        let _ = tx.send(start_work(&exec, &zax, &branch));
+        let _ = tx.send(start_work(&exec, &zax, &branch, repo.as_deref()));
     });
     rx
 }
@@ -347,18 +372,19 @@ fn idle(mut pane: TicketsPane) -> Result<()> {
     }
 }
 
-/// `zax worktree new <branch>` in the current repository; the message the
-/// pane shows when it did not work.
+/// `zax worktree new <branch> [--repo <path>]`; the message the pane shows
+/// when it did not work. `repo` is the checkout chosen by the repo picker,
+/// when the ticket's worktree needed one named explicitly.
 ///
 /// zax prints its whole error chain as the last line of stderr, so that line
 /// is the message, as it is for `zax worktree review` in the PR panes.
-fn start_work<E: Exec>(exec: &E, zax: &str, branch: &str) -> Option<String> {
-    let result = exec.exec(
-        zax,
-        &["worktree".to_owned(), "new".to_owned(), branch.to_owned()],
-        None,
-        &[],
-    );
+fn start_work<E: Exec>(exec: &E, zax: &str, branch: &str, repo: Option<&Path>) -> Option<String> {
+    let mut args = vec!["worktree".to_owned(), "new".to_owned(), branch.to_owned()];
+    if let Some(repo) = repo {
+        args.push("--repo".to_owned());
+        args.push(repo.to_string_lossy().into_owned());
+    }
+    let result = exec.exec(zax, &args, None, &[]);
     let detail = match result {
         Ok(out) if out.ok() => return None,
         Ok(out) => out
@@ -508,7 +534,7 @@ mod tests {
 
     #[test]
     fn a_background_start_posts_its_result_back() {
-        let done = spawn_start_work(Refusing, "zax".to_owned(), "OMEGA-1-go".to_owned());
+        let done = spawn_start_work(Refusing, "zax".to_owned(), "OMEGA-1-go".to_owned(), None);
         let message = done.recv_timeout(Duration::from_secs(5)).unwrap();
         assert_eq!(message.as_deref(), Some("worktree new: branch exists"));
     }
@@ -516,8 +542,21 @@ mod tests {
     #[test]
     fn start_work_runs_worktree_new_with_the_branch() {
         let exec = RecordingExec::returning("");
-        assert_eq!(start_work(&exec, "zax", "OMEGA-1-go"), None);
+        assert_eq!(start_work(&exec, "zax", "OMEGA-1-go", None), None);
         assert_eq!(exec.args(0), ["worktree", "new", "OMEGA-1-go"]);
+    }
+
+    #[test]
+    fn start_work_passes_the_chosen_repo() {
+        let exec = RecordingExec::returning("");
+        assert_eq!(
+            start_work(&exec, "zax", "OMEGA-1-go", Some(Path::new("/h/src/omega"))),
+            None
+        );
+        assert_eq!(
+            exec.args(0),
+            ["worktree", "new", "OMEGA-1-go", "--repo", "/h/src/omega"]
+        );
     }
 
     #[test]
@@ -528,7 +567,7 @@ mod tests {
             stderr: "zax: branch exists\n".into(),
         }]);
         assert_eq!(
-            start_work(&exec, "zax", "OMEGA-1-go").unwrap(),
+            start_work(&exec, "zax", "OMEGA-1-go", None).unwrap(),
             "worktree new: branch exists"
         );
     }
@@ -538,7 +577,7 @@ mod tests {
         // With no response queued the recorder fails the exec itself, which
         // is what a missing or unrunnable binary looks like.
         let exec = RecordingExec::with_responses(Vec::new());
-        let message = start_work(&exec, "zax", "OMEGA-1-go").unwrap();
+        let message = start_work(&exec, "zax", "OMEGA-1-go", None).unwrap();
         assert!(message.starts_with("worktree new: "), "got: {message}");
         assert!(message.contains("zax"), "got: {message}");
     }
@@ -550,7 +589,7 @@ mod tests {
             stdout: String::new(),
             stderr: "  \n".into(),
         }]);
-        let message = start_work(&exec, "zax", "OMEGA-1-go").unwrap();
+        let message = start_work(&exec, "zax", "OMEGA-1-go", None).unwrap();
         assert!(message.contains('2'), "got: {message}");
     }
 

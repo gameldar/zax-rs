@@ -104,14 +104,24 @@ impl LayerDoc {
     }
 }
 
-/// The three layers, open for editing.
-///
-/// Three named fields rather than a `Vec`, so a draft missing a layer cannot be
-/// constructed and every accessor is total.
-pub struct Draft {
-    global: LayerDoc,
+/// The repo and personal layers, held together because a draft never has one
+/// without the other: a repository layer only exists when there is a checkout
+/// to read `.zax.toml` from, and the personal layer's path is derived from
+/// that checkout (or its own `name` override).
+struct RepoLayers {
     repo: LayerDoc,
     personal: LayerDoc,
+}
+
+/// The layers open for editing.
+///
+/// A draft always has the global layer. It has the repo and personal layers
+/// together, or neither: `zax config` run outside a git repository has no
+/// checkout to read `.zax.toml` from and no key to derive the personal
+/// override's path, so there is no "repo but no personal" state to represent.
+pub struct Draft {
+    global: LayerDoc,
+    repo_layers: Option<RepoLayers>,
     home: String,
     /// What this editing session has changed, which is not the same question as
     /// what is unsaved: a saved change still has to be reported as something a
@@ -154,19 +164,40 @@ impl Draft {
 
         Ok(Self {
             global,
-            repo: repo_layer,
-            personal,
+            repo_layers: Some(RepoLayers {
+                repo: repo_layer,
+                personal,
+            }),
             home: home.to_owned(),
             touched: BTreeSet::new(),
             touched_panes: false,
         })
     }
 
+    /// The global layer alone, for a session with no repository to read the
+    /// other two layers from.
+    pub fn open_global(config_home: &Path, home: &str) -> Result<Draft, ConfigError> {
+        let global = LayerDoc::read(LayerSlot::Global, crate::global_config_path(config_home))?;
+
+        Ok(Self {
+            global,
+            repo_layers: None,
+            home: home.to_owned(),
+            touched: BTreeSet::new(),
+            touched_panes: false,
+        })
+    }
+
+    /// A no-op at a slot this draft has no layer for: there is nothing to
+    /// write the edit into, and a global-only draft is reached precisely
+    /// because there is no repository to have a repo or personal layer.
     pub fn set(&mut self, slot: LayerSlot, key: SettingKey, value: SettingValue) {
         if !key.allows(slot) {
             return;
         }
-        let layer = self.layer_mut(slot);
+        let Some(layer) = self.layer_mut(slot) else {
+            return;
+        };
         if layer.unparsed {
             return;
         }
@@ -178,7 +209,9 @@ impl Draft {
     }
 
     pub fn clear(&mut self, slot: LayerSlot, key: SettingKey) {
-        let layer = self.layer_mut(slot);
+        let Some(layer) = self.layer_mut(slot) else {
+            return;
+        };
         if layer.unparsed {
             return;
         }
@@ -204,7 +237,9 @@ impl Draft {
     /// there is no API by which a caller could append to an inherited list and
     /// produce a layout nobody intended.
     pub fn set_panes(&mut self, slot: LayerSlot, panes: Vec<PaneEdit>) {
-        let layer = self.layer_mut(slot);
+        let Some(layer) = self.layer_mut(slot) else {
+            return;
+        };
         if layer.unparsed {
             return;
         }
@@ -224,9 +259,12 @@ impl Draft {
             .into_iter()
             .map(|key| {
                 let per_layer = [
-                    read_setting(&self.global.doc, key),
-                    read_setting(&self.repo.doc, key),
-                    read_setting(&self.personal.doc, key),
+                    self.layer(LayerSlot::Global)
+                        .and_then(|layer| read_setting(&layer.doc, key)),
+                    self.layer(LayerSlot::Repo)
+                        .and_then(|layer| read_setting(&layer.doc, key)),
+                    self.layer(LayerSlot::Personal)
+                        .and_then(|layer| read_setting(&layer.doc, key)),
                 ];
                 let changed = self.layers().into_iter().any(|layer| {
                     read_setting(&layer.doc, key) != read_setting(&layer.baseline, key)
@@ -243,7 +281,8 @@ impl Draft {
             .into_iter()
             .rev()
             .find_map(|slot| {
-                read_panes(&self.layer(slot).doc).map(|panes| PanesView {
+                let layer = self.layer(slot)?;
+                read_panes(&layer.doc).map(|panes| PanesView {
                     panes,
                     origin: Origin::Layer(slot),
                     changed: panes_changed,
@@ -258,15 +297,21 @@ impl Draft {
         ConfigView {
             settings,
             panes,
-            layers: [self.global.info(), self.repo.info(), self.personal.info()],
+            layers: self.layers().into_iter().map(LayerDoc::info).collect(),
             status: self.validate().map(|_| ()).map_err(|e| e.to_string()),
         }
     }
 
+    /// Runs the text of every layer this draft has open back through the same
+    /// chain a session start uses, each under its own slot - so a repo layer
+    /// that sets `projects.root`, say, is refused here exactly as it would be
+    /// at session start, and a global-only draft validates against the global
+    /// layer alone, the same as `load_global`.
     pub fn validate(&self) -> Result<parse::Config, ConfigError> {
-        let mut raws = Vec::with_capacity(3);
-        for layer in self.layers() {
-            raws.push(parse_layer_text(&layer.path, &layer.text())?);
+        let layers = self.layers();
+        let mut raws = Vec::with_capacity(layers.len());
+        for layer in layers {
+            raws.push(parse_layer_text(layer.slot, &layer.path, &layer.text())?);
         }
         parse::from_raw(merge::merge(raws), &self.home)
     }
@@ -276,9 +321,11 @@ impl Draft {
         // half-saved config is a config that will not start a session.
         self.validate()?;
 
-        let dirty: Vec<LayerSlot> = LayerSlot::ALL
+        let dirty: Vec<LayerSlot> = self
+            .layers()
             .into_iter()
-            .filter(|slot| self.layer(*slot).dirty())
+            .filter(|layer| layer.dirty())
+            .map(|layer| layer.slot)
             .collect();
 
         // A layer changed underneath the draft - another modal, a hand edit, a
@@ -286,7 +333,9 @@ impl Draft {
         // written, with the edits still in the buffer. Staged saves make this a
         // real race rather than a theoretical one.
         for slot in &dirty {
-            let layer = self.layer(*slot);
+            let Some(layer) = self.layer(*slot) else {
+                continue;
+            };
             let current = match std::fs::read_to_string(&layer.path) {
                 Ok(text) => Some(text),
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
@@ -306,7 +355,9 @@ impl Draft {
         }
 
         for slot in &dirty {
-            let layer = self.layer_mut(*slot);
+            let Some(layer) = self.layer_mut(*slot) else {
+                continue;
+            };
             let text = layer.rendered();
             write_atomically(&layer.path, &text)?;
             // So the modal can stay open, clean, and save again without seeing
@@ -332,32 +383,43 @@ impl Draft {
     }
 
     /// Re-read one layer from disk, discarding this draft's edits to it. The way
-    /// out of a layer that changed underneath the draft.
+    /// out of a layer that changed underneath the draft. A no-op at a slot
+    /// this draft has no layer for.
     pub fn reload(&mut self, slot: LayerSlot) -> Result<(), ConfigError> {
-        let path = self.layer(slot).path.clone();
-        *self.layer_mut(slot) = LayerDoc::read(slot, path)?;
+        let Some(path) = self.layer(slot).map(|layer| layer.path.clone()) else {
+            return Ok(());
+        };
+        let doc = LayerDoc::read(slot, path)?;
+        if let Some(layer) = self.layer_mut(slot) {
+            *layer = doc;
+        }
         Ok(())
     }
 
-    fn layer(&self, slot: LayerSlot) -> &LayerDoc {
+    fn layer(&self, slot: LayerSlot) -> Option<&LayerDoc> {
         match slot {
-            LayerSlot::Global => &self.global,
-            LayerSlot::Repo => &self.repo,
-            LayerSlot::Personal => &self.personal,
+            LayerSlot::Global => Some(&self.global),
+            LayerSlot::Repo => self.repo_layers.as_ref().map(|layers| &layers.repo),
+            LayerSlot::Personal => self.repo_layers.as_ref().map(|layers| &layers.personal),
         }
     }
 
-    fn layer_mut(&mut self, slot: LayerSlot) -> &mut LayerDoc {
+    fn layer_mut(&mut self, slot: LayerSlot) -> Option<&mut LayerDoc> {
         match slot {
-            LayerSlot::Global => &mut self.global,
-            LayerSlot::Repo => &mut self.repo,
-            LayerSlot::Personal => &mut self.personal,
+            LayerSlot::Global => Some(&mut self.global),
+            LayerSlot::Repo => self.repo_layers.as_mut().map(|layers| &mut layers.repo),
+            LayerSlot::Personal => self.repo_layers.as_mut().map(|layers| &mut layers.personal),
         }
     }
 
-    /// Lowest precedence first, which is the order the chain folds them in.
-    fn layers(&self) -> [&LayerDoc; 3] {
-        [&self.global, &self.repo, &self.personal]
+    /// The layers this draft has open, lowest precedence first - which is the
+    /// order the chain folds them in, and omits any layer this draft was
+    /// opened without.
+    fn layers(&self) -> Vec<&LayerDoc> {
+        LayerSlot::ALL
+            .into_iter()
+            .filter_map(|slot| self.layer(slot))
+            .collect()
     }
 }
 
@@ -433,6 +495,21 @@ fn read_setting(doc: &DocumentMut, key: SettingKey) -> Option<SettingValue> {
             .and_then(Item::as_table_like)
             .and_then(|table| table.get(key.label())),
     }?;
+
+    // `projects.paths` is a table of overrides, not an array, so it reads as
+    // one "slug = path" entry per key rather than through the list branch
+    // below, which expects an array.
+    if key == SettingKey::ProjectsPaths {
+        let table = item.as_table_like()?;
+        return Some(SettingValue::List(
+            table
+                .iter()
+                .filter_map(|(slug, value)| {
+                    Some(format!("{slug} = {}", value_text(value.as_value()?)))
+                })
+                .collect(),
+        ));
+    }
 
     match key.shape() {
         SettingShape::Scalar => Some(SettingValue::Scalar(value_text(item.as_value()?))),
@@ -1210,6 +1287,95 @@ prefix = \"C-a\"
         let view = draft.view();
         assert!(view.row(SettingKey::TmuxPrefix).unwrap().changed);
         assert!(!view.any_dirty(), "saved work is not unsaved work");
+    }
+
+    #[test]
+    fn validate_refuses_projects_in_the_repo_layer() {
+        let fixture = Fixture::new(None, Some("[projects]\nroot = \"/x\"\n"), None);
+        let draft = fixture.draft();
+
+        let error = draft.validate().unwrap_err();
+        assert!(
+            matches!(
+                error,
+                ConfigError::InvalidLayer {
+                    field: "projects.root",
+                    ..
+                }
+            ),
+            "got: {error}"
+        );
+
+        let from_load = crate::load(
+            &fixture.config_home,
+            &fixture.main_worktree,
+            &RootRepoName::parse("zax").unwrap(),
+            "/home/me",
+        )
+        .unwrap_err();
+        assert_eq!(error, from_load);
+    }
+
+    #[test]
+    fn a_global_only_draft_has_one_layer() {
+        // `zax config` outside a git repository has no checkout to read the
+        // repo layer from and no key to derive the personal layer's path, so
+        // there is only the global layer to show.
+        let fixture = Fixture::new(Some("[tmux]\nprefix = \"C-a\"\n"), None, None);
+        let draft = Draft::open_global(&fixture.config_home, "/home/me").unwrap();
+
+        let view = draft.view();
+
+        assert_eq!(view.layers.len(), 1);
+        assert!(view.layer(LayerSlot::Repo).is_none());
+    }
+
+    #[test]
+    fn a_global_only_draft_edits_and_saves_the_global_file() {
+        let fixture = Fixture::new(Some("[tmux]\nprefix = \"C-a\"\n"), None, None);
+        let mut draft = Draft::open_global(&fixture.config_home, "/home/me").unwrap();
+
+        draft.set(LayerSlot::Global, SettingKey::ProjectsRoot, scalar("~/src"));
+        draft.save().unwrap();
+
+        let saved = fixture.text(LayerSlot::Global);
+        assert!(saved.contains("[projects]"), "got:\n{saved}");
+        assert!(saved.contains("root = \"~/src\""), "got:\n{saved}");
+    }
+
+    #[test]
+    fn a_global_only_draft_ignores_edits_to_absent_layers() {
+        let fixture = Fixture::new(Some("[tmux]\nprefix = \"C-a\"\n"), None, None);
+        let mut draft = Draft::open_global(&fixture.config_home, "/home/me").unwrap();
+
+        draft.set(LayerSlot::Personal, SettingKey::TmuxPrefix, scalar("C-q"));
+
+        assert!(!draft.view().any_dirty());
+    }
+
+    #[test]
+    fn projects_paths_reads_as_slug_equals_path() {
+        let fixture = Fixture::new(
+            Some("[projects]\nroot = \"/h/src\"\n[projects.paths]\n\"a/b\" = \"/x/b\"\n"),
+            None,
+            None,
+        );
+        let draft = Draft::open_global(&fixture.config_home, "/home/me").unwrap();
+
+        let view = draft.view();
+
+        let row = view.row(SettingKey::ProjectsPaths).unwrap();
+        assert_eq!(row.at(LayerSlot::Global), Some(&list(&["a/b = /x/b"])));
+    }
+
+    #[test]
+    fn set_refuses_projects_root_outside_the_global_layer() {
+        let fixture = Fixture::new(None, Some("[tmux]\nprefix = \"C-a\"\n"), None);
+        let mut draft = fixture.draft();
+
+        draft.set(LayerSlot::Repo, SettingKey::ProjectsRoot, scalar("/x"));
+
+        assert!(!draft.view().layer(LayerSlot::Repo).unwrap().dirty);
     }
 
     #[test]

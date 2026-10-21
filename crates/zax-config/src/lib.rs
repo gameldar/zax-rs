@@ -12,6 +12,12 @@
 //! that repository's configuration. The values that are not already "the
 //! repo can run commands" are parsed strictly here for that reason: the
 //! override `name`, the tmux prefix and the `copy` list.
+//!
+//! A second trust rule applies only to `projects.root` and `projects.paths`:
+//! they are honoured from the global layer alone. A repository's checked-in
+//! `.zax.toml`, or a personal override, setting either is an error naming the
+//! key, because those keys say where zax looks for *other* repositories'
+//! checkouts, and a repo must not be able to redirect that search.
 
 pub mod draft;
 pub mod error;
@@ -27,6 +33,7 @@ pub use parse::{
     Config, EditorConfig, OpenConfig, TicketsConfig, TmuxConfig, TodoConfig, WorktreeConfig,
 };
 use raw::RawConfig;
+use zax_domain::settings::LayerSlot;
 use zax_domain::RootRepoName;
 
 /// `~/.config/zax/config.toml`
@@ -66,12 +73,22 @@ pub fn load(
     repo: &RootRepoName,
     home: &str,
 ) -> Result<Config, ConfigError> {
-    let global = read_layer(&global_config_path(config_home))?;
-    let repo_layer = read_layer(&repo_config_path(main_worktree))?;
+    let global = read_layer(LayerSlot::Global, &global_config_path(config_home))?;
+    let repo_layer = read_layer(LayerSlot::Repo, &repo_config_path(main_worktree))?;
     let key = override_key(repo, &repo_layer);
-    let personal = read_layer(&override_config_path(config_home, &key))?;
+    let personal = read_layer(
+        LayerSlot::Personal,
+        &override_config_path(config_home, &key),
+    )?;
 
     parse::from_raw(merge::merge(vec![global, repo_layer, personal]), home)
+}
+
+/// The global layer alone, for a session with no repository to read the other
+/// two layers from.
+pub fn load_global(config_home: &Path, home: &str) -> Result<Config, ConfigError> {
+    let global = read_layer(LayerSlot::Global, &global_config_path(config_home))?;
+    parse::from_raw(merge::merge(vec![global]), home)
 }
 
 /// The override key names a directory under `~/.config/zax/repos/`, so it must
@@ -102,7 +119,7 @@ pub(crate) fn validate_override_name(name: &str) -> Result<(), String> {
     ))
 }
 
-fn read_layer(path: &Path) -> Result<RawConfig, ConfigError> {
+fn read_layer(slot: LayerSlot, path: &Path) -> Result<RawConfig, ConfigError> {
     let text = match std::fs::read_to_string(path) {
         Ok(text) => text,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(RawConfig::default()),
@@ -113,7 +130,7 @@ fn read_layer(path: &Path) -> Result<RawConfig, ConfigError> {
             })
         }
     };
-    parse_layer_text(path, &text)
+    parse_layer_text(slot, path, &text)
 }
 
 /// One layer's text, as the three-layer chain takes it.
@@ -122,7 +139,11 @@ fn read_layer(path: &Path) -> Result<RawConfig, ConfigError> {
 /// text through the identical step. A second implementation of this is a second
 /// opinion about what a layer may say, which is exactly what must not exist:
 /// the modal's job is to refuse what a session start would refuse.
-pub(crate) fn parse_layer_text(path: &Path, text: &str) -> Result<RawConfig, ConfigError> {
+pub(crate) fn parse_layer_text(
+    slot: LayerSlot,
+    path: &Path,
+    text: &str,
+) -> Result<RawConfig, ConfigError> {
     let raw: RawConfig = toml::from_str(text).map_err(|e| ConfigError::Parse {
         path: path.to_owned(),
         detail: e.to_string(),
@@ -134,6 +155,26 @@ pub(crate) fn parse_layer_text(path: &Path, text: &str) -> Result<RawConfig, Con
             field: "name",
             detail,
         })?;
+    }
+
+    if slot != LayerSlot::Global {
+        if let Some(projects) = &raw.projects {
+            let field = if projects.root.is_some() {
+                Some("projects.root")
+            } else if projects.paths.is_some() {
+                Some("projects.paths")
+            } else {
+                None
+            };
+            if let Some(field) = field {
+                return Err(ConfigError::InvalidLayer {
+                    path: path.to_owned(),
+                    field,
+                    detail: "is read from the global config only (~/.config/zax/config.toml)"
+                        .to_owned(),
+                });
+            }
+        }
     }
     Ok(raw)
 }

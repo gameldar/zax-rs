@@ -1,8 +1,8 @@
 //! Layer merging. Your layer wins; arrays replace.
 
 use crate::raw::{
-    RawAgent, RawConfig, RawEditor, RawLayout, RawOpen, RawPrs, RawTickets, RawTmux, RawTodo,
-    RawWorktree,
+    RawAgent, RawConfig, RawEditor, RawLayout, RawOpen, RawProjects, RawPrs, RawTickets, RawTmux,
+    RawTodo, RawWorktree,
 };
 
 /// Fold the layers in order, lowest precedence first.
@@ -21,6 +21,7 @@ fn fold_one(mut base: RawConfig, over: RawConfig) -> RawConfig {
     base.editor = merge_editor(base.editor, over.editor);
     base.tickets = merge_tickets(base.tickets, over.tickets);
     base.todo = merge_todo(base.todo, over.todo);
+    base.projects = merge_projects(base.projects, over.projects);
     base
 }
 
@@ -125,6 +126,21 @@ fn merge_prs(base: Option<RawPrs>, over: Option<RawPrs>) -> Option<RawPrs> {
             b.include = o.include.or(b.include);
             b.exclude = o.exclude.or(b.exclude);
             b.max_age = o.max_age.or(b.max_age);
+            Some(b)
+        }
+    }
+}
+
+/// `projects` is honoured from the global layer only, so there is nothing for
+/// a later layer to actually win here in practice - but the fold still has to
+/// exist, since a later empty layer must not erase what the global layer set.
+fn merge_projects(base: Option<RawProjects>, over: Option<RawProjects>) -> Option<RawProjects> {
+    match (base, over) {
+        (b, None) => b,
+        (None, o) => o,
+        (Some(mut b), Some(o)) => {
+            b.root = o.root.or(b.root);
+            b.paths = o.paths.or(b.paths);
             Some(b)
         }
     }

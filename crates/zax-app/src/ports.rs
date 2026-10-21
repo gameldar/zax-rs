@@ -5,8 +5,8 @@ use std::time::SystemTime;
 
 use thiserror::Error;
 use zax_domain::{
-    BranchName, Command, LiveSession, PaneSize, PrFilter, PrRef, PullRequest, PullRequestStatus,
-    RepoSlug, RootRepoName, SessionName, Worktree, WorktreeRoot,
+    BranchName, CheckoutProbe, Command, LiveSession, PaneSize, PrFilter, PrRef, PullRequest,
+    PullRequestStatus, RepoSlug, RootRepoName, SessionName, Worktree, WorktreeRoot,
 };
 
 /// Every way the outside world can fail, in terms a pane can render.
@@ -186,6 +186,15 @@ pub trait FileSystem {
     fn exists(&self, path: &Path) -> bool;
     fn create_dir_all(&self, path: &Path) -> Result<(), PortError>;
     fn copy_file(&self, from: &Path, to: &Path) -> Result<(), PortError>;
+}
+
+/// Observes a directory and reports what kind of git checkout, if any, is
+/// there. This is the one place I/O happens for `projects.root`; the verdict
+/// on what an observation means is drawn by the domain, not here.
+pub trait CheckoutInspector {
+    fn inspect(&self, path: &Path) -> Result<CheckoutProbe, PortError>;
+    /// Direct children of `dir` that are directories, in no particular order.
+    fn subdirectories(&self, dir: &Path) -> Result<Vec<PathBuf>, PortError>;
 }
 
 /// Where a worktree is opened to be worked in: an editor window, or a

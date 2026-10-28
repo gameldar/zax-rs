@@ -4,7 +4,8 @@ use std::io::stdout;
 
 use anyhow::{Context, Result};
 use ratatui::crossterm::event::{
-    DisableBracketedPaste, DisableFocusChange, EnableBracketedPaste, EnableFocusChange,
+    DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste,
+    EnableFocusChange, EnableMouseCapture,
 };
 use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::{
@@ -25,11 +26,15 @@ impl Screen {
         // `focus-events on`.
         // `EnableBracketedPaste` delivers a paste as one `Event::Paste`, so a
         // pasted newline is not mistaken for `enter`.
+        // `EnableMouseCapture` delivers clicks and the wheel as `Event::Mouse`.
+        // It takes plain drag-to-select from the terminal; most terminals give
+        // it back with shift (option in iTerm2) held.
         execute!(
             stdout(),
             EnterAlternateScreen,
             EnableFocusChange,
-            EnableBracketedPaste
+            EnableBracketedPaste,
+            EnableMouseCapture
         )?;
         Ok(Self {
             terminal: Terminal::new(CrosstermBackend::new(stdout()))?,
@@ -42,6 +47,7 @@ impl Drop for Screen {
         let _ = disable_raw_mode();
         let _ = execute!(
             stdout(),
+            DisableMouseCapture,
             DisableBracketedPaste,
             DisableFocusChange,
             LeaveAlternateScreen

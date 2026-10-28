@@ -4,7 +4,7 @@
 use std::num::NonZeroU32;
 use std::time::SystemTime;
 
-use ratatui::crossterm::event::KeyEvent;
+use ratatui::crossterm::event::{KeyEvent, MouseEvent};
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
@@ -19,12 +19,13 @@ use crate::chrome::{error_line, header_line, GLYPH_UPDATED};
 use crate::fmt::{display_width, format_age, truncate};
 use crate::keys::{split_footer, KeyInput};
 use crate::pr_fields::{check_glyph, check_style};
+use crate::scroll::{ListScroll, Viewport};
 
 const TITLE: &str = "Review requests";
 
 pub struct PrsForReviewPane {
     cache: Cached<Vec<ReviewQueueItem>>,
-    selected: usize,
+    scroll: ListScroll,
     focused: bool,
     keys: KeyInput,
 }
@@ -33,7 +34,7 @@ impl PrsForReviewPane {
     pub fn new(keymap: Keymap) -> Self {
         Self {
             cache: Cached::new(),
-            selected: 0,
+            scroll: ListScroll::new(),
             focused: false,
             keys: KeyInput::new(keymap),
         }
@@ -47,7 +48,7 @@ impl PrsForReviewPane {
         match result {
             Ok(prs) => {
                 // The queue can shrink under the cursor between refreshes.
-                self.selected = self.selected.min(prs.len().saturating_sub(1));
+                self.scroll.clamp(prs.len());
                 self.cache.record_ok(prs, at);
             }
             Err(message) => self.cache.record_err(message, at),
@@ -59,7 +60,7 @@ impl PrsForReviewPane {
     }
 
     pub fn selected(&self) -> Option<&ReviewQueueItem> {
-        self.rows().get(self.selected)
+        self.rows().get(self.scroll.selected())
     }
 
     pub fn render(&self, frame: &mut Frame, area: Rect, now: SystemTime) {
@@ -92,35 +93,32 @@ impl PrsForReviewPane {
                 ));
             }
             Some(prs) => {
-                let window = self.visible_rows(prs.len(), area.height);
-                for (index, item) in prs.iter().enumerate().skip(window.start).take(window.len()) {
-                    lines.push(self.row(item, index == self.selected, area.width, now));
+                let window = self.viewport(prs.len(), area);
+                for (index, item) in prs
+                    .iter()
+                    .enumerate()
+                    .skip(window.rows.start)
+                    .take(window.rows.len())
+                {
+                    let selected = index == self.scroll.selected();
+                    lines.push(self.row(item, selected, window.width, now));
                 }
             }
         }
 
         frame.render_widget(Paragraph::new(Text::from(lines)), area);
+        if self.cache.value().is_some_and(|prs| !prs.is_empty()) {
+            self.scroll.render_gutter(frame);
+        }
         self.keys.render_which_key(frame, area);
         self.keys.render_footer(frame, footer);
     }
 
-    /// Which rows a pane of this height shows.
-    ///
-    /// The window follows the selection rather than being stored and nudged:
-    /// derived from `selected` at every draw, it cannot fall out of step with
-    /// it, and there is no second place for `j` to forget to update. It scrolls
-    /// only as far as it must, so the selection becomes the last visible row
-    /// rather than jumping to the middle.
-    ///
-    /// Keeping the selection on screen is not cosmetic. `RET`, `SPC y` and `SPC w`
-    /// all act on it, and `SPC w` builds a worktree, so a cursor the user cannot
-    /// see is a keystroke acting on a pull request they did not pick.
-    fn visible_rows(&self, len: usize, height: u16) -> std::ops::Range<usize> {
-        // One line of the pane is the header.
-        let visible = usize::from(height).saturating_sub(1);
-        let first = self.selected.saturating_sub(visible.saturating_sub(1));
-        let first = first.min(len);
-        first..(first + visible).min(len)
+    /// Which rows a pane of this size shows, under its one-line header.
+    fn viewport(&self, len: usize, area: Rect) -> Viewport {
+        let visible = usize::from(area.height).saturating_sub(1);
+        self.scroll
+            .layout(len, visible, area.x, area.y + 1, area.width)
     }
 
     fn row(
@@ -203,17 +201,40 @@ impl PrsForReviewPane {
         }
     }
 
+    /// A click selects the row under it; the wheel moves the selection.
+    pub fn on_mouse(&mut self, mouse: MouseEvent) {
+        if self.scroll.on_mouse(mouse, self.rows().len()) {
+            self.keys.cancel();
+        }
+    }
+
     fn run(&mut self, command: KeyCommand) -> PaneAction {
         let len = self.rows().len();
         match command {
             KeyCommand::Refresh => PaneAction::Refresh,
             KeyCommand::Quit => PaneAction::Quit,
             KeyCommand::MoveDown => {
-                self.selected = (self.selected + 1).min(len.saturating_sub(1));
+                self.scroll.down(len);
                 PaneAction::None
             }
             KeyCommand::MoveUp => {
-                self.selected = self.selected.saturating_sub(1);
+                self.scroll.up();
+                PaneAction::None
+            }
+            KeyCommand::PageDown => {
+                self.scroll.page_down(len);
+                PaneAction::None
+            }
+            KeyCommand::PageUp => {
+                self.scroll.page_up();
+                PaneAction::None
+            }
+            KeyCommand::Top => {
+                self.scroll.top();
+                PaneAction::None
+            }
+            KeyCommand::Bottom => {
+                self.scroll.bottom(len);
                 PaneAction::None
             }
             KeyCommand::Open => self
@@ -593,10 +614,10 @@ mod tests {
             t(100),
         );
 
-        assert_eq!(pane.visible_rows(10, 6), 0..5);
+        assert_eq!(pane.viewport(10, Rect::new(0, 0, 48, 6)).rows, 0..5);
         for expected in [0..5, 0..5, 0..5, 0..5, 1..6, 2..7, 3..8, 4..9, 5..10] {
             press(&mut pane, "j");
-            assert_eq!(pane.visible_rows(10, 6), expected);
+            assert_eq!(pane.viewport(10, Rect::new(0, 0, 48, 6)).rows, expected);
         }
 
         // A queue shorter than the pane fills what it has and no more.
@@ -610,10 +631,10 @@ mod tests {
             ))]),
             t(100),
         );
-        assert_eq!(short.visible_rows(1, 6), 0..1);
+        assert_eq!(short.viewport(1, Rect::new(0, 0, 48, 6)).rows, 0..1);
         // A pane with no room for rows at all shows none.
-        assert_eq!(short.visible_rows(1, 1), 0..0);
-        assert_eq!(short.visible_rows(1, 0), 0..0);
+        assert_eq!(short.viewport(1, Rect::new(0, 0, 48, 1)).rows, 0..0);
+        assert_eq!(short.viewport(1, Rect::new(0, 0, 48, 0)).rows, 0..0);
     }
 
     #[test]
@@ -706,6 +727,115 @@ mod tests {
             row(&buffer, 1).contains("omega#1963"),
             "the queue must not blank"
         );
+    }
+
+    fn ten_prs() -> PrsForReviewPane {
+        let mut pane = PrsForReviewPane::new(keymap());
+        pane.apply(
+            Ok((100..110)
+                .map(|n| requested(pr("acme/omega", n, false, CheckState::Passing)))
+                .collect()),
+            t(100),
+        );
+        pane.set_focused(true);
+        pane
+    }
+
+    fn click(column: u16, row: u16) -> MouseEvent {
+        use ratatui::crossterm::event::{KeyModifiers, MouseButton, MouseEventKind};
+        MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        }
+    }
+
+    fn gutter(buffer: &Buffer, y: u16) -> String {
+        buffer[(buffer.area.width - 1, y)].symbol().to_owned()
+    }
+
+    #[test]
+    fn page_down_and_up_move_a_screen_of_rows_and_mark_what_is_hidden() {
+        // Four rows fit between the header and the status bar.
+        let mut pane = ten_prs();
+        let top = draw(&pane, t(100));
+        assert_eq!(gutter(&top, 1), " ", "nothing hidden above");
+        assert_eq!(gutter(&top, 4), "\u{25bc}", "rows hidden below");
+
+        press(&mut pane, "<PageDown>");
+        assert_eq!(pane.selected().map(|p| p.pr.number), Some(104));
+        let middle = draw(&pane, t(100));
+        assert_eq!(gutter(&middle, 1), "\u{25b2}");
+        assert_eq!(gutter(&middle, 4), "\u{25bc}");
+
+        press(&mut pane, "<PageDown>");
+        press(&mut pane, "<PageDown>");
+        assert_eq!(
+            pane.selected().map(|p| p.pr.number),
+            Some(109),
+            "clamped at the end"
+        );
+        let bottom = draw(&pane, t(100));
+        assert_eq!(gutter(&bottom, 1), "\u{25b2}");
+        assert_eq!(gutter(&bottom, 4), " ", "nothing hidden below");
+
+        press(&mut pane, "<PageUp>");
+        press(&mut pane, "<PageUp>");
+        press(&mut pane, "<PageUp>");
+        assert_eq!(
+            pane.selected().map(|p| p.pr.number),
+            Some(100),
+            "clamped at the start"
+        );
+    }
+
+    #[test]
+    fn home_and_end_jump_to_the_first_and_last_rows() {
+        let mut pane = ten_prs();
+        draw(&pane, t(100));
+
+        press(&mut pane, "<End>");
+        assert_eq!(pane.selected().map(|p| p.pr.number), Some(109));
+        let bottom = draw(&pane, t(100));
+        assert!(row(&bottom, 4).contains("#109"));
+        assert_eq!(gutter(&bottom, 1), "\u{25b2}");
+        assert_eq!(gutter(&bottom, 4), " ");
+
+        press(&mut pane, "<Home>");
+        assert_eq!(pane.selected().map(|p| p.pr.number), Some(100));
+        let top = draw(&pane, t(100));
+        assert!(row(&top, 1).contains("#100"));
+        assert_eq!(gutter(&top, 1), " ");
+    }
+
+    #[test]
+    fn clicking_a_row_selects_it_and_clicking_elsewhere_does_not() {
+        let mut pane = ten_prs();
+        draw(&pane, t(100));
+
+        pane.on_mouse(click(10, 3));
+        assert_eq!(pane.selected().map(|p| p.pr.number), Some(102));
+
+        pane.on_mouse(click(10, 0));
+        assert_eq!(
+            pane.selected().map(|p| p.pr.number),
+            Some(102),
+            "the header"
+        );
+        pane.on_mouse(click(10, 5));
+        assert_eq!(
+            pane.selected().map(|p| p.pr.number),
+            Some(102),
+            "the status bar"
+        );
+
+        // A click maps through the scrolled window, not the list's start.
+        press(&mut pane, "<PageDown>");
+        press(&mut pane, "<PageDown>");
+        draw(&pane, t(100));
+        pane.on_mouse(click(10, 1));
+        assert_eq!(pane.selected().map(|p| p.pr.number), Some(106));
     }
 
     #[test]

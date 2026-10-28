@@ -30,6 +30,14 @@ pub enum Key {
     Tab,
     /// The backspace key.
     Backspace,
+    /// Page up.
+    PageUp,
+    /// Page down.
+    PageDown,
+    /// Home.
+    Home,
+    /// End.
+    End,
 }
 
 /// One key press with its modifiers.
@@ -74,7 +82,7 @@ pub enum KeyParseError {
     #[error("a key sequence needs at least one key")]
     Empty,
     /// A key spelling was not recognised.
-    #[error("`{0}` is not a key; use SPC, RET, TAB, DEL, <Esc>, <Up>, <Down>, <Left>, <Right>, C-x, M-x or a single character")]
+    #[error("`{0}` is not a key; use SPC, RET, TAB, DEL, <Esc>, <Up>, <Down>, <Left>, <Right>, <PageUp>, <PageDown>, <Home>, <End>, C-x, M-x or a single character")]
     Unknown(String),
 }
 
@@ -106,6 +114,10 @@ impl FromStr for KeyChord {
             "<Down>" => Key::Down,
             "<Left>" => Key::Left,
             "<Right>" => Key::Right,
+            "<PageUp>" => Key::PageUp,
+            "<PageDown>" => Key::PageDown,
+            "<Home>" => Key::Home,
+            "<End>" => Key::End,
             _ => {
                 let mut chars = rest.chars();
                 match (chars.next(), chars.next()) {
@@ -137,6 +149,10 @@ impl fmt::Display for KeyChord {
             Key::Down => f.write_str("<Down>"),
             Key::Left => f.write_str("<Left>"),
             Key::Right => f.write_str("<Right>"),
+            Key::PageUp => f.write_str("<PageUp>"),
+            Key::PageDown => f.write_str("<PageDown>"),
+            Key::Home => f.write_str("<Home>"),
+            Key::End => f.write_str("<End>"),
         }
     }
 }
@@ -204,6 +220,14 @@ pub enum Command {
     MoveDown,
     /// Move the selection up (scroll, in an exec pane).
     MoveUp,
+    /// Move the selection down a pane's height (scroll, in an exec pane).
+    PageDown,
+    /// Move the selection up a pane's height (scroll, in an exec pane).
+    PageUp,
+    /// Move the selection to the first row (scroll, in an exec pane).
+    Top,
+    /// Move the selection to the last row (scroll, in an exec pane).
+    Bottom,
     /// Open the selection in the browser.
     Open,
     /// Copy the selection's url.
@@ -239,9 +263,13 @@ pub enum Command {
 }
 
 impl Command {
-    const ALL: [Self; 18] = [
+    const ALL: [Self; 22] = [
         Self::MoveDown,
         Self::MoveUp,
+        Self::PageDown,
+        Self::PageUp,
+        Self::Top,
+        Self::Bottom,
         Self::Open,
         Self::CopyUrl,
         Self::Refresh,
@@ -266,6 +294,10 @@ impl Command {
         match self {
             Self::MoveDown => "move-down",
             Self::MoveUp => "move-up",
+            Self::PageDown => "page-down",
+            Self::PageUp => "page-up",
+            Self::Top => "top",
+            Self::Bottom => "bottom",
             Self::Open => "open",
             Self::CopyUrl => "copy-url",
             Self::Refresh => "refresh",
@@ -291,6 +323,10 @@ impl Command {
         match self {
             Self::MoveDown => "down",
             Self::MoveUp => "up",
+            Self::PageDown => "page down",
+            Self::PageUp => "page up",
+            Self::Top => "top",
+            Self::Bottom => "bottom",
             Self::Open => "open in browser",
             Self::CopyUrl => "copy url",
             Self::Refresh => "refresh",
@@ -354,6 +390,10 @@ pub enum PaneContext {
 const PR_LIST: &[Command] = &[
     Command::MoveDown,
     Command::MoveUp,
+    Command::PageDown,
+    Command::PageUp,
+    Command::Top,
+    Command::Bottom,
     Command::Open,
     Command::CopyUrl,
     Command::Refresh,
@@ -370,6 +410,10 @@ const BRANCH: &[Command] = &[
 const TICKETS: &[Command] = &[
     Command::MoveDown,
     Command::MoveUp,
+    Command::PageDown,
+    Command::PageUp,
+    Command::Top,
+    Command::Bottom,
     Command::Open,
     Command::CopyUrl,
     Command::Refresh,
@@ -382,6 +426,10 @@ const TICKETS: &[Command] = &[
 const TODO: &[Command] = &[
     Command::MoveDown,
     Command::MoveUp,
+    Command::PageDown,
+    Command::PageUp,
+    Command::Top,
+    Command::Bottom,
     Command::Refresh,
     Command::Quit,
     Command::TodoAdd,
@@ -395,6 +443,10 @@ const TODO: &[Command] = &[
 const EXEC: &[Command] = &[
     Command::MoveDown,
     Command::MoveUp,
+    Command::PageDown,
+    Command::PageUp,
+    Command::Top,
+    Command::Bottom,
     Command::Refresh,
     Command::Quit,
 ];
@@ -789,6 +841,12 @@ fn default_table(context: PaneContext) -> Vec<(&'static str, Command)> {
         ("<Down>", Command::MoveDown),
         ("k", Command::MoveUp),
         ("<Up>", Command::MoveUp),
+        ("<PageDown>", Command::PageDown),
+        ("C-d", Command::PageDown),
+        ("<PageUp>", Command::PageUp),
+        ("C-u", Command::PageUp),
+        ("<Home>", Command::Top),
+        ("<End>", Command::Bottom),
         ("SPC r", Command::Refresh),
         ("SPC q", Command::Quit),
     ];
@@ -846,8 +904,24 @@ mod tests {
     #[test]
     fn spellings_round_trip() {
         for text in [
-            "SPC w o", "RET", "<Down>", "C-d", "W", "M-x", "DEL", "TAB", "<Esc>", "C-SPC", "C-M-x",
-            "C-RET", "M-<Up>", "C--",
+            "SPC w o",
+            "RET",
+            "<Down>",
+            "C-d",
+            "W",
+            "M-x",
+            "DEL",
+            "TAB",
+            "<Esc>",
+            "C-SPC",
+            "C-M-x",
+            "C-RET",
+            "M-<Up>",
+            "C--",
+            "<PageUp>",
+            "C-<PageDown>",
+            "<Home>",
+            "M-<End>",
         ] {
             assert_eq!(s(text).to_string(), text);
         }
@@ -869,6 +943,10 @@ mod tests {
             Key::Right,
             Key::Tab,
             Key::Backspace,
+            Key::PageUp,
+            Key::PageDown,
+            Key::Home,
+            Key::End,
         ];
         for code in keys {
             for (ctrl, alt) in [(false, false), (true, false), (false, true), (true, true)] {
@@ -1022,6 +1100,10 @@ mod tests {
             cmd(context, "RET", Command::Open);
             cmd(context, "j", Command::MoveDown);
             cmd(context, "<Up>", Command::MoveUp);
+            cmd(context, "<PageDown>", Command::PageDown);
+            cmd(context, "C-u", Command::PageUp);
+            cmd(context, "<Home>", Command::Top);
+            cmd(context, "<End>", Command::Bottom);
         }
         cmd(PaneContext::BranchStatus, "SPC o b", Command::Open);
         cmd(PaneContext::Tickets, "SPC o p", Command::OpenPr);

@@ -136,6 +136,7 @@ pub fn run() -> Result<()> {
                 }
             }
             TermEvent::FocusLost => pane.set_focused(false),
+            TermEvent::Mouse(mouse) => pane.on_mouse(mouse),
             TermEvent::Paste(text) => pane.on_paste(&text),
             _ => {}
         }

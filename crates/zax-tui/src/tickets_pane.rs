@@ -2,7 +2,7 @@
 
 use std::time::SystemTime;
 
-use ratatui::crossterm::event::{KeyCode, KeyEvent};
+use ratatui::crossterm::event::{KeyCode, KeyEvent, MouseEvent};
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
@@ -22,6 +22,7 @@ use crate::keys::{split_footer, KeyInput};
 use crate::my_prs_pane::{attention_glyph, attention_style};
 use crate::pr_fields::{check_glyph, check_style};
 use crate::repo_picker::{RepoPicker, RepoPickerAction};
+use crate::scroll::ListScroll;
 
 const TITLE: &str = "Tickets";
 const SEPARATOR: &str = " · ";
@@ -49,7 +50,7 @@ pub struct TicketsPane {
     tickets: Cached<TicketsValue>,
     work: Cached<WorkIndex>,
     rows: Vec<TicketRow>,
-    selected: usize,
+    scroll: ListScroll,
     focused: bool,
     picker: Option<Picker>,
     /// `projects.root` is configured, so `SPC w o` asks which checkout a new
@@ -68,7 +69,7 @@ impl TicketsPane {
             tickets: Cached::new(),
             work: Cached::new(),
             rows: Vec::new(),
-            selected: 0,
+            scroll: ListScroll::new(),
             focused: false,
             picker: None,
             repo_choice: false,
@@ -138,7 +139,7 @@ impl TicketsPane {
             .value()
             .map(|t| join(t.tickets.clone(), work))
             .unwrap_or_default();
-        self.selected = self.selected.min(self.rows.len().saturating_sub(1));
+        self.scroll.clamp(self.rows.len());
     }
 
     pub fn show_picker(&mut self, key: TicketKey, transitions: Vec<Transition>) {
@@ -174,7 +175,7 @@ impl TicketsPane {
     }
 
     fn selected_row(&self) -> Option<&TicketRow> {
-        self.rows.get(self.selected)
+        self.rows.get(self.scroll.selected())
     }
 
     pub fn render(&self, frame: &mut Frame, area: Rect, now: SystemTime) {
@@ -213,17 +214,16 @@ impl TicketsPane {
             )),
             Some(_) => {
                 let visible = usize::from(area.height).saturating_sub(chrome);
-                let first = self
-                    .selected
-                    .saturating_sub(visible.saturating_sub(1))
-                    .min(self.rows.len());
-                let last = (first + visible).min(self.rows.len());
-                for index in first..last {
+                let window =
+                    self.scroll
+                        .layout(self.rows.len(), visible, area.x, area.y + 1, area.width);
+                for index in window.rows.clone() {
                     if let Some(row) = self.rows.get(index) {
-                        lines.push(self.row(row, index == self.selected, area.width));
+                        let selected = index == self.scroll.selected();
+                        lines.push(self.row(row, selected, window.width));
                     }
                 }
-                if first < last {
+                if !window.rows.is_empty() {
                     if let Some(row) = self.selected_row() {
                         lines.push(detail_line(row, area.width));
                     }
@@ -234,6 +234,9 @@ impl TicketsPane {
             lines.push(error_line(&message));
         }
         frame.render_widget(Paragraph::new(Text::from(lines)), area);
+        if self.tickets.value().is_some() && !self.rows.is_empty() {
+            self.scroll.render_gutter(frame);
+        }
         self.keys.render_which_key(frame, area);
         self.keys.render_footer(frame, footer);
     }
@@ -382,17 +385,46 @@ impl TicketsPane {
         }
     }
 
+    /// A click selects the row under it; the wheel moves the selection.
+    /// Ignored while a picker or prompt has the keys, since the rows it
+    /// would pick are not the ones on screen or not the ones being typed for.
+    pub fn on_mouse(&mut self, mouse: MouseEvent) {
+        if self.picker.is_some() || self.repo_picker.is_some() {
+            return;
+        }
+        if self.scroll.on_mouse(mouse, self.rows.len()) {
+            self.notice = None;
+            self.keys.cancel();
+        }
+    }
+
     fn run(&mut self, command: KeyCommand) -> PaneAction {
         let len = self.rows.len();
         match command {
             KeyCommand::Refresh => PaneAction::Refresh,
             KeyCommand::Quit => PaneAction::Quit,
             KeyCommand::MoveDown => {
-                self.selected = (self.selected + 1).min(len.saturating_sub(1));
+                self.scroll.down(len);
                 PaneAction::None
             }
             KeyCommand::MoveUp => {
-                self.selected = self.selected.saturating_sub(1);
+                self.scroll.up();
+                PaneAction::None
+            }
+            KeyCommand::PageDown => {
+                self.scroll.page_down(len);
+                PaneAction::None
+            }
+            KeyCommand::PageUp => {
+                self.scroll.page_up();
+                PaneAction::None
+            }
+            KeyCommand::Top => {
+                self.scroll.top();
+                PaneAction::None
+            }
+            KeyCommand::Bottom => {
+                self.scroll.bottom(len);
                 PaneAction::None
             }
             KeyCommand::Open => self
@@ -834,7 +866,7 @@ mod tests {
         // The picker is gone, not merely hidden: the next `j` moves the
         // ticket list rather than being swallowed by the picker again.
         assert_eq!(press(&mut pane, "j"), PaneAction::None);
-        assert_eq!(pane.selected, 1);
+        assert_eq!(pane.scroll.selected(), 1);
     }
 
     #[test]

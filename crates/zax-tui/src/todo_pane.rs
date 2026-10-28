@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 use std::time::SystemTime;
 
-use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent};
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
@@ -20,6 +20,7 @@ use crate::cache::Cached;
 use crate::chrome::{error_line, header_line};
 use crate::fmt::{display_width, truncate};
 use crate::keys::{split_footer, KeyInput};
+use crate::scroll::ListScroll;
 
 const TITLE: &str = "Todo";
 const SEPARATOR: &str = " · ";
@@ -86,7 +87,7 @@ pub struct TodoPane {
     file: String,
     list: Cached<Vec<TodoItem>>,
     rows: Vec<TodoItem>,
-    selected: usize,
+    scroll: ListScroll,
     focused: bool,
     today: Date,
     show_all_done: bool,
@@ -101,7 +102,7 @@ impl TodoPane {
             file,
             list: Cached::new(),
             rows: Vec::new(),
-            selected: 0,
+            scroll: ListScroll::new(),
             focused: false,
             today,
             show_all_done: false,
@@ -157,7 +158,7 @@ impl TodoPane {
     /// Rebuild the rows and keep the selection on the same item: a hand edit
     /// or another pane's add must not move the cursor onto a different todo.
     fn regroup(&mut self) {
-        let keep = self.rows.get(self.selected).map(TodoItem::at);
+        let keep = self.rows.get(self.scroll.selected()).map(TodoItem::at);
         self.rows = self
             .list
             .value()
@@ -171,13 +172,12 @@ impl TodoPane {
                 .position(|i| i.line == at.line && i.raw == at.raw)
                 .or_else(|| self.rows.iter().position(|i| i.raw == at.raw))
         });
-        self.selected = found
-            .unwrap_or(self.selected)
-            .min(self.rows.len().saturating_sub(1));
+        let index = found.unwrap_or(self.scroll.selected());
+        self.scroll.select(index, self.rows.len());
     }
 
     fn selected_item(&self) -> Option<&TodoItem> {
-        self.rows.get(self.selected)
+        self.rows.get(self.scroll.selected())
     }
 
     pub fn on_key(&mut self, key: KeyEvent) -> PaneAction {
@@ -191,17 +191,46 @@ impl TodoPane {
         }
     }
 
+    /// A click selects the row under it; the wheel moves the selection.
+    /// Ignored while a picker or prompt has the keys, since the rows it
+    /// would pick are not the ones on screen or not the ones being typed for.
+    pub fn on_mouse(&mut self, mouse: MouseEvent) {
+        if self.prompt.is_some() {
+            return;
+        }
+        if self.scroll.on_mouse(mouse, self.rows.len()) {
+            self.notice = None;
+            self.keys.cancel();
+        }
+    }
+
     fn run(&mut self, command: KeyCommand) -> PaneAction {
         let len = self.rows.len();
         match command {
             KeyCommand::Refresh => PaneAction::Refresh,
             KeyCommand::Quit => PaneAction::Quit,
             KeyCommand::MoveDown => {
-                self.selected = (self.selected + 1).min(len.saturating_sub(1));
+                self.scroll.down(len);
                 PaneAction::None
             }
             KeyCommand::MoveUp => {
-                self.selected = self.selected.saturating_sub(1);
+                self.scroll.up();
+                PaneAction::None
+            }
+            KeyCommand::PageDown => {
+                self.scroll.page_down(len);
+                PaneAction::None
+            }
+            KeyCommand::PageUp => {
+                self.scroll.page_up();
+                PaneAction::None
+            }
+            KeyCommand::Top => {
+                self.scroll.top();
+                PaneAction::None
+            }
+            KeyCommand::Bottom => {
+                self.scroll.bottom(len);
                 PaneAction::None
             }
             KeyCommand::TodoAdd => {
@@ -334,17 +363,16 @@ impl TodoPane {
             )),
             Some(_) => {
                 let visible = usize::from(area.height).saturating_sub(chrome);
-                let first = self
-                    .selected
-                    .saturating_sub(visible.saturating_sub(1))
-                    .min(self.rows.len());
-                let last = (first + visible).min(self.rows.len());
-                for index in first..last {
+                let window =
+                    self.scroll
+                        .layout(self.rows.len(), visible, area.x, area.y + 1, area.width);
+                for index in window.rows.clone() {
                     if let Some(item) = self.rows.get(index) {
-                        lines.push(self.row(item, index == self.selected, width));
+                        let selected = index == self.scroll.selected();
+                        lines.push(self.row(item, selected, usize::from(window.width)));
                     }
                 }
-                if first < last {
+                if !window.rows.is_empty() {
                     if let Some(item) = self.selected_item() {
                         lines.push(self.detail_line(item, width));
                     }
@@ -358,6 +386,9 @@ impl TodoPane {
             lines.push(error_line(&message));
         }
         frame.render_widget(Paragraph::new(Text::from(lines)), area);
+        if self.list.value().is_some() && !self.rows.is_empty() {
+            self.scroll.render_gutter(frame);
+        }
         self.keys.render_which_key(frame, area);
         self.keys.render_footer(frame, footer);
     }

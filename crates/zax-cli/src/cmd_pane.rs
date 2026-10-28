@@ -124,6 +124,7 @@ macro_rules! pane_loop {
                         due = Instant::now();
                     }
                     Event::FocusLost => pane.set_focused(false),
+                    Event::Mouse(mouse) => pane.on_mouse(mouse),
                     _ => {}
                 }
             }

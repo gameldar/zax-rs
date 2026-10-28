@@ -169,6 +169,7 @@ impl PrNode {
 #[derive(Debug, Deserialize)]
 struct PrHeadJson {
     number: u32,
+    url: String,
     #[serde(rename = "headRefName")]
     head_ref_name: String,
     #[serde(rename = "headRepository")]
@@ -328,6 +329,7 @@ pub fn parse_pr_head_response(json: &str) -> Result<PullRequestHead, String> {
 
     Ok(PullRequestHead {
         number: parsed.number,
+        url: parsed.url,
         head_ref: parsed.head_ref_name,
         head_repo,
         is_cross_repository: parsed.is_cross_repository,

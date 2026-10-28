@@ -34,6 +34,9 @@ pub struct CreateReviewWorktreeRequest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CreateReviewWorktreeOutcome {
     pub worktree: CreateWorktreeOutcome,
+    /// The pull request being reviewed, as the forge spells its URL, so
+    /// whatever opens the worktree can start the review itself.
+    pub pr_url: String,
     /// `Some` when an existing local branch was moved off its own history,
     /// which only happens under `force`. The caller reports it: a discarded
     /// commit the user is not told about is indistinguishable from one that
@@ -154,6 +157,7 @@ where
 
         Ok(CreateReviewWorktreeOutcome {
             worktree: CreateWorktreeOutcome { path, report },
+            pr_url: head.url,
             forced_update,
         })
     }
@@ -261,6 +265,7 @@ mod tests {
     fn request(head_ref: &str, cross: bool) -> (FakeForge, CreateReviewWorktreeRequest) {
         let forge = FakeForge::with_head(PullRequestHead {
             number: 1963,
+            url: "https://github.com/acme/omega/pull/1963".to_owned(),
             head_ref: head_ref.to_owned(),
             head_repo: Some(RepoSlug::parse("acme/omega").unwrap()),
             is_cross_repository: cross,
@@ -453,6 +458,7 @@ mod tests {
         let (_, req) = request("patch-1", true);
         let forge = FakeForge::with_head(PullRequestHead {
             number: 1963,
+            url: "https://github.com/acme/omega/pull/1963".to_owned(),
             head_ref: "patch-1".to_owned(),
             head_repo: Some(RepoSlug::parse("contributor/omega").unwrap()),
             is_cross_repository: true,
@@ -593,6 +599,7 @@ mod tests {
         let (_, req) = request("patch-1", true);
         let forge = FakeForge::with_head(PullRequestHead {
             number: 1963,
+            url: "https://github.com/acme/omega/pull/1963".to_owned(),
             head_ref: "patch-1".to_owned(),
             head_repo: None,
             is_cross_repository: true,
@@ -617,6 +624,7 @@ mod tests {
         let (_, req) = request("patch-1", false);
         let forge = FakeForge::with_head(PullRequestHead {
             number: 1963,
+            url: "https://github.com/acme/omega/pull/1963".to_owned(),
             head_ref: "patch-1".to_owned(),
             head_repo: None,
             is_cross_repository: false,

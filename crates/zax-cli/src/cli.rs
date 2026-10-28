@@ -95,6 +95,9 @@ pub enum WorktreeCommand {
         /// Create the worktree but do not open it in the editor.
         #[arg(long)]
         no_open: bool,
+        /// Open the worktree in the editor but start no Claude review.
+        #[arg(long)]
+        no_review: bool,
         /// An owner/name slug or a path to a main checkout; defaults to this
         /// repository.
         #[arg(long)]
@@ -261,6 +264,25 @@ mod tests {
             Commands::Worktree {
                 command: WorktreeCommand::Review { no_open, .. },
             } => assert!(no_open),
+            other => panic!("expected worktree review, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn worktree_review_can_be_told_not_to_start_a_review() {
+        let cli =
+            Cli::try_parse_from(["zax", "worktree", "review", "1963", "--no-review"]).unwrap();
+        match cli.command {
+            Commands::Worktree {
+                command: WorktreeCommand::Review { no_review, .. },
+            } => assert!(no_review),
+            other => panic!("expected worktree review, got {other:?}"),
+        }
+        let plain = Cli::try_parse_from(["zax", "worktree", "review", "1963"]).unwrap();
+        match plain.command {
+            Commands::Worktree {
+                command: WorktreeCommand::Review { no_review, .. },
+            } => assert!(!no_review),
             other => panic!("expected worktree review, got {other:?}"),
         }
     }

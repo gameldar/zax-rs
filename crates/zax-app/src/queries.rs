@@ -592,7 +592,7 @@ mod tests {
 
     #[test]
     fn an_ssh_origin_gets_its_agent_checked() {
-        // A locked key stops `w` as surely as a missing gh does, and until the
+        // A locked key stops `SPC w` as surely as a missing gh does, and until the
         // doctor says so the only symptom is a keystroke that did nothing.
         let mux = FakeMultiplexer::default();
         let git = FakeGitRepo::new("/Users/me/src/acme", "main")
@@ -705,7 +705,7 @@ mod tests {
 
     #[test]
     fn doctor_reports_an_editor_that_is_not_installed() {
-        // The `w` row action ends in an editor window, so an editor zax cannot
+        // The `SPC w` row action ends in an editor window, so an editor zax cannot
         // start is exactly the kind of thing doctor exists to find before the
         // keystroke does.
         let mux = FakeMultiplexer::default();

@@ -20,6 +20,7 @@ pub struct RawConfig {
     pub tickets: Option<RawTickets>,
     pub todo: Option<RawTodo>,
     pub projects: Option<RawProjects>,
+    pub keymap: Option<RawKeymap>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
@@ -118,4 +119,18 @@ pub struct RawPrs {
 pub struct RawProjects {
     pub root: Option<String>,
     pub paths: Option<BTreeMap<String, String>>,
+}
+
+/// The `[keymap]` table: `defaults`, then one sub-table per pane context plus
+/// `all`, each mapping a key sequence to a command name (or `"none"`).
+///
+/// The sub-table names are open-ended on the wire, so they are collected
+/// rather than listed; `deny_unknown_fields` cannot be combined with
+/// `flatten`. An unknown table name is refused in `parse::keymaps_from_raw`,
+/// where the error can name it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+pub struct RawKeymap {
+    pub defaults: Option<bool>,
+    #[serde(flatten)]
+    pub tables: BTreeMap<String, BTreeMap<String, String>>,
 }

@@ -11,6 +11,7 @@ use zax_app::Editor;
 use zax_broker::client::{binary_identity, Client, Event};
 use zax_broker::topics::{decode_todo, encode_todo_edit, fetched_at, TodoSpec, TODO};
 use zax_broker::BrokerPaths;
+use zax_domain::keymap::PaneContext;
 use zax_domain::{Date, TodoDocument, TodoFile};
 use zax_protocol::{Snapshot, SourceKey};
 use zax_tui::{PaneAction, TodoPane};
@@ -45,7 +46,11 @@ pub fn run() -> Result<()> {
     );
     let editor = wiring::editor(&ctx.config);
 
-    let mut pane = TodoPane::new(file_text, local_today()?);
+    let mut pane = TodoPane::new(
+        file_text,
+        local_today()?,
+        ctx.config.keymaps.for_context(PaneContext::Todo).clone(),
+    );
     pane.set_focused(true);
     let mut screen = Screen::enter()?;
     let mut client: Option<Client> = None;

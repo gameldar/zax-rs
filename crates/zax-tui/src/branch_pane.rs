@@ -2,18 +2,20 @@
 
 use std::time::SystemTime;
 
-use ratatui::crossterm::event::{KeyCode, KeyEvent};
+use ratatui::crossterm::event::KeyEvent;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
-use zax_domain::{BranchName, BranchView, PullRequestStatus};
+use zax_domain::keymap::Keymap;
+use zax_domain::{BranchName, BranchView, KeyCommand, PullRequestStatus};
 
 use crate::action::PaneAction;
 use crate::cache::Cached;
 use crate::chrome::{error_line, header_line};
 use crate::fmt::{display_width, truncate};
+use crate::keys::{split_footer, KeyInput};
 use crate::pr_fields::{
     check_glyph, check_style, checks_label, mergeable_label, mergeable_style, review_label,
     review_style, threads_label, threads_style,
@@ -24,19 +26,15 @@ const TITLE: &str = "This branch";
 pub struct BranchStatusPane {
     cache: Cached<BranchView>,
     focused: bool,
-}
-
-impl Default for BranchStatusPane {
-    fn default() -> Self {
-        Self::new()
-    }
+    keys: KeyInput,
 }
 
 impl BranchStatusPane {
-    pub fn new() -> Self {
+    pub fn new(keymap: Keymap) -> Self {
         Self {
             cache: Cached::new(),
             focused: false,
+            keys: KeyInput::new(keymap),
         }
     }
 
@@ -59,6 +57,7 @@ impl BranchStatusPane {
         if area.height == 0 || area.width == 0 {
             return;
         }
+        let (area, footer) = split_footer(area);
 
         let mut lines = vec![header_line(
             TITLE,
@@ -92,20 +91,30 @@ impl BranchStatusPane {
         }
 
         frame.render_widget(Paragraph::new(Text::from(lines)), area);
+        self.keys.render_which_key(frame, area);
+        self.keys.render_footer(frame, footer);
     }
 
     pub fn on_key(&mut self, key: KeyEvent) -> PaneAction {
-        match key.code {
-            KeyCode::Char('r') => PaneAction::Refresh,
-            KeyCode::Char('q') | KeyCode::Esc => PaneAction::Quit,
-            KeyCode::Enter => self
+        match self.keys.press(key) {
+            Some(command) => self.run(command),
+            None => PaneAction::None,
+        }
+    }
+
+    fn run(&mut self, command: KeyCommand) -> PaneAction {
+        match command {
+            KeyCommand::Refresh => PaneAction::Refresh,
+            KeyCommand::Quit => PaneAction::Quit,
+            KeyCommand::Open => self
                 .status()
                 .map(|s| PaneAction::OpenUrl(s.pr.url.clone()))
                 .unwrap_or_default(),
-            KeyCode::Char('y') => self
+            KeyCommand::CopyUrl => self
                 .status()
                 .map(|s| PaneAction::CopyUrl(s.pr.url.clone()))
                 .unwrap_or_default(),
+            // Not in this pane's context; the keymap refuses to bind them.
             _ => PaneAction::None,
         }
     }
@@ -180,7 +189,6 @@ mod tests {
 
     use ratatui::backend::TestBackend;
     use ratatui::buffer::Buffer;
-    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use ratatui::Terminal;
     use zax_domain::{
         BranchName, BranchView, CheckState, Mergeable, PullRequest, PullRequestStatus, RepoSlug,
@@ -189,15 +197,20 @@ mod tests {
 
     use super::*;
     use crate::action::PaneAction;
+    use crate::keys::testing::press;
+    use zax_domain::keymap::{Keymaps, PaneContext};
 
     fn t(secs: u64) -> SystemTime {
         UNIX_EPOCH + Duration::from_secs(secs)
     }
 
-    fn key(code: KeyCode) -> KeyEvent {
-        KeyEvent::new(code, KeyModifiers::NONE)
+    fn keymap() -> Keymap {
+        Keymaps::defaults()
+            .for_context(PaneContext::BranchStatus)
+            .clone()
     }
 
+    /// Type a key sequence such as `SPC w o`; the action of the last key.
     fn buffer_text(pane: &BranchStatusPane, now: SystemTime) -> String {
         let mut terminal = Terminal::new(TestBackend::new(44, 8)).unwrap();
         terminal
@@ -242,7 +255,7 @@ mod tests {
     }
 
     fn loaded() -> BranchStatusPane {
-        let mut pane = BranchStatusPane::new();
+        let mut pane = BranchStatusPane::new(keymap());
         pane.apply(Ok(view(Some(status()))), t(100));
         pane
     }
@@ -260,7 +273,7 @@ mod tests {
     fn a_branch_with_no_pull_request_is_still_named() {
         // Which branch the worktree is on is the one thing this pane can always
         // answer, so a missing pull request must not blank it.
-        let mut pane = BranchStatusPane::new();
+        let mut pane = BranchStatusPane::new(keymap());
         pane.apply(Ok(view(None)), t(100));
         let text = buffer_text(&pane, t(100));
         assert!(
@@ -271,7 +284,7 @@ mod tests {
 
     #[test]
     fn a_detached_head_says_so_rather_than_naming_a_branch() {
-        let mut pane = BranchStatusPane::new();
+        let mut pane = BranchStatusPane::new(keymap());
         pane.apply(Ok(BranchView::Detached), t(100));
         let text = buffer_text(&pane, t(100));
         assert!(text.contains("detached HEAD"), "got:\n{text}");
@@ -312,14 +325,14 @@ mod tests {
 
     #[test]
     fn a_branch_with_no_pull_request_says_so() {
-        let mut pane = BranchStatusPane::new();
+        let mut pane = BranchStatusPane::new(keymap());
         pane.apply(Ok(view(None)), t(100));
         assert!(buffer_text(&pane, t(100)).contains("No open pull request"));
     }
 
     #[test]
     fn no_unresolved_threads_is_reported_positively() {
-        let mut pane = BranchStatusPane::new();
+        let mut pane = BranchStatusPane::new(keymap());
         pane.apply(
             Ok(view(Some(PullRequestStatus {
                 unresolved_threads: 0,
@@ -341,36 +354,42 @@ mod tests {
 
     #[test]
     fn a_failure_with_nothing_cached_shows_an_actionable_error() {
-        let mut pane = BranchStatusPane::new();
+        let mut pane = BranchStatusPane::new(keymap());
         pane.apply(Err("gh is not installed or not on PATH".to_owned()), t(100));
         assert!(buffer_text(&pane, t(100)).contains("not installed"));
     }
 
     #[test]
-    fn enter_opens_the_pull_request_and_y_copies_its_url() {
+    fn enter_opens_the_pull_request_and_spc_y_copies_its_url() {
         let mut pane = loaded();
+        let url = "https://github.com/acme/omega/pull/1963".to_owned();
+        assert_eq!(press(&mut pane, "RET"), PaneAction::OpenUrl(url.clone()));
         assert_eq!(
-            pane.on_key(key(KeyCode::Enter)),
-            PaneAction::OpenUrl("https://github.com/acme/omega/pull/1963".to_owned())
+            press(&mut pane, "SPC o b"),
+            PaneAction::OpenUrl(url.clone())
         );
-        assert_eq!(
-            pane.on_key(key(KeyCode::Char('y'))),
-            PaneAction::CopyUrl("https://github.com/acme/omega/pull/1963".to_owned())
-        );
+        assert_eq!(press(&mut pane, "SPC y"), PaneAction::CopyUrl(url));
     }
 
     #[test]
     fn row_actions_do_nothing_when_there_is_no_pull_request() {
-        let mut pane = BranchStatusPane::new();
+        let mut pane = BranchStatusPane::new(keymap());
         pane.apply(Ok(view(None)), t(100));
-        assert_eq!(pane.on_key(key(KeyCode::Enter)), PaneAction::None);
+        assert_eq!(press(&mut pane, "RET"), PaneAction::None);
     }
 
     #[test]
-    fn r_refreshes_and_q_quits() {
+    fn spc_r_refreshes_and_spc_q_quits() {
         let mut pane = loaded();
-        assert_eq!(pane.on_key(key(KeyCode::Char('r'))), PaneAction::Refresh);
-        assert_eq!(pane.on_key(key(KeyCode::Char('q'))), PaneAction::Quit);
+        assert_eq!(press(&mut pane, "SPC r"), PaneAction::Refresh);
+        assert_eq!(press(&mut pane, "SPC q"), PaneAction::Quit);
+    }
+
+    #[test]
+    fn bare_q_and_esc_no_longer_quit() {
+        let mut pane = loaded();
+        assert_eq!(press(&mut pane, "q"), PaneAction::None);
+        assert_eq!(press(&mut pane, "<Esc>"), PaneAction::None);
     }
 
     #[test]
@@ -378,7 +397,7 @@ mod tests {
         // A title arrives from a forge, so it may be long and may carry control
         // characters. The review pane has always bounded it; this one rendered
         // it raw.
-        let mut pane = BranchStatusPane::new();
+        let mut pane = BranchStatusPane::new(keymap());
         let mut broken = status();
         broken.pr.title = format!("first\nsecond\tthird\r{}", "very long ".repeat(40));
         pane.apply(Ok(view(Some(broken))), t(100));

@@ -371,7 +371,7 @@ mod tests {
 
     #[test]
     fn refuses_a_pull_request_that_belongs_to_another_repository() {
-        // The review queue spans repositories, so the `w` row action can hand
+        // The review queue spans repositories, so the `SPC w` row action can hand
         // this a pull request from one zax is not standing in. Building the
         // worktree anyway derives the path from this repository and fetches
         // `refs/pull/<n>/head` from this repository's origin, which either

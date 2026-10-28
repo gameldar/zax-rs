@@ -5,6 +5,16 @@ use std::path::PathBuf;
 
 use zax_domain::{BranchName, RepoSlug, TicketKey, TodoEdit};
 
+/// What to do once a pull request's worktree exists. Typed rather than a
+/// bool so a call site reads `Open`, not an unlabelled `false`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReviewMode {
+    /// Just open the worktree in the editor.
+    Open,
+    /// Open it and start a Claude review of the pull request.
+    OpenAndReview,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum PaneAction {
     #[default]
@@ -16,6 +26,7 @@ pub enum PaneAction {
     ReviewWorktree {
         repo: RepoSlug,
         number: u32,
+        mode: ReviewMode,
     },
     /// A change to the todo file, sent to the broker.
     Todo(TodoEdit),
@@ -70,10 +81,12 @@ mod tests {
             PaneAction::ReviewWorktree {
                 repo: RepoSlug::parse("acme/omega").unwrap(),
                 number: 1963,
+                mode: ReviewMode::Open,
             },
             PaneAction::ReviewWorktree {
                 repo: RepoSlug::parse("acme/omega").unwrap(),
                 number: 1963,
+                mode: ReviewMode::Open,
             }
         );
     }

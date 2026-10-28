@@ -4,18 +4,20 @@
 use std::num::NonZeroU32;
 use std::time::SystemTime;
 
-use ratatui::crossterm::event::{KeyCode, KeyEvent};
+use ratatui::crossterm::event::KeyEvent;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
-use zax_domain::{ReviewQueueItem, ReviewerState, Revisit};
+use zax_domain::keymap::Keymap;
+use zax_domain::{KeyCommand, ReviewQueueItem, ReviewerState, Revisit};
 
-use crate::action::PaneAction;
+use crate::action::{PaneAction, ReviewMode};
 use crate::cache::Cached;
 use crate::chrome::{error_line, header_line, GLYPH_UPDATED};
 use crate::fmt::{display_width, format_age, truncate};
+use crate::keys::{split_footer, KeyInput};
 use crate::pr_fields::{check_glyph, check_style};
 
 const TITLE: &str = "Review requests";
@@ -24,20 +26,16 @@ pub struct PrsForReviewPane {
     cache: Cached<Vec<ReviewQueueItem>>,
     selected: usize,
     focused: bool,
-}
-
-impl Default for PrsForReviewPane {
-    fn default() -> Self {
-        Self::new()
-    }
+    keys: KeyInput,
 }
 
 impl PrsForReviewPane {
-    pub fn new() -> Self {
+    pub fn new(keymap: Keymap) -> Self {
         Self {
             cache: Cached::new(),
             selected: 0,
             focused: false,
+            keys: KeyInput::new(keymap),
         }
     }
 
@@ -68,6 +66,7 @@ impl PrsForReviewPane {
         if area.height == 0 || area.width == 0 {
             return;
         }
+        let (area, footer) = split_footer(area);
 
         let title = match self.cache.value() {
             Some(prs) => format!("{TITLE} ({})", prs.len()),
@@ -101,6 +100,8 @@ impl PrsForReviewPane {
         }
 
         frame.render_widget(Paragraph::new(Text::from(lines)), area);
+        self.keys.render_which_key(frame, area);
+        self.keys.render_footer(frame, footer);
     }
 
     /// Which rows a pane of this height shows.
@@ -111,8 +112,8 @@ impl PrsForReviewPane {
     /// only as far as it must, so the selection becomes the last visible row
     /// rather than jumping to the middle.
     ///
-    /// Keeping the selection on screen is not cosmetic. `enter`, `y` and `w`
-    /// all act on it, and `w` builds a worktree, so a cursor the user cannot
+    /// Keeping the selection on screen is not cosmetic. `RET`, `SPC y` and `SPC w`
+    /// all act on it, and `SPC w` builds a worktree, so a cursor the user cannot
     /// see is a keystroke acting on a pull request they did not pick.
     fn visible_rows(&self, len: usize, height: u16) -> std::ops::Range<usize> {
         // One line of the pane is the header.
@@ -196,35 +197,48 @@ impl PrsForReviewPane {
     }
 
     pub fn on_key(&mut self, key: KeyEvent) -> PaneAction {
+        match self.keys.press(key) {
+            Some(command) => self.run(command),
+            None => PaneAction::None,
+        }
+    }
+
+    fn run(&mut self, command: KeyCommand) -> PaneAction {
         let len = self.rows().len();
-        match key.code {
-            KeyCode::Char('r') => PaneAction::Refresh,
-            KeyCode::Char('q') | KeyCode::Esc => PaneAction::Quit,
-            KeyCode::Char('j') | KeyCode::Down => {
+        match command {
+            KeyCommand::Refresh => PaneAction::Refresh,
+            KeyCommand::Quit => PaneAction::Quit,
+            KeyCommand::MoveDown => {
                 self.selected = (self.selected + 1).min(len.saturating_sub(1));
                 PaneAction::None
             }
-            KeyCode::Char('k') | KeyCode::Up => {
+            KeyCommand::MoveUp => {
                 self.selected = self.selected.saturating_sub(1);
                 PaneAction::None
             }
-            KeyCode::Enter => self
+            KeyCommand::Open => self
                 .selected()
                 .map(|item| PaneAction::OpenUrl(item.pr.url.clone()))
                 .unwrap_or_default(),
-            KeyCode::Char('y') => self
+            KeyCommand::CopyUrl => self
                 .selected()
                 .map(|item| PaneAction::CopyUrl(item.pr.url.clone()))
                 .unwrap_or_default(),
-            KeyCode::Char('w') => self
-                .selected()
-                .map(|item| PaneAction::ReviewWorktree {
-                    repo: item.pr.repo.clone(),
-                    number: item.pr.number,
-                })
-                .unwrap_or_default(),
+            KeyCommand::WorktreeOpen => self.worktree(ReviewMode::Open),
+            KeyCommand::WorktreeReview => self.worktree(ReviewMode::OpenAndReview),
+            // Not in this pane's context; the keymap refuses to bind them.
             _ => PaneAction::None,
         }
+    }
+
+    fn worktree(&self, mode: ReviewMode) -> PaneAction {
+        self.selected()
+            .map(|item| PaneAction::ReviewWorktree {
+                repo: item.pr.repo.clone(),
+                number: item.pr.number,
+                mode,
+            })
+            .unwrap_or_default()
     }
 }
 
@@ -282,7 +296,6 @@ mod tests {
 
     use ratatui::backend::TestBackend;
     use ratatui::buffer::Buffer;
-    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use ratatui::Terminal;
     use std::num::NonZeroU32;
 
@@ -291,21 +304,33 @@ mod tests {
     use super::*;
     use crate::action::PaneAction;
     use crate::chrome::{GLYPH_PASS, GLYPH_UPDATED};
+    use crate::keys::testing::press;
+    use zax_domain::keymap::{Keymaps, PaneContext};
 
     fn t(secs: u64) -> SystemTime {
         UNIX_EPOCH + Duration::from_secs(secs)
     }
 
-    fn key(code: KeyCode) -> KeyEvent {
-        KeyEvent::new(code, KeyModifiers::NONE)
+    fn keymap() -> Keymap {
+        Keymaps::defaults()
+            .for_context(PaneContext::PrsForReview)
+            .clone()
     }
 
+    /// Type a key sequence such as `SPC w o`; the action of the last key.
     fn row(buffer: &Buffer, y: u16) -> String {
         (0..buffer.area.width)
             .map(|x| buffer[(x, y)].symbol())
             .collect::<String>()
             .trim_end()
             .to_owned()
+    }
+
+    fn buffer_rows(buffer: &Buffer) -> String {
+        (0..buffer.area.height)
+            .map(|y| row(buffer, y))
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     fn draw(pane: &PrsForReviewPane, now: SystemTime) -> Buffer {
@@ -349,7 +374,7 @@ mod tests {
 
     /// The row `pane` builds for `item` at a comfortable width, as plain text.
     fn rendered(item: &ReviewQueueItem) -> String {
-        let pane = PrsForReviewPane::new();
+        let pane = PrsForReviewPane::new(keymap());
         pane.row(item, false, 80, t(100))
             .spans
             .iter()
@@ -446,7 +471,7 @@ mod tests {
     }
 
     fn loaded() -> PrsForReviewPane {
-        let mut pane = PrsForReviewPane::new();
+        let mut pane = PrsForReviewPane::new(keymap());
         pane.apply(
             Ok(vec![
                 requested(pr("acme/omega", 1963, false, CheckState::Passing)),
@@ -469,7 +494,7 @@ mod tests {
     fn a_narrow_pane_keeps_the_number_and_gives_up_the_repository_name() {
         // The number identifies the pull request; the name is context. When
         // there is not room for both, the name is what goes.
-        let mut pane = PrsForReviewPane::new();
+        let mut pane = PrsForReviewPane::new(keymap());
         pane.apply(
             Ok(vec![requested(pr(
                 "acme/a-rather-long-repository-name",
@@ -518,7 +543,7 @@ mod tests {
     fn a_pull_request_without_an_author_shows_no_parentheses() {
         let mut orphan = requested(pr("acme/omega", 1963, false, CheckState::Passing));
         orphan.pr.author = None;
-        let mut pane = PrsForReviewPane::new();
+        let mut pane = PrsForReviewPane::new(keymap());
         pane.apply(Ok(vec![orphan]), t(100));
         let first = row(&draw(&pane, t(100)), 1);
         assert!(first.contains("omega#1963 Stamp"), "got: {first:?}");
@@ -526,7 +551,7 @@ mod tests {
 
     #[test]
     fn the_author_gives_way_before_the_repository_name() {
-        let mut pane = PrsForReviewPane::new();
+        let mut pane = PrsForReviewPane::new(keymap());
         pane.apply(
             Ok(vec![requested(pr(
                 "acme/omega",
@@ -560,7 +585,7 @@ mod tests {
         // Hand-computed: a 6-row pane spends one row on the header, so five
         // rows of ten are visible, and the window scrolls only far enough to
         // keep the selection as the last of them.
-        let mut pane = PrsForReviewPane::new();
+        let mut pane = PrsForReviewPane::new(keymap());
         pane.apply(
             Ok((0..10)
                 .map(|n| requested(pr("acme/omega", n, false, CheckState::Passing)))
@@ -570,12 +595,12 @@ mod tests {
 
         assert_eq!(pane.visible_rows(10, 6), 0..5);
         for expected in [0..5, 0..5, 0..5, 0..5, 1..6, 2..7, 3..8, 4..9, 5..10] {
-            pane.on_key(key(KeyCode::Char('j')));
+            press(&mut pane, "j");
             assert_eq!(pane.visible_rows(10, 6), expected);
         }
 
         // A queue shorter than the pane fills what it has and no more.
-        let mut short = PrsForReviewPane::new();
+        let mut short = PrsForReviewPane::new(keymap());
         short.apply(
             Ok(vec![requested(pr(
                 "acme/omega",
@@ -596,7 +621,7 @@ mod tests {
         // Nine `j` presses in a six-row pane. The pull request numbers are the
         // fixture's own, so what must be on screen is known without asking the
         // pane anything.
-        let mut pane = PrsForReviewPane::new();
+        let mut pane = PrsForReviewPane::new(keymap());
         pane.apply(
             Ok((100..110)
                 .map(|n| requested(pr("acme/omega", n, false, CheckState::Passing)))
@@ -605,7 +630,7 @@ mod tests {
         );
         pane.set_focused(true);
         for _ in 0..9 {
-            pane.on_key(key(KeyCode::Char('j')));
+            press(&mut pane, "j");
         }
 
         let mut terminal = Terminal::new(TestBackend::new(48, 6)).unwrap();
@@ -658,7 +683,7 @@ mod tests {
 
     #[test]
     fn an_empty_queue_says_so_rather_than_showing_nothing() {
-        let mut pane = PrsForReviewPane::new();
+        let mut pane = PrsForReviewPane::new(keymap());
         pane.apply(Ok(vec![]), t(100));
         assert!(
             row(&draw(&pane, t(100)), 1).contains("Nothing"),
@@ -688,17 +713,17 @@ mod tests {
         let mut pane = loaded();
         assert_eq!(pane.selected().map(|p| p.pr.number), Some(1963));
 
-        pane.on_key(key(KeyCode::Char('k')));
+        press(&mut pane, "k");
         assert_eq!(
             pane.selected().map(|p| p.pr.number),
             Some(1963),
             "clamped at the top"
         );
 
-        pane.on_key(key(KeyCode::Char('j')));
+        press(&mut pane, "j");
         assert_eq!(pane.selected().map(|p| p.pr.number), Some(42));
 
-        pane.on_key(key(KeyCode::Char('j')));
+        press(&mut pane, "j");
         assert_eq!(
             pane.selected().map(|p| p.pr.number),
             Some(42),
@@ -707,44 +732,58 @@ mod tests {
     }
 
     #[test]
-    fn enter_opens_the_selected_pull_request_and_y_copies_its_url() {
+    fn enter_opens_the_selected_pull_request_and_spc_y_copies_its_url() {
         let mut pane = loaded();
         assert_eq!(
-            pane.on_key(key(KeyCode::Enter)),
+            press(&mut pane, "RET"),
             PaneAction::OpenUrl("https://github.com/acme/omega/pull/1963".to_owned())
         );
         assert_eq!(
-            pane.on_key(key(KeyCode::Char('y'))),
+            press(&mut pane, "SPC o b"),
+            PaneAction::OpenUrl("https://github.com/acme/omega/pull/1963".to_owned())
+        );
+        assert_eq!(
+            press(&mut pane, "SPC y"),
             PaneAction::CopyUrl("https://github.com/acme/omega/pull/1963".to_owned())
         );
     }
 
     #[test]
-    fn w_asks_for_a_review_worktree_for_the_selected_row() {
+    fn spc_w_o_opens_the_worktree_and_spc_w_r_also_reviews_it() {
         let mut pane = loaded();
-        pane.on_key(key(KeyCode::Char('j')));
+        press(&mut pane, "j");
+        let south = RepoSlug::parse("acme/south").unwrap();
         assert_eq!(
-            pane.on_key(key(KeyCode::Char('w'))),
+            press(&mut pane, "SPC w o"),
             PaneAction::ReviewWorktree {
-                repo: RepoSlug::parse("acme/south").unwrap(),
+                repo: south.clone(),
                 number: 42,
+                mode: ReviewMode::Open,
+            }
+        );
+        assert_eq!(
+            press(&mut pane, "SPC w r"),
+            PaneAction::ReviewWorktree {
+                repo: south,
+                number: 42,
+                mode: ReviewMode::OpenAndReview,
             }
         );
     }
 
     #[test]
     fn row_actions_do_nothing_when_the_queue_is_empty() {
-        let mut pane = PrsForReviewPane::new();
+        let mut pane = PrsForReviewPane::new(keymap());
         pane.apply(Ok(vec![]), t(100));
-        assert_eq!(pane.on_key(key(KeyCode::Enter)), PaneAction::None);
-        assert_eq!(pane.on_key(key(KeyCode::Char('w'))), PaneAction::None);
+        assert_eq!(press(&mut pane, "RET"), PaneAction::None);
+        assert_eq!(press(&mut pane, "SPC w o"), PaneAction::None);
         assert_eq!(pane.selected(), None);
     }
 
     #[test]
     fn a_selection_beyond_a_shrunken_queue_is_pulled_back_into_range() {
         let mut pane = loaded();
-        pane.on_key(key(KeyCode::Char('j')));
+        press(&mut pane, "j");
         pane.apply(
             Ok(vec![requested(pr(
                 "acme/omega",
@@ -758,10 +797,43 @@ mod tests {
     }
 
     #[test]
-    fn r_refreshes_and_q_quits() {
+    fn spc_r_refreshes_and_spc_q_quits() {
         let mut pane = loaded();
-        assert_eq!(pane.on_key(key(KeyCode::Char('r'))), PaneAction::Refresh);
-        assert_eq!(pane.on_key(key(KeyCode::Char('q'))), PaneAction::Quit);
+        assert_eq!(press(&mut pane, "SPC r"), PaneAction::Refresh);
+        assert_eq!(press(&mut pane, "SPC q"), PaneAction::Quit);
+    }
+
+    #[test]
+    fn bare_q_and_esc_no_longer_quit() {
+        let mut pane = loaded();
+        assert_eq!(press(&mut pane, "q"), PaneAction::None);
+        assert_eq!(press(&mut pane, "<Esc>"), PaneAction::None);
+    }
+
+    #[test]
+    fn a_half_typed_sequence_opens_the_which_key_popup_and_esc_closes_it() {
+        let mut pane = loaded();
+        press(&mut pane, "SPC w");
+        let text = buffer_rows(&draw(&pane, t(100)));
+        assert!(text.contains("open worktree and review"), "got:\n{text}");
+        press(&mut pane, "<Esc>");
+        let text = buffer_rows(&draw(&pane, t(100)));
+        assert!(!text.contains("open worktree and review"), "got:\n{text}");
+    }
+
+    #[test]
+    fn a_broken_sequence_shows_its_notice_in_the_footer() {
+        let mut pane = loaded();
+        press(&mut pane, "SPC w x");
+        let buffer = draw(&pane, t(100));
+        assert_eq!(row(&buffer, 5), "SPC w x is not bound");
+    }
+
+    #[test]
+    fn the_footer_row_is_the_status_bar() {
+        let pane = loaded();
+        let footer = row(&draw(&pane, t(100)), 5);
+        assert!(footer.starts_with("RET open"), "got: {footer}");
     }
 
     #[test]
@@ -776,7 +848,7 @@ mod tests {
         // fails whether the budget is right or wrong, which is worse than
         // having no test: it looks like coverage and detects nothing. The row
         // the pane builds is also the thing the budget actually controls.
-        let mut pane = PrsForReviewPane::new();
+        let mut pane = PrsForReviewPane::new(keymap());
         pane.apply(
             Ok(vec![requested(PullRequest {
                 repo: RepoSlug::parse("acme/日本語リポジトリ").unwrap(),

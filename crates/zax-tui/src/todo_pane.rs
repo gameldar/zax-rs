@@ -9,15 +9,17 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
+use zax_domain::keymap::Keymap;
 use zax_domain::{
-    due_state, is_late, parse_prompt, prompt_text, todo_rows, Date, Due, DueState, LineRef,
-    TodoEdit, TodoItem,
+    due_state, is_late, parse_prompt, prompt_text, todo_rows, Date, Due, DueState, KeyCommand,
+    LineRef, TodoEdit, TodoItem,
 };
 
 use crate::action::PaneAction;
 use crate::cache::Cached;
 use crate::chrome::{error_line, header_line};
 use crate::fmt::{display_width, truncate};
+use crate::keys::{split_footer, KeyInput};
 
 const TITLE: &str = "Todo";
 const SEPARATOR: &str = " · ";
@@ -89,12 +91,12 @@ pub struct TodoPane {
     today: Date,
     show_all_done: bool,
     prompt: Option<Prompt>,
-    confirm_delete: bool,
     notice: Option<String>,
+    keys: KeyInput,
 }
 
 impl TodoPane {
-    pub fn new(file: String, today: Date) -> Self {
+    pub fn new(file: String, today: Date, keymap: Keymap) -> Self {
         Self {
             file,
             list: Cached::new(),
@@ -104,8 +106,8 @@ impl TodoPane {
             today,
             show_all_done: false,
             prompt: None,
-            confirm_delete: false,
             notice: None,
+            keys: KeyInput::new(keymap),
         }
     }
 
@@ -183,36 +185,41 @@ impl TodoPane {
         if self.prompt.is_some() {
             return self.prompt_key(key);
         }
-        if std::mem::take(&mut self.confirm_delete) && key.code == KeyCode::Char('d') {
-            return self
-                .selected_item()
-                .map(|i| PaneAction::Todo(TodoEdit::Delete { at: i.at() }))
-                .unwrap_or_default();
+        match self.keys.press(key) {
+            Some(command) => self.run(command),
+            None => PaneAction::None,
         }
+    }
+
+    fn run(&mut self, command: KeyCommand) -> PaneAction {
         let len = self.rows.len();
-        match key.code {
-            KeyCode::Char('r') => PaneAction::Refresh,
-            KeyCode::Char('q') | KeyCode::Esc => PaneAction::Quit,
-            KeyCode::Char('j') | KeyCode::Down => {
+        match command {
+            KeyCommand::Refresh => PaneAction::Refresh,
+            KeyCommand::Quit => PaneAction::Quit,
+            KeyCommand::MoveDown => {
                 self.selected = (self.selected + 1).min(len.saturating_sub(1));
                 PaneAction::None
             }
-            KeyCode::Char('k') | KeyCode::Up => {
+            KeyCommand::MoveUp => {
                 self.selected = self.selected.saturating_sub(1);
                 PaneAction::None
             }
-            KeyCode::Char('a') => {
+            KeyCommand::TodoAdd => {
+                self.keys.cancel();
                 self.prompt = Some(Prompt::new(PromptMode::Add, ""));
                 PaneAction::None
             }
-            KeyCode::Char('e') | KeyCode::Enter => {
-                if let Some(item) = self.selected_item() {
-                    self.prompt =
-                        Some(Prompt::new(PromptMode::Edit(item.at()), &prompt_text(item)));
+            KeyCommand::TodoEdit => {
+                let prompt = self
+                    .selected_item()
+                    .map(|item| Prompt::new(PromptMode::Edit(item.at()), &prompt_text(item)));
+                if prompt.is_some() {
+                    self.keys.cancel();
+                    self.prompt = prompt;
                 }
                 PaneAction::None
             }
-            KeyCode::Char('x') | KeyCode::Char(' ') => self
+            KeyCommand::TodoToggle => self
                 .selected_item()
                 .map(|i| {
                     PaneAction::Todo(TodoEdit::Toggle {
@@ -221,7 +228,7 @@ impl TodoPane {
                     })
                 })
                 .unwrap_or_default(),
-            KeyCode::Char('+') => self
+            KeyCommand::TodoSnooze => self
                 .selected_item()
                 .map(|i| {
                     PaneAction::Todo(TodoEdit::Snooze {
@@ -230,19 +237,18 @@ impl TodoPane {
                     })
                 })
                 .unwrap_or_default(),
-            KeyCode::Char('d') => {
-                if self.selected_item().is_some() {
-                    self.confirm_delete = true;
-                    self.notice = Some("d again to delete".to_owned());
-                }
-                PaneAction::None
-            }
-            KeyCode::Char('o') => PaneAction::OpenFile(PathBuf::from(&self.file)),
-            KeyCode::Char('.') => {
+            // The sequence `SPC d d` is the confirmation, so no second prompt.
+            KeyCommand::TodoDelete => self
+                .selected_item()
+                .map(|i| PaneAction::Todo(TodoEdit::Delete { at: i.at() }))
+                .unwrap_or_default(),
+            KeyCommand::TodoOpenFile => PaneAction::OpenFile(PathBuf::from(&self.file)),
+            KeyCommand::TodoShowDone => {
                 self.show_all_done = !self.show_all_done;
                 self.regroup();
                 PaneAction::None
             }
+            // Not in this pane's context; the keymap refuses to bind them.
             _ => PaneAction::None,
         }
     }
@@ -314,6 +320,7 @@ impl TodoPane {
         if area.height == 0 || area.width == 0 {
             return;
         }
+        let (area, footer) = split_footer(area);
         let width = usize::from(area.width);
         let mut lines = vec![self.header(area.width, now)];
         let messages = self.messages();
@@ -322,7 +329,7 @@ impl TodoPane {
         match self.list.value() {
             None => {}
             Some(_) if self.rows.is_empty() => lines.push(Line::styled(
-                truncate(&format!("a to add{SEPARATOR}file: {}", self.file), width),
+                truncate(&self.empty_hint(), width),
                 Style::default().fg(Color::DarkGray),
             )),
             Some(_) => {
@@ -351,6 +358,18 @@ impl TodoPane {
             lines.push(error_line(&message));
         }
         frame.render_widget(Paragraph::new(Text::from(lines)), area);
+        self.keys.render_which_key(frame, area);
+        self.keys.render_footer(frame, footer);
+    }
+
+    /// What an empty list shows: the key that adds, if one is bound, and where
+    /// the file is.
+    fn empty_hint(&self) -> String {
+        let file = format!("file: {}", self.file);
+        match self.keys.sequence_for(KeyCommand::TodoAdd) {
+            Some(sequence) => format!("{sequence} to add{SEPARATOR}{file}"),
+            None => file,
+        }
     }
 
     /// `Todo (3)` or `Todo (3 · 1 late)`, counting open items.
@@ -538,9 +557,11 @@ mod tests {
     use ratatui::buffer::Buffer;
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use ratatui::Terminal;
-    use zax_domain::TodoDocument;
+    use zax_domain::{KeySequence, TodoDocument};
 
     use super::*;
+    use crate::keys::testing::press;
+    use zax_domain::keymap::{Keymaps, PaneContext};
 
     fn t(secs: u64) -> SystemTime {
         UNIX_EPOCH + Duration::from_secs(secs)
@@ -552,6 +573,11 @@ mod tests {
     fn today() -> Date {
         d("2026-10-07")
     }
+    fn keymap() -> Keymap {
+        Keymaps::defaults().for_context(PaneContext::Todo).clone()
+    }
+
+    /// Type a key sequence such as `SPC d d`; the action of the last key.
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
     }
@@ -572,7 +598,7 @@ mod tests {
         - [x] old [completion:: 2026-10-01]\n";
 
     fn pane_with(text: &str) -> TodoPane {
-        let mut pane = TodoPane::new("/h/todo.md".into(), today());
+        let mut pane = TodoPane::new("/h/todo.md".into(), today(), keymap());
         pane.set_focused(true);
         pane.apply(Some(TodoDocument::parse(text).items()), Some(t(100)), None);
         pane
@@ -609,11 +635,11 @@ mod tests {
     }
 
     #[test]
-    fn dot_shows_and_hides_every_done_item() {
+    fn spc_t_d_shows_and_hides_every_done_item() {
         let mut pane = pane_with(FILE);
-        pane.on_key(key(KeyCode::Char('.')));
+        press(&mut pane, "SPC t d");
         assert_eq!(pane.rows().len(), 5);
-        pane.on_key(key(KeyCode::Char('.')));
+        press(&mut pane, "SPC t d");
         assert_eq!(pane.rows().len(), 4);
     }
 
@@ -668,7 +694,7 @@ mod tests {
     #[test]
     fn an_unparsed_due_is_quoted_on_the_detail_line() {
         let mut pane = pane_with("- [ ] c [due:: someday]\n");
-        pane.on_key(key(KeyCode::Down));
+        press(&mut pane, "<Down>");
         let lines = draw(&pane, 50, 4);
         assert!(
             lines
@@ -682,14 +708,53 @@ mod tests {
     fn an_empty_list_says_how_to_add_and_where_the_file_is() {
         let lines = draw(&pane_with(""), 40, 4);
         assert!(
-            lines[1].contains("a to add · file: /h/todo.md"),
+            lines[1].contains("SPC a to add · file: /h/todo.md"),
             "{lines:#?}"
         );
     }
 
+    fn pane_rebound(add: Option<&str>) -> TodoPane {
+        let mut keymaps = Keymaps::defaults();
+        let spc_a = KeySequence::parse("SPC a").unwrap();
+        keymaps.unbind(PaneContext::Todo, &spc_a);
+        if let Some(add) = add {
+            keymaps
+                .bind(
+                    PaneContext::Todo,
+                    &KeySequence::parse(add).unwrap(),
+                    KeyCommand::TodoAdd,
+                )
+                .unwrap();
+        }
+        let mut pane = TodoPane::new(
+            "/h/todo.md".into(),
+            today(),
+            keymaps.for_context(PaneContext::Todo).clone(),
+        );
+        pane.apply(Some(TodoDocument::parse("").items()), Some(t(100)), None);
+        pane
+    }
+
+    #[test]
+    fn the_empty_hint_names_the_key_the_keymap_binds_to_add() {
+        let lines = draw(&pane_rebound(Some("a")), 40, 4);
+        assert!(
+            lines[1].contains("a to add · file: /h/todo.md"),
+            "{lines:#?}"
+        );
+        assert!(!lines[1].contains("SPC a"), "{lines:#?}");
+    }
+
+    #[test]
+    fn the_empty_hint_drops_the_key_when_add_is_unbound() {
+        let lines = draw(&pane_rebound(None), 40, 4);
+        assert!(lines[1].contains("file: /h/todo.md"), "{lines:#?}");
+        assert!(!lines[1].contains("to add"), "{lines:#?}");
+    }
+
     #[test]
     fn a_failed_first_fetch_shows_the_error() {
-        let mut pane = TodoPane::new("/h/todo.md".into(), today());
+        let mut pane = TodoPane::new("/h/todo.md".into(), today(), keymap());
         pane.apply(None, None, Some("/h/todo.md is not UTF-8 text".into()));
         let lines = draw(&pane, 40, 4);
         assert!(
@@ -702,7 +767,7 @@ mod tests {
     fn x_toggles_the_selected_row_as_of_today() {
         let mut pane = pane_with(FILE);
         assert_eq!(
-            pane.on_key(key(KeyCode::Char('x'))),
+            press(&mut pane, "x"),
             PaneAction::Todo(TodoEdit::Toggle {
                 at: LineRef {
                     line: 1,
@@ -711,18 +776,17 @@ mod tests {
                 today: today(),
             })
         );
-        assert_eq!(
-            pane.on_key(key(KeyCode::Char(' '))),
-            pane.on_key(key(KeyCode::Char('x')))
-        );
+        // Space is the leader now, not a second toggle.
+        assert_eq!(press(&mut pane, "SPC"), PaneAction::None);
+        assert_eq!(press(&mut pane, "<Esc>"), PaneAction::None);
     }
 
     #[test]
-    fn plus_snoozes_the_selected_row() {
+    fn spc_z_snoozes_the_selected_row() {
         let mut pane = pane_with(FILE);
-        pane.on_key(key(KeyCode::Char('j')));
+        press(&mut pane, "j");
         assert!(matches!(
-            pane.on_key(key(KeyCode::Char('+'))),
+            press(&mut pane, "SPC z"),
             PaneAction::Todo(TodoEdit::Snooze {
                 at: LineRef { line: 2, .. },
                 ..
@@ -731,14 +795,10 @@ mod tests {
     }
 
     #[test]
-    fn d_asks_once_and_d_again_deletes() {
+    fn spc_d_d_deletes_the_selected_row_without_asking() {
         let mut pane = pane_with(FILE);
-        assert_eq!(pane.on_key(key(KeyCode::Char('d'))), PaneAction::None);
-        assert!(draw(&pane, 40, 8)
-            .iter()
-            .any(|l| l.contains("d again to delete")));
         assert!(matches!(
-            pane.on_key(key(KeyCode::Char('d'))),
+            press(&mut pane, "SPC d d"),
             PaneAction::Todo(TodoEdit::Delete {
                 at: LineRef { line: 1, .. }
             })
@@ -746,24 +806,16 @@ mod tests {
     }
 
     #[test]
-    fn any_other_key_after_d_cancels_and_still_acts() {
+    fn a_lone_d_deletes_nothing() {
         let mut pane = pane_with(FILE);
-        pane.on_key(key(KeyCode::Char('d')));
-        assert_eq!(pane.on_key(key(KeyCode::Char('j'))), PaneAction::None);
-        // Moved down, and no delete is pending.
-        assert_eq!(pane.on_key(key(KeyCode::Char('d'))), PaneAction::None);
-        assert!(matches!(
-            pane.on_key(key(KeyCode::Char('d'))),
-            PaneAction::Todo(TodoEdit::Delete {
-                at: LineRef { line: 2, .. }
-            })
-        ));
+        assert_eq!(press(&mut pane, "d"), PaneAction::None);
+        assert_eq!(press(&mut pane, "SPC d <Esc>"), PaneAction::None);
     }
 
     #[test]
-    fn a_adds_through_the_prompt() {
+    fn spc_a_adds_through_the_prompt() {
         let mut pane = pane_with(FILE);
-        pane.on_key(key(KeyCode::Char('a')));
+        press(&mut pane, "SPC a");
         assert!(pane.prompt_open());
         typed(&mut pane, "call bank due:mon");
         assert!(draw(&pane, 40, 9)
@@ -782,9 +834,9 @@ mod tests {
     #[test]
     fn the_prompt_swallows_the_pane_keys() {
         let mut pane = pane_with(FILE);
-        pane.on_key(key(KeyCode::Char('a')));
-        for c in ['q', 'x', 'd', 'j', 'r'] {
-            assert_eq!(pane.on_key(key(KeyCode::Char(c))), PaneAction::None);
+        press(&mut pane, "SPC a");
+        for sequence in ["SPC q", "x", "SPC d d", "j", "SPC r"] {
+            assert_eq!(press(&mut pane, sequence), PaneAction::None);
         }
         assert!(pane.prompt_open());
     }
@@ -792,7 +844,7 @@ mod tests {
     #[test]
     fn a_bad_prompt_stays_open_with_the_reason() {
         let mut pane = pane_with(FILE);
-        pane.on_key(key(KeyCode::Char('a')));
+        press(&mut pane, "SPC a");
         typed(&mut pane, "x due:someday");
         assert_eq!(pane.on_key(key(KeyCode::Enter)), PaneAction::None);
         assert!(pane.prompt_open());
@@ -804,16 +856,17 @@ mod tests {
     #[test]
     fn esc_closes_the_prompt_without_quitting() {
         let mut pane = pane_with(FILE);
-        pane.on_key(key(KeyCode::Char('a')));
+        press(&mut pane, "SPC a");
         assert_eq!(pane.on_key(key(KeyCode::Esc)), PaneAction::None);
         assert!(!pane.prompt_open());
-        assert_eq!(pane.on_key(key(KeyCode::Esc)), PaneAction::Quit);
+        assert_eq!(press(&mut pane, "SPC q"), PaneAction::Quit);
+        assert_eq!(pane.on_key(key(KeyCode::Esc)), PaneAction::None);
     }
 
     #[test]
-    fn e_edits_the_selected_row_prefilled() {
+    fn spc_e_edits_the_selected_row_prefilled() {
         let mut pane = pane_with(FILE);
-        pane.on_key(key(KeyCode::Char('e')));
+        press(&mut pane, "SPC e");
         pane.on_key(ctrl('w'));
         typed(&mut pane, "due:tom");
         assert_eq!(
@@ -832,7 +885,7 @@ mod tests {
     #[test]
     fn the_prompt_edits_at_its_cursor() {
         let mut pane = pane_with("");
-        pane.on_key(key(KeyCode::Char('a')));
+        press(&mut pane, "SPC a");
         typed(&mut pane, "ac");
         pane.on_key(key(KeyCode::Left));
         typed(&mut pane, "b");
@@ -847,7 +900,7 @@ mod tests {
                 due: None
             })
         );
-        pane.on_key(key(KeyCode::Char('a')));
+        press(&mut pane, "SPC a");
         typed(&mut pane, "junk");
         pane.on_key(ctrl('u'));
         typed(&mut pane, "z");
@@ -863,7 +916,7 @@ mod tests {
     #[test]
     fn the_selection_follows_its_item_across_a_snapshot() {
         let mut pane = pane_with(FILE);
-        pane.on_key(key(KeyCode::Char('j')));
+        press(&mut pane, "j");
         assert_eq!(pane.rows()[1].text, "review RFC");
         // Another pane adds an overdue item above it.
         let moved = FILE.replace("# Todo\n", "# Todo\n- [ ] urgent [due:: 2026-10-01]\n");
@@ -873,7 +926,7 @@ mod tests {
             None,
         );
         assert!(matches!(
-            pane.on_key(key(KeyCode::Char('x'))),
+            press(&mut pane, "x"),
             PaneAction::Todo(TodoEdit::Toggle {
                 at: LineRef { line: 3, .. },
                 ..
@@ -884,11 +937,11 @@ mod tests {
     #[test]
     fn the_selection_stays_on_the_second_of_two_identical_lines() {
         let mut pane = pane_with("- [ ] same\n- [ ] same\n");
-        pane.on_key(key(KeyCode::Char('j')));
+        press(&mut pane, "j");
         let again = TodoDocument::parse("- [ ] same\n- [ ] same\n").items();
         pane.apply(Some(again), Some(t(110)), None);
         assert!(matches!(
-            pane.on_key(key(KeyCode::Char('x'))),
+            press(&mut pane, "x"),
             PaneAction::Todo(TodoEdit::Toggle {
                 at: LineRef { line: 1, .. },
                 ..
@@ -899,7 +952,7 @@ mod tests {
     #[test]
     fn a_paste_with_a_newline_stays_in_the_prompt_as_one_line() {
         let mut pane = pane_with(FILE);
-        pane.on_key(key(KeyCode::Char('a')));
+        press(&mut pane, "SPC a");
         pane.on_paste("call\r\nbank\nnow");
         assert!(pane.prompt_open());
         assert_eq!(
@@ -915,7 +968,6 @@ mod tests {
         pane.on_paste("d\nd\n");
         assert!(!pane.prompt_open());
         assert_eq!(pane.rows(), rows.as_slice());
-        assert!(!pane.confirm_delete);
     }
 
     #[test]
@@ -927,10 +979,10 @@ mod tests {
     }
 
     #[test]
-    fn o_opens_the_file() {
+    fn spc_o_f_opens_the_file() {
         let mut pane = pane_with(FILE);
         assert_eq!(
-            pane.on_key(key(KeyCode::Char('o'))),
+            press(&mut pane, "SPC o f"),
             PaneAction::OpenFile(PathBuf::from("/h/todo.md"))
         );
     }
@@ -938,9 +990,9 @@ mod tests {
     #[test]
     fn keys_on_an_empty_list_do_nothing_but_add() {
         let mut pane = pane_with("");
-        for c in ['x', ' ', '+', 'e', 'd'] {
-            assert_eq!(pane.on_key(key(KeyCode::Char(c))), PaneAction::None, "{c}");
+        for sequence in ["x", "SPC e", "SPC z", "SPC d d", "RET"] {
+            assert_eq!(press(&mut pane, sequence), PaneAction::None, "{sequence}");
         }
-        assert_eq!(pane.on_key(key(KeyCode::Char('r'))), PaneAction::Refresh);
+        assert_eq!(press(&mut pane, "SPC r"), PaneAction::Refresh);
     }
 }

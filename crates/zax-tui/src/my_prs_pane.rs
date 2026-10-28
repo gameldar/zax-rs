@@ -2,18 +2,20 @@
 
 use std::time::SystemTime;
 
-use ratatui::crossterm::event::{KeyCode, KeyEvent};
+use ratatui::crossterm::event::KeyEvent;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
-use zax_domain::{Attention, MyPullRequest, PullRequestStatus};
+use zax_domain::keymap::Keymap;
+use zax_domain::{Attention, KeyCommand, MyPullRequest, PullRequestStatus};
 
-use crate::action::PaneAction;
+use crate::action::{PaneAction, ReviewMode};
 use crate::cache::Cached;
 use crate::chrome::{error_line, header_line, GLYPH_CHANGES, GLYPH_ERROR, GLYPH_NONE, GLYPH_PASS};
 use crate::fmt::{display_width, format_age, truncate};
+use crate::keys::{split_footer, KeyInput};
 use crate::pr_fields::{
     check_glyph, check_style, checks_label, mergeable_label, mergeable_style, review_label,
     review_style, threads_label, threads_style,
@@ -26,20 +28,16 @@ pub struct MyPrsPane {
     cache: Cached<Vec<MyPullRequest>>,
     selected: usize,
     focused: bool,
-}
-
-impl Default for MyPrsPane {
-    fn default() -> Self {
-        Self::new()
-    }
+    keys: KeyInput,
 }
 
 impl MyPrsPane {
-    pub fn new() -> Self {
+    pub fn new(keymap: Keymap) -> Self {
         Self {
             cache: Cached::new(),
             selected: 0,
             focused: false,
+            keys: KeyInput::new(keymap),
         }
     }
 
@@ -70,6 +68,7 @@ impl MyPrsPane {
         if area.height == 0 || area.width == 0 {
             return;
         }
+        let (area, footer) = split_footer(area);
 
         let title = match self.cache.value() {
             Some(mine) => format!("{TITLE} ({})", mine.len()),
@@ -113,6 +112,8 @@ impl MyPrsPane {
         }
 
         frame.render_widget(Paragraph::new(Text::from(lines)), area);
+        self.keys.render_which_key(frame, area);
+        self.keys.render_footer(frame, footer);
     }
 
     /// Which rows a pane of this height shows.
@@ -181,35 +182,48 @@ impl MyPrsPane {
     }
 
     pub fn on_key(&mut self, key: KeyEvent) -> PaneAction {
+        match self.keys.press(key) {
+            Some(command) => self.run(command),
+            None => PaneAction::None,
+        }
+    }
+
+    fn run(&mut self, command: KeyCommand) -> PaneAction {
         let len = self.rows().len();
-        match key.code {
-            KeyCode::Char('r') => PaneAction::Refresh,
-            KeyCode::Char('q') | KeyCode::Esc => PaneAction::Quit,
-            KeyCode::Char('j') | KeyCode::Down => {
+        match command {
+            KeyCommand::Refresh => PaneAction::Refresh,
+            KeyCommand::Quit => PaneAction::Quit,
+            KeyCommand::MoveDown => {
                 self.selected = (self.selected + 1).min(len.saturating_sub(1));
                 PaneAction::None
             }
-            KeyCode::Char('k') | KeyCode::Up => {
+            KeyCommand::MoveUp => {
                 self.selected = self.selected.saturating_sub(1);
                 PaneAction::None
             }
-            KeyCode::Enter => self
+            KeyCommand::Open => self
                 .selected()
                 .map(|m| PaneAction::OpenUrl(m.status.pr.url.clone()))
                 .unwrap_or_default(),
-            KeyCode::Char('y') => self
+            KeyCommand::CopyUrl => self
                 .selected()
                 .map(|m| PaneAction::CopyUrl(m.status.pr.url.clone()))
                 .unwrap_or_default(),
-            KeyCode::Char('w') => self
-                .selected()
-                .map(|m| PaneAction::ReviewWorktree {
-                    repo: m.status.pr.repo.clone(),
-                    number: m.status.pr.number,
-                })
-                .unwrap_or_default(),
+            KeyCommand::WorktreeOpen => self.worktree(ReviewMode::Open),
+            KeyCommand::WorktreeReview => self.worktree(ReviewMode::OpenAndReview),
+            // Not in this pane's context; the keymap refuses to bind them.
             _ => PaneAction::None,
         }
+    }
+
+    fn worktree(&self, mode: ReviewMode) -> PaneAction {
+        self.selected()
+            .map(|m| PaneAction::ReviewWorktree {
+                repo: m.status.pr.repo.clone(),
+                number: m.status.pr.number,
+                mode,
+            })
+            .unwrap_or_default()
     }
 }
 
@@ -288,7 +302,6 @@ mod tests {
 
     use ratatui::backend::TestBackend;
     use ratatui::buffer::Buffer;
-    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use ratatui::style::Modifier;
     use ratatui::Terminal;
     use zax_domain::{
@@ -298,15 +311,18 @@ mod tests {
 
     use super::*;
     use crate::action::PaneAction;
+    use crate::keys::testing::press;
+    use zax_domain::keymap::{Keymaps, PaneContext};
 
     fn t(secs: u64) -> SystemTime {
         UNIX_EPOCH + Duration::from_secs(secs)
     }
 
-    fn key(code: KeyCode) -> KeyEvent {
-        KeyEvent::new(code, KeyModifiers::NONE)
+    fn keymap() -> Keymap {
+        Keymaps::defaults().for_context(PaneContext::MyPrs).clone()
     }
 
+    /// Type a key sequence such as `SPC w o`; the action of the last key.
     fn line(buffer: &Buffer, y: u16) -> String {
         (0..buffer.area.width)
             .map(|x| buffer[(x, y)].symbol())
@@ -343,7 +359,7 @@ mod tests {
     }
 
     fn loaded() -> MyPrsPane {
-        let mut pane = MyPrsPane::new();
+        let mut pane = MyPrsPane::new(keymap());
         pane.apply(
             Ok(vec![
                 mine(
@@ -483,7 +499,7 @@ mod tests {
     #[test]
     fn the_detail_line_follows_the_selection() {
         let mut pane = loaded();
-        pane.on_key(key(KeyCode::Char('j')));
+        press(&mut pane, "j");
         let detail = line(&draw_wide(&pane, t(100)), 3);
         assert!(detail.contains("approved"), "got: {detail:?}");
         assert!(detail.contains("all resolved"), "got: {detail:?}");
@@ -493,7 +509,7 @@ mod tests {
     fn the_window_reserves_the_header_and_the_detail_line() {
         // Hand-computed: a six-row pane spends one row on the header and one
         // on the detail line, so four rows of ten are visible.
-        let mut pane = MyPrsPane::new();
+        let mut pane = MyPrsPane::new(keymap());
         pane.apply(
             Ok((0..10)
                 .map(|n| {
@@ -513,7 +529,7 @@ mod tests {
 
         assert_eq!(pane.visible_rows(10, 6), 0..4);
         for expected in [0..4, 0..4, 0..4, 1..5, 2..6] {
-            pane.on_key(key(KeyCode::Char('j')));
+            press(&mut pane, "j");
             assert_eq!(pane.visible_rows(10, 6), expected);
         }
 
@@ -541,7 +557,7 @@ mod tests {
 
     #[test]
     fn an_empty_queue_says_so_rather_than_showing_nothing() {
-        let mut pane = MyPrsPane::new();
+        let mut pane = MyPrsPane::new(keymap());
         pane.apply(Ok(vec![]), t(100));
         assert!(
             line(&draw(&pane, t(100)), 1).contains("No open pull requests"),
@@ -580,38 +596,50 @@ mod tests {
     #[test]
     fn the_row_keys_match_the_review_pane() {
         let mut pane = loaded();
+        let url = "https://github.com/gameldar/zax/pull/12".to_owned();
+        assert_eq!(press(&mut pane, "RET"), PaneAction::OpenUrl(url.clone()));
+        assert_eq!(press(&mut pane, "SPC y"), PaneAction::CopyUrl(url));
+        let repo = RepoSlug::parse("gameldar/zax").unwrap();
         assert_eq!(
-            pane.on_key(key(KeyCode::Enter)),
-            PaneAction::OpenUrl("https://github.com/gameldar/zax/pull/12".to_owned())
-        );
-        assert_eq!(
-            pane.on_key(key(KeyCode::Char('y'))),
-            PaneAction::CopyUrl("https://github.com/gameldar/zax/pull/12".to_owned())
-        );
-        assert_eq!(
-            pane.on_key(key(KeyCode::Char('w'))),
+            press(&mut pane, "SPC w o"),
             PaneAction::ReviewWorktree {
-                repo: RepoSlug::parse("gameldar/zax").unwrap(),
+                repo: repo.clone(),
                 number: 12,
+                mode: ReviewMode::Open,
             }
         );
-        assert_eq!(pane.on_key(key(KeyCode::Char('r'))), PaneAction::Refresh);
-        assert_eq!(pane.on_key(key(KeyCode::Char('q'))), PaneAction::Quit);
+        assert_eq!(
+            press(&mut pane, "SPC w r"),
+            PaneAction::ReviewWorktree {
+                repo,
+                number: 12,
+                mode: ReviewMode::OpenAndReview,
+            }
+        );
+        assert_eq!(press(&mut pane, "SPC r"), PaneAction::Refresh);
+        assert_eq!(press(&mut pane, "SPC q"), PaneAction::Quit);
+    }
+
+    #[test]
+    fn bare_q_and_esc_no_longer_quit() {
+        let mut pane = loaded();
+        assert_eq!(press(&mut pane, "q"), PaneAction::None);
+        assert_eq!(press(&mut pane, "<Esc>"), PaneAction::None);
     }
 
     #[test]
     fn row_actions_do_nothing_when_the_queue_is_empty() {
-        let mut pane = MyPrsPane::new();
+        let mut pane = MyPrsPane::new(keymap());
         pane.apply(Ok(vec![]), t(100));
-        assert_eq!(pane.on_key(key(KeyCode::Enter)), PaneAction::None);
-        assert_eq!(pane.on_key(key(KeyCode::Char('w'))), PaneAction::None);
+        assert_eq!(press(&mut pane, "RET"), PaneAction::None);
+        assert_eq!(press(&mut pane, "SPC w o"), PaneAction::None);
         assert_eq!(pane.selected(), None);
     }
 
     #[test]
     fn a_selection_beyond_a_shrunken_queue_is_pulled_back_into_range() {
         let mut pane = loaded();
-        pane.on_key(key(KeyCode::Char('j')));
+        press(&mut pane, "j");
         pane.apply(
             Ok(vec![mine(
                 "gameldar/zax",
@@ -629,7 +657,7 @@ mod tests {
 
     #[test]
     fn a_draft_is_flagged_on_its_row() {
-        let mut pane = MyPrsPane::new();
+        let mut pane = MyPrsPane::new(keymap());
         pane.apply(
             Ok(vec![mine(
                 "gameldar/zax",
@@ -653,7 +681,7 @@ mod tests {
         // plus a continuation cell holding a space, so reading a buffer back
         // reports `日本語` as eight columns rather than six, and a test doing
         // that fails whether the budget is right or wrong.
-        let mut pane = MyPrsPane::new();
+        let mut pane = MyPrsPane::new(keymap());
         pane.apply(
             Ok(vec![mine(
                 "acme/日本語リポジトリ",

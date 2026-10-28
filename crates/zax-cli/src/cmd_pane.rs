@@ -11,9 +11,12 @@ use std::time::{Duration, Instant, SystemTime};
 use anyhow::Result;
 use ratatui::crossterm::event::{self, Event, KeyEventKind};
 use zax_app::queries;
+use zax_domain::keymap::PaneContext;
 use zax_domain::{parse_duration, Command};
 use zax_exec::{Exec, SystemExec};
-use zax_tui::{refresh, BranchStatusPane, ExecPane, MyPrsPane, PaneAction, PrsForReviewPane};
+use zax_tui::{
+    refresh, BranchStatusPane, ExecPane, MyPrsPane, PaneAction, PrsForReviewPane, ReviewMode,
+};
 
 use crate::cli::PaneCommand;
 use crate::marked;
@@ -134,13 +137,19 @@ fn run_prs_pane() -> Result<()> {
     // The pane reads the same three-layer config the session was started from,
     // for the `[prs]` filter. A config this pane cannot read is worth failing
     // over: the alternative is a pane quietly showing the unfiltered queue.
-    let filter = wiring::resolve()?.config.prs;
+    let config = wiring::resolve()?.config;
+    let filter = config.prs;
     let (request, results) = spawn_fetcher(move || {
         let gh = zax_infra_github::GhCli::new(SystemExec, cwd.clone());
         queries::list_review_queue(&gh, &filter, SystemTime::now()).map_err(|e| e.to_string())
     });
     pane_loop!(
-        PrsForReviewPane::new(),
+        PrsForReviewPane::new(
+            config
+                .keymaps
+                .for_context(PaneContext::PrsForReview)
+                .clone()
+        ),
         Duration::from_secs(120),
         request,
         results,
@@ -153,13 +162,14 @@ fn run_my_prs_pane() -> Result<()> {
     // The same `[prs]` filter the review queue reads, minus its max_age, which
     // `list_my_pull_requests` does not apply. A config this pane cannot read is
     // worth failing over: the alternative is quietly showing an unfiltered one.
-    let filter = wiring::resolve()?.config.prs;
+    let config = wiring::resolve()?.config;
+    let filter = config.prs;
     let (request, results) = spawn_fetcher(move || {
         let gh = zax_infra_github::GhCli::new(SystemExec, cwd.clone());
         queries::list_my_pull_requests(&gh, &filter).map_err(|e| e.to_string())
     });
     pane_loop!(
-        MyPrsPane::new(),
+        MyPrsPane::new(config.keymaps.for_context(PaneContext::MyPrs).clone()),
         Duration::from_secs(120),
         request,
         results,
@@ -169,13 +179,19 @@ fn run_my_prs_pane() -> Result<()> {
 
 fn run_branch_pane() -> Result<()> {
     let cwd = std::env::current_dir()?;
+    let config = wiring::resolve()?.config;
     let (request, results) = spawn_fetcher(move || {
         let git = zax_infra_git::GitCli::new(SystemExec, cwd.clone());
         let gh = zax_infra_github::GhCli::new(SystemExec, cwd.clone());
         queries::branch_view(&git, &gh).map_err(|e| e.to_string())
     });
     pane_loop!(
-        BranchStatusPane::new(),
+        BranchStatusPane::new(
+            config
+                .keymaps
+                .for_context(PaneContext::BranchStatus)
+                .clone()
+        ),
         Duration::from_secs(60),
         request,
         results,
@@ -185,6 +201,7 @@ fn run_branch_pane() -> Result<()> {
 
 fn run_exec_pane(title: String, every: Duration, command: Command) -> Result<()> {
     let cwd = std::env::current_dir()?;
+    let config = wiring::resolve()?.config;
     let argv: Vec<String> = command.argv().iter().skip(1).cloned().collect();
     let program = command.program().to_owned();
     let (request, results) =
@@ -196,7 +213,11 @@ fn run_exec_pane(title: String, every: Duration, command: Command) -> Result<()>
             },
         );
     pane_loop!(
-        ExecPane::new(title, every),
+        ExecPane::new(
+            title,
+            every,
+            config.keymaps.for_context(PaneContext::Exec).clone()
+        ),
         every,
         request,
         results,
@@ -212,7 +233,7 @@ fn run_exec_pane(title: String, every: Duration, command: Command) -> Result<()>
 /// nothing to report but a missing helper program, and the user can see that
 /// nothing opened. Building a review worktree is different: it mutates the
 /// repository, it can refuse for reasons the user needs to read, and a pane
-/// that swallowed the answer would leave a `w` press looking like a no-op.
+/// that swallowed the answer would leave a worktree key press looking like a no-op.
 pub(crate) fn perform(action: PaneAction) -> Result<Option<String>> {
     perform_with(&SystemExec, action)
 }
@@ -223,18 +244,17 @@ fn perform_with<E: Exec>(exec: &E, action: PaneAction) -> Result<Option<String>>
             let _ = exec.exec(open_program(), &[url], None, &[]);
         }
         PaneAction::CopyUrl(url) => copy_to_clipboard(&url),
-        PaneAction::ReviewWorktree { repo, number } => {
+        PaneAction::ReviewWorktree { repo, number, mode } => {
             let zax = wiring::zax_bin()?.to_string_lossy().into_owned();
-            let result = exec.exec(
-                &zax,
-                &[
-                    "worktree".to_owned(),
-                    "review".to_owned(),
-                    format!("https://github.com/{repo}/pull/{number}"),
-                ],
-                None,
-                &[],
-            );
+            let mut args = vec![
+                "worktree".to_owned(),
+                "review".to_owned(),
+                format!("https://github.com/{repo}/pull/{number}"),
+            ];
+            if mode == ReviewMode::Open {
+                args.push("--no-review".to_owned());
+            }
+            let result = exec.exec(&zax, &args, None, &[]);
             return Ok(review_message(result));
         }
         // The tickets loop performs its own six row actions, and the todo
@@ -261,7 +281,7 @@ fn perform_with<E: Exec>(exec: &E, action: PaneAction) -> Result<Option<String>>
 /// refused review exits non-zero, and zax prints its whole error chain as the
 /// last line of stderr, so that line is the message; anything else (a tool
 /// that wrote nothing, a status with no explanation) still produces a line,
-/// because the point is that a failed `w` is never silent. A worktree that was
+/// because the point is that a failed worktree action is never silent. A worktree that was
 /// made but could not be opened exits zero and warns, and that warning is just
 /// as invisible to the user as a refusal would be: the editor never appeared
 /// either way.
@@ -270,7 +290,7 @@ fn review_message(result: Result<zax_exec::Output, zax_exec::ExecError>) -> Opti
         Ok(out) if out.ok() => marked::find_warning(&out.stderr)?,
         // zax's own line, which names the reason. Only when it never got to
         // write one does the tool's own last word stand in, because a failed
-        // `w` falling silent is the thing being prevented.
+        // a worktree action falling silent is the thing being prevented.
         Ok(out) => marked::find_error(&out.stderr)
             .or_else(|| {
                 out.stderr
@@ -329,7 +349,7 @@ fn pipe_into(program: &str, args: &[String], text: &str) -> std::io::Result<()> 
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)]
     use zax_exec::{ExecError, Output, RecordingExec};
-    use zax_tui::PaneAction;
+    use zax_tui::{PaneAction, ReviewMode};
 
     use super::{perform_with, review_message};
 
@@ -348,7 +368,7 @@ mod tests {
 
     #[test]
     fn a_refused_review_reaches_the_pane_instead_of_vanishing() {
-        // The two refusals a `w` press can actually meet, spelled the way zax
+        // The two refusals a worktree key press can actually meet, spelled the way zax
         // prints them.
         let refusal = "zax: pull request #42 belongs to acme/omega, but this \
                        is someone/zed-ai-extensions";
@@ -373,7 +393,7 @@ mod tests {
 
     #[test]
     fn a_failed_review_row_action_hands_the_pane_a_line_to_show() {
-        // The `w` press mutates the repository and can refuse; discarding its
+        // The worktree key press mutates the repository and can refuse; discarding its
         // result leaves the keystroke looking like a no-op.
         let exec = RecordingExec::with_responses(vec![Output {
             status: 1,
@@ -383,6 +403,7 @@ mod tests {
         let action = PaneAction::ReviewWorktree {
             repo: zax_domain::RepoSlug::parse("acme/omega").unwrap(),
             number: 42,
+            mode: ReviewMode::OpenAndReview,
         };
 
         let message = perform_with(&exec, action).unwrap().unwrap();
@@ -404,8 +425,31 @@ mod tests {
         let action = PaneAction::ReviewWorktree {
             repo: zax_domain::RepoSlug::parse("acme/omega").unwrap(),
             number: 42,
+            mode: ReviewMode::OpenAndReview,
         };
         assert_eq!(perform_with(&exec, action).unwrap(), None);
+    }
+
+    #[test]
+    fn opening_without_a_review_passes_no_review_to_the_worktree_command() {
+        let exec = RecordingExec::returning("");
+        let action = PaneAction::ReviewWorktree {
+            repo: zax_domain::RepoSlug::parse("acme/omega").unwrap(),
+            number: 42,
+            mode: ReviewMode::Open,
+        };
+
+        assert_eq!(perform_with(&exec, action).unwrap(), None);
+
+        assert_eq!(
+            exec.args(0),
+            [
+                "worktree",
+                "review",
+                "https://github.com/acme/omega/pull/42",
+                "--no-review"
+            ]
+        );
     }
 
     #[test]

@@ -317,7 +317,7 @@ mod tests {
 
     #[test]
     fn a_missing_editor_is_reported_when_it_is_asked_to_open_something_too() {
-        // The `w` row action is the path that matters, and it never calls
+        // The worktree row action is the path that matters, and it never calls
         // probe: the missing program has to be an error there as well.
         let editor = EditorCli::new(MissingExec, zed(), "open.command");
 

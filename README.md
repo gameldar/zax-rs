@@ -92,11 +92,11 @@ title is what drives Zed's in-progress indicator for a thread. tmux's own
 | `zax session list` | The zax sessions on the dedicated socket |
 | `zax session kill [name]` | Kill a session. Defaults to this worktree's own, when it has only one |
 | `zax worktree new <branch> [--from <base>] [--no-hooks] [--no-open] [--repo <target>]` | Branch plus worktree at the canonical path, then copy, hooks and the editor |
-| `zax worktree review <pr\|url> [--force] [--no-hooks] [--no-open] [--repo <target>]` | A pull request's head branch in a worktree, then copy, hooks and the editor |
+| `zax worktree review <pr\|url> [--force] [--no-hooks] [--no-open] [--no-review] [--repo <target>]` | A pull request's head branch in a worktree, then copy, hooks and the editor; `--no-review` opens it without starting a Claude review |
 | `zax worktree list` | The worktrees zax manages for this repository |
 | `zax worktree rm <branch> [--force]` | Remove one |
 | `zax pane prs-for-review \| branch-status \| my-prs \| tickets \| todo` | Built-in pane processes, normally launched by `session start` |
-| `zax pane worktrees <TICKET>` | A ticket's worktrees with removal; the tickets pane's `W` opens it in a tmux popup |
+| `zax pane worktrees <TICKET>` | A ticket's worktrees with removal; the tickets pane's `SPC w l` opens it in a tmux popup |
 | `zax pane exec --title <t> --every <dur> -- <cmd>` | Wrap any command's stdout in a header and refresh loop |
 | `zax config` | View and edit the three config layers, in a popup over the session. It shows every key, including `open.command`, `editor.command` and `tickets.provider` |
 | `zax config show` | The same view, printed: every setting, its effective value and its origin |
@@ -249,6 +249,39 @@ to 100: a column of three even rows is written `67%` then `50%`, not `33%`
 apiece. The defaults above give 45% / 20% / 35% of a column that is 30% of the
 window wide.
 
+### Keymap
+
+Pane keys are leader sequences: `j`/`k`, `RET` and `x` act directly, and
+everything else sits under `SPC`. `[keymap]` rebinds them.
+
+```toml
+[keymap]
+defaults = true             # false: start from no bindings at all
+
+[keymap.all]                # every pane that supports the command
+"SPC g" = "refresh"
+
+[keymap.tickets]            # one table per pane: prs-for-review, my-prs,
+"SPC w s" = "worktree-open" # branch-status, tickets, todo, exec
+"SPC s" = "none"            # "none" unbinds the sequence
+```
+
+Sequences are space-separated keys: `SPC`, `RET`, `TAB`, `DEL`, `<Esc>`,
+`<Up>`, `<Down>`, `<Left>`, `<Right>`, `C-x`, `M-x`, or a plain character
+(`W` for shift-w). Commands are `move-down`, `move-up`, `open`, `copy-url`,
+`refresh`, `quit`, `worktree-open`, `worktree-review`, `worktree-list`,
+`open-pr`, `transition`, `todo-add`, `todo-edit`, `todo-toggle`,
+`todo-snooze`, `todo-delete`, `todo-open-file` and `todo-show-done`; each pane
+accepts only the ones it can run.
+
+Bindings resolve in order: the defaults (unless `defaults = false`), then
+`all`, then the pane's own table. An entry replaces whatever was on that
+sequence. `all` skips panes that lack the command. An unknown command, table
+or pane mismatch, a bad sequence, or a sequence that is a prefix of (or
+shadowed by) another is an error naming `keymap.<table>."<sequence>"`. Across
+the three config layers the later layer wins per sequence; the repo's
+`.zax.toml` may set `[keymap]`, and it runs nothing.
+
 ### Panes
 
 Three kinds, and the built-ins are privileged instances of the same
@@ -394,23 +427,29 @@ Inside a focused built-in pane:
 
 | Key | Action |
 | --- | --- |
-| `enter` | Open the pull request in a browser |
-| `y` | Copy its URL |
-| `r` | Refresh now |
-| `q` / `esc` | Close the pane |
+| `enter` / `SPC o b` | Open the pull request in a browser |
+| `SPC y` | Copy its URL |
+| `SPC r` | Refresh now |
+| `SPC q` | Close the pane |
 | `j` / `k`, arrows | Move the selection (`prs-for-review`, `my-prs`, `tickets`) |
-| `w` | `zax worktree review` for the selected row (`prs-for-review`, `my-prs`) |
+| `SPC w o` | Open the selected row's worktree in the editor, starting no review (`prs-for-review`, `my-prs`) |
+| `SPC w r` | `zax worktree review` for the selected row: open the worktree and start a Claude review (`prs-for-review`, `my-prs`) |
 
-In the `tickets` pane `enter` and `y` act on the ticket's URL, and the rest
+`SPC` is the leader key. Pressing it, or any other prefix, opens a which-key
+popup over the pane listing what can follow; `esc` closes it. A sequence that
+goes nowhere shows `<keys> is not bound` in the bottom row, which otherwise
+lists the available keys. `q` and a bare `esc` no longer close the pane.
+
+In the `tickets` pane `RET` and `SPC y` act on the ticket's URL, and the rest
 differ:
 
 | Key | Action |
 | --- | --- |
-| `enter` / `y` | Open / copy the ticket's URL |
-| `p` | Open the ticket's most urgent pull request. `no pull request` on the error line when it has none |
-| `w` | Start or open work: `zax worktree new` on a branch named from the ticket when it has no worktree, otherwise open its most recently modified worktree in the editor |
-| `W` | Open the ticket's worktrees in a tmux popup over the whole window (`zax pane worktrees <TICKET>`; needs tmux 3.3 or newer). `j`/`k` move, `d` then `y` removes the selected one with an unforced `git worktree remove` (git refuses one with uncommitted changes; the branch is kept), `esc` closes |
-| `s` | Pick a transition: `1`-`9` chooses, `esc` cancels. Absent when the provider does not advertise transitions |
+| `RET` / `SPC o b` / `SPC y` | Open (twice over) / copy the ticket's URL |
+| `SPC o p` | Open the ticket's most urgent pull request. `no pull request` on the error line when it has none |
+| `SPC w o` | Start or open work: `zax worktree new` on a branch named from the ticket when it has no worktree, otherwise open its most recently modified worktree in the editor |
+| `SPC w l` | Open the ticket's worktrees in a tmux popup over the whole window (`zax pane worktrees <TICKET>`; needs tmux 3.3 or newer). `j`/`k` move, `d` then `y` removes the selected one with an unforced `git worktree remove` (git refuses one with uncommitted changes; the branch is kept), `esc` closes |
+| `SPC s` | Pick a transition: `1`-`9` chooses, `esc` cancels. Absent when the provider does not advertise transitions |
 
 The context panes stay read-only and action-oriented: a keystroke opens, copies
 or starts something, and a row action that fails says so on the pane's own error
@@ -504,7 +543,7 @@ zax sessions, and your pull requests.
   session rebuild shows its tickets at once.
 - It polls the provider at the interval the provider advertises as `poll`, or
   every 2 minutes when it advertises none; `zax-jira` advertises `2m`. The
-  work half is polled every 60 seconds. `r` in a pane refreshes now.
+  work half is polled every 60 seconds. `SPC r` in a pane refreshes now.
 - Its socket and lock are in `$XDG_RUNTIME_DIR/zax/` when that is set, else
   `~/.cache/zax/`. Its log is `~/.cache/zax/broker.log` (`$XDG_CACHE_HOME`
   replaces `~/.cache`). Look there when a pane shows no tickets.
@@ -516,7 +555,7 @@ zax sessions, and your pull requests.
 - A provider that exits, hangs or answers nothing for 30 seconds is restarted
   with a backoff from one second to five minutes, and the pane keeps showing
   what went wrong with when the next try is. A provider that answers with an
-  error, such as `zax-jira` when `acli` is logged out, is not backed off: `r`
+  error, such as `zax-jira` when `acli` is logged out, is not backed off: `SPC r`
   after logging in tries again at once.
 
 ### zax-jira
@@ -536,7 +575,7 @@ transitions = ["In Progress", "Code Review", "Done"]
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `jql` | `assignee = currentUser() AND (statusCategory != Done OR updated >= -14d) ORDER BY updated DESC` | Which tickets to show. The default includes recently done tickets, so their leftover worktrees stay visible |
-| `transitions` | `["In Progress", "In Review", "Done"]` | The moves offered by `s` |
+| `transitions` | `["In Progress", "In Review", "Done"]` | The moves offered by `SPC s` |
 | `projects.<KEY>.transitions` | the global list | The moves for one project, which replaces the global list |
 
 `acli` cannot list the transitions a work item allows, so they are configured
@@ -598,20 +637,22 @@ reads well anywhere and works in Obsidian as it is:
 
 Overdue items first (oldest first), then today, then upcoming by date, then
 undated. Done items are dimmed and stay until the end of the day they were
-checked off; `.` shows every done item in the file.
+checked off; `SPC t d` shows every done item in the file.
 
 | Key | Action |
 | --- | --- |
 | `j` / `k`, arrows | Move the selection |
-| `q` / `esc` | Close the pane |
-| `r` | Refresh now |
-| `a` | Add: type `call bank due:mon` and press `enter` |
-| `e` / `enter` | Edit the selected item, prefilled |
-| `x` / `space` | Check / uncheck |
-| `+` | Snooze: one day later, or tomorrow when it has no due date or is overdue |
-| `d` `d` | Delete |
-| `o` | Edit the file in `[editor]` |
-| `.` | Show / hide older done items |
+| `SPC q` | Close the pane |
+| `SPC r` | Refresh now |
+| `SPC a` | Add: type `call bank due:mon` and press `enter` |
+| `RET` / `SPC e` | Edit the selected item, prefilled |
+| `x` | Check / uncheck |
+| `SPC z` | Snooze: one day later, or tomorrow when it has no due date or is overdue |
+| `SPC d d` | Delete, with no second confirmation |
+| `SPC o f` | Edit the file in `[editor]` |
+| `SPC t d` | Show / hide older done items |
+
+The prompt keeps its own keys: `SPC q` typed in it is text, not a quit.
 
 In the prompt, `due:` takes `today`, `tom`, a weekday (`fri`, the next one),
 `+3d`, `+2w` or `2026-10-20`, and is written to the file as a date.
@@ -697,13 +738,13 @@ direnv.
 Last, the finished worktree is opened in `[open] command`, which defaults to
 `zed -e` and takes the worktree's path as its final argument. This happens
 after the copies and the hooks, so what opens is a worktree that is ready to
-work in rather than one that fills itself in while you look at it. `w` in the
-pull request panes goes through `zax worktree review`, so a review ends in an
-editor window on the branch.
+work in rather than one that fills itself in while you look at it. `SPC w o` and
+`SPC w r` in the pull request panes go through `zax worktree review`, so a
+review ends in an editor window on the branch.
 
 Pass `--no-open` to skip it for one command, or set `command = []` to never
 open anything. An editor that will not start is a warning and not a failed
-command: the worktree was made either way. A pane that pressed `w` shows that
+command: the worktree was made either way. A pane that ran the command shows that
 warning in its header, because from there a worktree with no editor window on
 it looks exactly like a keystroke that did nothing. The command is run with
 its output captured and is waited on, which suits an editor that hands the
@@ -713,7 +754,7 @@ program zax starts that keeps its own way of asking the user a question;
 everything else zax runs is told not to ask.
 
 `[editor] command` used to decide this too. It now only edits a single file,
-such as the todo pane's `o`. A config that sets `[editor] command` and has no
+such as the todo pane's `SPC o f`. A config that sets `[editor] command` and has no
 `[open]` table gets a `note` from `zax doctor` saying so.
 
 ### Worktrees in another repository
@@ -748,7 +789,7 @@ A worktree made in another repository takes `worktree.copy` and
 paths are relative to its main checkout. `worktree.root` is not read from
 there: it stays the value this session resolved, so a per-repository
 `worktree.root` in the target is not what decides where the worktree lands.
-That keeps new worktrees where the tickets pane and the `W` popup already
+That keeps new worktrees where the tickets pane and the `SPC w l` popup already
 look for them.
 
 `zax worktree review` resolves the same way without `--repo`, given a pull
@@ -756,9 +797,9 @@ request URL: the URL's own `owner/name` is what gets resolved. A bare pull
 request number still means the repository you are in, as it always has;
 given outside any repository, it is refused and asks for the URL instead.
 
-The tickets pane's `w` has no `owner/name` to resolve - a ticket belongs to
+The tickets pane's `SPC w o` has no `owner/name` to resolve - a ticket belongs to
 no particular repository - so instead of guessing it asks: when the ticket
-has no worktree yet and `projects.root` is configured, `w` lists every main
+has no worktree yet and `projects.root` is configured, `SPC w o` lists every main
 checkout found under `projects.root` plus every `projects.paths` override.
 Type to filter the list by name, `↑`/`↓` to move the selection, `Enter` to
 start the worktree there, `Esc` to cancel.
@@ -782,10 +823,11 @@ command = ["nvim"]
 - With `[open] via = "herdr"`, a worktree is opened as a herdr space. zax asks
   `herdr worktree list` which space has the worktree open and focuses it, or
   runs `herdr worktree open`, which groups the new space under the
-  repository's own. A review worktree (`zax worktree review`, or `w` in the
-  pull request panes) also starts Claude in the new space with
-  `/pr-review <url>`, through `herdr agent start review-<number>`. A review
-  whose space was already open is only focused.
+  repository's own. A review worktree (`zax worktree review`, or `SPC w r` in
+  the pull request panes) also starts Claude in the new space with
+  `/pr-review <url>`, through `herdr agent start review-<number>`; `--no-review`
+  (`SPC w o`) only opens the space. A review whose space was already open is
+  only focused.
 - With `[editor] via = "herdr"`, a file is edited in a herdr space labelled
   with its name, in the file's directory. A space with that label already open
   is focused instead. The editor replaces the space's shell, so quitting it
@@ -812,13 +854,13 @@ answered means an askpass helper, so zax uses the one you have: `$SSH_ASKPASS`
 if you set it, otherwise whichever of the usual packaged paths exists
 (`/usr/lib/openssh/ssh-askpass` and friends) as long as `$DISPLAY` or
 `$WAYLAND_DISPLAY` says there is somewhere to draw it. A passphrase then
-arrives as a dialog, and `w` works on a cold boot.
+arrives as a dialog, and `SPC w o` works on a cold boot.
 
 With no helper and no display - over plain ssh, say - there is nothing to ask
 through, and the fetch fails rather than hanging: `Permission denied
 (publickey)` in the pane header instead of a command that never returns. An
 agent holding the key avoids the question altogether, which is the other way
-to arrive at a working `w`.
+to arrive at a working `SPC w o`.
 
 `git`'s own credential prompts are not searched for a helper. Those have a
 real answer in a credential helper - `gh auth setup-git` writes one - and a

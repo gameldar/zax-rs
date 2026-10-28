@@ -8,7 +8,9 @@ use std::path::PathBuf;
 use std::time::SystemTime;
 
 use zax_app::{Forge, PortError, PullRequestHead};
-use zax_domain::{BranchName, PrFilter, PrRef, PullRequest, PullRequestStatus, RepoSlug};
+use zax_domain::{
+    BranchName, PrFilter, PrRef, PullRequest, PullRequestStatus, RepoSlug, ReviewedPullRequest,
+};
 use zax_exec::{Exec, ExecError, Output};
 
 const TOOL: &str = "gh";
@@ -114,6 +116,19 @@ impl<E: Exec> Forge for GhCli<E> {
             &[("q", &query)],
         ))?;
         dto::parse_authored_search_response(&out.stdout).map_err(unparseable)
+    }
+
+    fn reviewed_pull_requests(
+        &self,
+        filter: &PrFilter,
+    ) -> Result<Vec<ReviewedPullRequest>, PortError> {
+        let login = self.login()?;
+        let query = graphql::reviewed_query(&login, filter);
+        let out = self.run_ok(argv::graphql_query(
+            graphql::SEARCH_REVIEWED,
+            &[("q", &query), ("login", &login)],
+        ))?;
+        dto::parse_reviewed_search_response(&out.stdout, &login).map_err(unparseable)
     }
 
     fn current_repo(&self) -> Result<RepoSlug, PortError> {
@@ -229,6 +244,31 @@ mod tests {
                 .any(|a| a.contains("author:octocat")),
             "the resolved login must reach the search: {:?}",
             calls[1].args
+        );
+    }
+
+    #[test]
+    fn reviewed_pull_requests_resolve_the_login_before_searching() {
+        let gh = cli(vec![
+            ok("octocat\n"),
+            ok(include_str!("../tests/fixtures/reviewed_prs.json")),
+        ]);
+
+        let reviewed = gh.reviewed_pull_requests(&PrFilter::default()).unwrap();
+        assert_eq!(reviewed.len(), 4);
+        assert_eq!(reviewed[0].my_open_threads, 1);
+
+        let calls = gh.exec_ref().calls();
+        assert_eq!(calls[0].args, ["api", "user", "-q", ".login"]);
+        let args = &calls[1].args;
+        assert!(
+            args.iter()
+                .any(|a| a.contains("reviewed-by:octocat -author:octocat")),
+            "the resolved login must reach the search: {args:?}"
+        );
+        assert!(
+            args.iter().any(|a| a == "login=octocat"),
+            "got: {args:?}"
         );
     }
 

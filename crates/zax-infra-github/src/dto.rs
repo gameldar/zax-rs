@@ -24,6 +24,7 @@ use time::OffsetDateTime;
 use zax_app::PullRequestHead;
 use zax_domain::{
     BranchName, CheckState, Mergeable, PullRequest, PullRequestStatus, RepoSlug, ReviewState,
+    ReviewedPullRequest,
 };
 
 #[derive(Debug, Deserialize)]
@@ -78,6 +79,10 @@ struct PrNode {
     commits: Option<Nodes<CommitNode>>,
     #[serde(rename = "reviewThreads")]
     review_threads: Option<Nodes<ThreadNode>>,
+    #[serde(rename = "headRefOid")]
+    head_ref_oid: Option<String>,
+    /// The viewer's latest review only.
+    reviews: Option<Nodes<ReviewNode>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -106,6 +111,34 @@ struct Rollup {
 struct ThreadNode {
     #[serde(rename = "isResolved")]
     is_resolved: bool,
+    /// The first comment only; absent outside `SEARCH_REVIEWED`.
+    comments: Option<Nodes<CommentNode>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CommentNode {
+    author: Option<Login>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ReviewNode {
+    /// Null once the reviewed commit has been force-pushed away.
+    commit: Option<OidNode>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OidNode {
+    oid: String,
+}
+
+impl ThreadNode {
+    fn started_by(&self, login: &str) -> bool {
+        self.comments
+            .as_ref()
+            .and_then(|c| c.nodes.first())
+            .and_then(|c| c.author.as_ref())
+            .is_some_and(|a| a.login == login)
+    }
 }
 
 impl PrNode {
@@ -128,6 +161,8 @@ impl PrNode {
             && self.author.is_none()
             && self.commits.is_none()
             && self.review_threads.is_none()
+            && self.head_ref_oid.is_none()
+            && self.reviews.is_none()
     }
 }
 
@@ -197,6 +232,49 @@ pub fn parse_authored_search_response(json: &str) -> Result<Vec<PullRequestStatu
         .filter(|node| !node.is_empty_node())
         .map(to_pull_request_status)
         .collect()
+}
+
+/// `login` is the reviewer: their open threads are counted and their latest
+/// review's commit is compared with the head.
+pub fn parse_reviewed_search_response(
+    json: &str,
+    login: &str,
+) -> Result<Vec<ReviewedPullRequest>, String> {
+    let data: SearchData = unwrap_envelope(json)?;
+    data.search
+        .nodes
+        .into_iter()
+        .filter(|node| !node.is_empty_node())
+        .map(|node| to_reviewed_pull_request(node, login))
+        .collect()
+}
+
+fn to_reviewed_pull_request(node: PrNode, login: &str) -> Result<ReviewedPullRequest, String> {
+    let my_open_threads = node
+        .review_threads
+        .as_ref()
+        .map(|t| {
+            t.nodes
+                .iter()
+                .filter(|n| !n.is_resolved && n.started_by(login))
+                .count()
+        })
+        .unwrap_or(0);
+    let reviewed_oid = node
+        .reviews
+        .as_ref()
+        .and_then(|r| r.nodes.last())
+        .and_then(|r| r.commit.as_ref())
+        .map(|c| c.oid.as_str());
+    let head_moved = !matches!(
+        (node.head_ref_oid.as_deref(), reviewed_oid),
+        (Some(head), Some(reviewed)) if head == reviewed
+    );
+    Ok(ReviewedPullRequest {
+        pr: to_pull_request(node)?,
+        my_open_threads: u32::try_from(my_open_threads).unwrap_or(u32::MAX),
+        head_moved,
+    })
 }
 
 pub fn parse_branch_status_response(json: &str) -> Result<Option<PullRequestStatus>, String> {

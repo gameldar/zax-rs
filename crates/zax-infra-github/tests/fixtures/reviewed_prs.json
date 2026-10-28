@@ -1,0 +1,99 @@
+{
+  "data": {
+    "search": {
+      "nodes": [
+        {
+          "number": 552,
+          "title": "Retry the window fetch",
+          "url": "https://github.com/acme/api-server/pull/552",
+          "isDraft": false,
+          "createdAt": "2026-10-27T05:50:00Z",
+          "headRefOid": "a354a3a0000000000000000000000000000000aa",
+          "repository": { "nameWithOwner": "acme/api-server" },
+          "author": { "login": "gameldar" },
+          "commits": {
+            "nodes": [
+              { "commit": { "statusCheckRollup": { "state": "SUCCESS" } } }
+            ]
+          },
+          "reviews": {
+            "nodes": [
+              { "commit": { "oid": "a354a3a0000000000000000000000000000000aa" } }
+            ]
+          },
+          "reviewThreads": {
+            "nodes": [
+              {
+                "isResolved": false,
+                "comments": { "nodes": [ { "author": { "login": "octocat" } } ] }
+              },
+              {
+                "isResolved": true,
+                "comments": { "nodes": [ { "author": { "login": "octocat" } } ] }
+              },
+              {
+                "isResolved": false,
+                "comments": { "nodes": [ { "author": { "login": "someoneelse" } } ] }
+              }
+            ]
+          }
+        },
+        {
+          "number": 1970,
+          "title": "Rename the ingest topic",
+          "url": "https://github.com/acme/omega/pull/1970",
+          "isDraft": false,
+          "createdAt": "2026-10-20T10:00:00Z",
+          "headRefOid": "bbbb000000000000000000000000000000000002",
+          "repository": { "nameWithOwner": "acme/omega" },
+          "author": { "login": "gameldar" },
+          "commits": {
+            "nodes": [
+              { "commit": { "statusCheckRollup": { "state": "PENDING" } } }
+            ]
+          },
+          "reviews": {
+            "nodes": [
+              { "commit": { "oid": "bbbb000000000000000000000000000000000001" } }
+            ]
+          },
+          "reviewThreads": { "nodes": [] }
+        },
+        {
+          "number": 43,
+          "title": "Draft: sampler rework",
+          "url": "https://github.com/acme/south/pull/43",
+          "isDraft": true,
+          "createdAt": "2026-10-01T08:00:00Z",
+          "headRefOid": "cccc000000000000000000000000000000000001",
+          "repository": { "nameWithOwner": "acme/south" },
+          "author": null,
+          "commits": { "nodes": [] },
+          "reviews": { "nodes": [ { "commit": null } ] },
+          "reviewThreads": {
+            "nodes": [
+              {
+                "isResolved": false,
+                "comments": { "nodes": [ { "author": null } ] }
+              }
+            ]
+          }
+        },
+        {
+          "number": 7,
+          "title": "Bump the toolchain",
+          "url": "https://github.com/gameldar/zax/pull/7",
+          "isDraft": false,
+          "createdAt": "2026-10-10T12:00:00Z",
+          "headRefOid": "dddd000000000000000000000000000000000001",
+          "repository": { "nameWithOwner": "gameldar/zax" },
+          "author": { "login": "gameldar" },
+          "commits": { "nodes": [] },
+          "reviews": { "nodes": [] },
+          "reviewThreads": { "nodes": [] }
+        },
+        {}
+      ]
+    }
+  }
+}

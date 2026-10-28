@@ -1,4 +1,4 @@
-//! The three queries. All exist because `gh`'s own `--json` flag cannot
+//! The queries. All exist because `gh`'s own `--json` flag cannot
 //! produce the fields the panes require: `gh search prs --json` has no check
 //! state, and `gh pr view --json` has no unresolved-review-thread count.
 
@@ -93,6 +93,36 @@ query($q: String!) {
 }
 "#;
 
+/// Variables: `q`, `login`.
+///
+/// Open pull requests `login` reviewed, with their latest review's commit and
+/// each thread's first comment author. Same caps as `SEARCH_AUTHORED`.
+pub const SEARCH_REVIEWED: &str = r#"
+query($q: String!, $login: String!) {
+  search(query: $q, type: ISSUE, first: 50) {
+    nodes {
+      ... on PullRequest {
+        number
+        title
+        url
+        isDraft
+        createdAt
+        headRefOid
+        repository { nameWithOwner }
+        author { login }
+        commits(last: 1) {
+          nodes { commit { statusCheckRollup { state } } }
+        }
+        reviews(author: $login, last: 1) { nodes { commit { oid } } }
+        reviewThreads(first: 100) {
+          nodes { isResolved comments(first: 1) { nodes { author { login } } } }
+        }
+      }
+    }
+  }
+}
+"#;
+
 /// The `repo:` and `-repo:` qualifiers a filter translates into exactly.
 ///
 /// An `owner/*` entry has no qualifier: GitHub spells an organisation `org:`
@@ -119,6 +149,15 @@ fn repo_qualifiers(filter: &PrFilter) -> String {
 pub fn authored_query(login: &str, filter: &PrFilter) -> String {
     format!(
         "is:pr is:open archived:false author:{login}{}",
+        repo_qualifiers(filter)
+    )
+}
+
+/// The revisit search: pull requests `login` reviewed and did not write. No
+/// `created:` qualifier, since `max_age` never applies to a revisit.
+pub fn reviewed_query(login: &str, filter: &PrFilter) -> String {
+    format!(
+        "is:pr is:open archived:false reviewed-by:{login} -author:{login}{}",
         repo_qualifiers(filter)
     )
 }
@@ -287,5 +326,43 @@ mod tests {
         };
         let q = authored_query("octocat", &filter);
         assert!(!q.contains("created:"), "got: {q}");
+    }
+
+    #[test]
+    fn the_reviewed_search_names_the_reviewer_and_excludes_their_own() {
+        let q = reviewed_query("octocat", &PrFilter::default());
+        assert_eq!(
+            q,
+            "is:pr is:open archived:false reviewed-by:octocat -author:octocat"
+        );
+    }
+
+    #[test]
+    fn the_reviewed_search_carries_the_repository_qualifiers() {
+        let filter = PrFilter {
+            include: patterns(&["acme/omega"]),
+            exclude: patterns(&["acme/legacy-api"]),
+            ..PrFilter::default()
+        };
+        let q = reviewed_query("octocat", &filter);
+        assert!(q.contains("repo:acme/omega"), "got: {q}");
+        assert!(q.contains("-repo:acme/legacy-api"), "got: {q}");
+    }
+
+    #[test]
+    fn the_reviewed_search_never_carries_a_date_qualifier() {
+        let filter = PrFilter {
+            max_age: Some(Duration::from_secs(14 * 86_400)),
+            ..PrFilter::default()
+        };
+        let q = reviewed_query("octocat", &filter);
+        assert!(!q.contains("created:"), "got: {q}");
+    }
+
+    #[test]
+    fn the_reviewed_query_declares_the_login_variable() {
+        assert!(SEARCH_REVIEWED.contains("$login: String!"));
+        assert!(SEARCH_REVIEWED.contains("reviews(author: $login, last: 1)"));
+        assert!(SEARCH_REVIEWED.contains("headRefOid"));
     }
 }

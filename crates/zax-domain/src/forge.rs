@@ -272,6 +272,71 @@ impl MyPullRequest {
     }
 }
 
+/// Why a pull request you already reviewed is still yours to look at.
+///
+/// No variant holds "no open threads and no push": that pull request is not a
+/// revisit, and `of` returns `None` for it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Revisit {
+    /// Your threads are open and nothing has been pushed since you looked.
+    OpenThreads(NonZeroU32),
+    /// The author pushed since your last review; none of your threads are open.
+    Updated,
+    /// Both.
+    UpdatedWithOpenThreads(NonZeroU32),
+}
+
+impl Revisit {
+    /// `None` is the pull request that has nothing left for you.
+    pub fn of(open_threads: u32, head_moved: bool) -> Option<Self> {
+        match (NonZeroU32::new(open_threads), head_moved) {
+            (None, false) => None,
+            (None, true) => Some(Self::Updated),
+            (Some(count), false) => Some(Self::OpenThreads(count)),
+            (Some(count), true) => Some(Self::UpdatedWithOpenThreads(count)),
+        }
+    }
+}
+
+/// Where a pull request in the review queue stands with you.
+///
+/// `rank` orders the `prs-for-review` pane; the thread count takes no part in
+/// it, as with `Attention`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReviewerState {
+    /// Your review is requested.
+    Requested,
+    Revisit(Revisit),
+}
+
+impl ReviewerState {
+    pub fn rank(self) -> u8 {
+        match self {
+            Self::Revisit(Revisit::Updated | Revisit::UpdatedWithOpenThreads(_)) => 0,
+            Self::Requested => 1,
+            Self::Revisit(Revisit::OpenThreads(_)) => 2,
+        }
+    }
+}
+
+/// A row of the `prs-for-review` pane.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReviewQueueItem {
+    pub pr: PullRequest,
+    pub state: ReviewerState,
+}
+
+/// What the forge reports for a pull request you reviewed; `Revisit::of`
+/// decides whether it is a row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReviewedPullRequest {
+    pub pr: PullRequest,
+    /// Unresolved threads whose first comment is yours.
+    pub my_open_threads: u32,
+    /// The head differs from the commit of your latest review, or that commit is gone.
+    pub head_moved: bool,
+}
+
 /// What the `branch-status` pane reports on: where HEAD is, and the pull
 /// request status if the branch has one.
 ///
@@ -776,5 +841,54 @@ mod tests {
         let mine = MyPullRequest::new(s.clone());
         assert_eq!(mine.attention, Attention::ReadyToMerge);
         assert_eq!(mine.status, s);
+    }
+
+    fn n(count: u32) -> NonZeroU32 {
+        NonZeroU32::new(count).unwrap()
+    }
+
+    #[test]
+    fn revisit_of_no_threads_and_no_push_is_none() {
+        assert_eq!(Revisit::of(0, false), None);
+    }
+
+    #[test]
+    fn revisit_of_a_push_and_no_threads_is_updated() {
+        assert_eq!(Revisit::of(0, true), Some(Revisit::Updated));
+    }
+
+    #[test]
+    fn revisit_of_threads_and_no_push_carries_the_count() {
+        assert_eq!(Revisit::of(3, false), Some(Revisit::OpenThreads(n(3))));
+    }
+
+    #[test]
+    fn revisit_of_threads_and_a_push_is_both() {
+        assert_eq!(
+            Revisit::of(2, true),
+            Some(Revisit::UpdatedWithOpenThreads(n(2)))
+        );
+    }
+
+    #[test]
+    fn the_review_queue_ranking_is_the_declared_one() {
+        let ranked = [
+            ReviewerState::Revisit(Revisit::Updated),
+            ReviewerState::Revisit(Revisit::UpdatedWithOpenThreads(n(1))),
+            ReviewerState::Requested,
+            ReviewerState::Revisit(Revisit::OpenThreads(n(1))),
+        ];
+        let ranks: Vec<u8> = ranked.iter().map(|s| s.rank()).collect();
+        assert_eq!(ranks, vec![0, 0, 1, 2]);
+    }
+
+    #[test]
+    fn open_thread_counts_do_not_change_the_rank() {
+        let one = ReviewerState::Revisit(Revisit::OpenThreads(n(1)));
+        let many = ReviewerState::Revisit(Revisit::OpenThreads(n(40)));
+        assert_eq!(one.rank(), many.rank());
+        let one = ReviewerState::Revisit(Revisit::UpdatedWithOpenThreads(n(1)));
+        let many = ReviewerState::Revisit(Revisit::UpdatedWithOpenThreads(n(40)));
+        assert_eq!(one.rank(), many.rank());
     }
 }

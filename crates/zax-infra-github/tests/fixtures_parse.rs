@@ -172,3 +172,57 @@ fn an_authored_pull_request_carries_its_head_branch() {
         Some("OMEGA-1963-stamp")
     );
 }
+
+#[test]
+fn reviewed_fixture_counts_only_open_threads_you_started() {
+    let json = include_str!("fixtures/reviewed_prs.json");
+    let reviewed = dto::parse_reviewed_search_response(json, "octocat").unwrap();
+
+    assert_eq!(
+        reviewed.len(),
+        4,
+        "the non-pull-request node must be skipped"
+    );
+    assert_eq!(reviewed[0].pr.number, 552);
+    assert_eq!(reviewed[0].my_open_threads, 1);
+    assert!(!reviewed[0].head_moved);
+}
+
+#[test]
+fn reviewed_fixture_marks_a_moved_head() {
+    let json = include_str!("fixtures/reviewed_prs.json");
+    let reviewed = dto::parse_reviewed_search_response(json, "octocat").unwrap();
+
+    assert_eq!(reviewed[1].my_open_threads, 0);
+    assert!(reviewed[1].head_moved);
+    assert_eq!(reviewed[1].pr.checks, CheckState::Pending);
+}
+
+#[test]
+fn a_review_with_no_commit_counts_as_moved() {
+    let json = include_str!("fixtures/reviewed_prs.json");
+    let reviewed = dto::parse_reviewed_search_response(json, "octocat").unwrap();
+
+    assert!(reviewed[2].head_moved);
+    assert_eq!(reviewed[2].my_open_threads, 0);
+    assert!(reviewed[2].pr.is_draft);
+    assert_eq!(
+        reviewed[2].pr.author, None,
+        "a deleted account has no author"
+    );
+}
+
+#[test]
+fn an_empty_review_list_counts_as_moved() {
+    let json = include_str!("fixtures/reviewed_prs.json");
+    let reviewed = dto::parse_reviewed_search_response(json, "octocat").unwrap();
+
+    assert!(reviewed[3].head_moved);
+}
+
+#[test]
+fn graphql_errors_on_the_reviewed_search_are_not_an_empty_queue() {
+    let json = r#"{"errors":[{"message":"rate limited"}]}"#;
+    let err = dto::parse_reviewed_search_response(json, "octocat").unwrap_err();
+    assert!(err.contains("rate limited"), "got: {err}");
+}

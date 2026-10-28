@@ -22,7 +22,8 @@ pub use branch::{BranchName, BranchNameError, BranchOrigin};
 pub use date::{Date, DateError, Weekday};
 pub use forge::{
     Attention, BranchView, CheckState, Mergeable, MyPullRequest, PrRef, PrRefError, PullRequest,
-    PullRequestStatus, RepoSlug, RepoSlugError, ReviewState,
+    PullRequestStatus, RepoSlug, RepoSlugError, ReviewQueueItem, ReviewState, ReviewedPullRequest,
+    ReviewerState, Revisit,
 };
 pub use layout::{
     format_duration, parse_duration, BuiltinPane, BuiltinPaneError, Command, CommandError,

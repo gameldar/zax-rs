@@ -8,7 +8,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use zax_domain::{
     BranchName, CheckoutProbe, Command, LiveSession, PaneSize, PrFilter, PrRef, PullRequest,
-    PullRequestStatus, RepoSlug, RootRepoName, SessionName, Worktree, WorktreeRoot,
+    PullRequestStatus, RepoSlug, ReviewedPullRequest, RootRepoName, SessionName, Worktree,
+    WorktreeRoot,
 };
 
 use crate::ports::{
@@ -447,6 +448,11 @@ pub struct FakeForge {
     /// Every filter `authored_pull_requests` was called with, for the same
     /// reason.
     pub asked_authored_with: RefCell<Vec<PrFilter>>,
+    pub reviewed: Vec<ReviewedPullRequest>,
+    /// Every filter `reviewed_pull_requests` was called with.
+    pub asked_reviewed_with: RefCell<Vec<PrFilter>>,
+    /// Fails `reviewed_pull_requests` alone; `fail_with` fails every call.
+    pub fail_reviewed_with: Option<PortError>,
 }
 
 impl Forge for FakeForge {
@@ -466,6 +472,17 @@ impl Forge for FakeForge {
         match &self.fail_with {
             Some(e) => Err(e.clone()),
             None => Ok(self.authored.clone()),
+        }
+    }
+
+    fn reviewed_pull_requests(
+        &self,
+        filter: &PrFilter,
+    ) -> Result<Vec<ReviewedPullRequest>, PortError> {
+        self.asked_reviewed_with.borrow_mut().push(filter.clone());
+        match self.fail_with.as_ref().or(self.fail_reviewed_with.as_ref()) {
+            Some(e) => Err(e.clone()),
+            None => Ok(self.reviewed.clone()),
         }
     }
 
@@ -526,6 +543,23 @@ impl FakeForge {
             authored: prs,
             ..Self::default()
         }
+    }
+
+    pub fn with_reviewed(prs: Vec<ReviewedPullRequest>) -> Self {
+        Self {
+            reviewed: prs,
+            ..Self::default()
+        }
+    }
+
+    pub fn and_reviewed(mut self, prs: Vec<ReviewedPullRequest>) -> Self {
+        self.reviewed = prs;
+        self
+    }
+
+    pub fn failing_reviewed(mut self, error: PortError) -> Self {
+        self.fail_reviewed_with = Some(error);
+        self
     }
 
     pub fn with_head(head: PullRequestHead) -> Self {

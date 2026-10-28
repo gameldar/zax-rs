@@ -585,8 +585,8 @@ mod tests {
 
     #[test]
     fn an_editor_probe_fails_when_the_editor_is_not_installed() {
-        // Otherwise doctor says ok and the first `o` opens a space whose shell
-        // cannot find the editor, which the next `o` would then focus.
+        // Otherwise doctor says ok and the first `SPC o f` opens a space whose shell
+        // cannot find the editor, which the next `SPC o f` would then focus.
         struct NoEditor;
         impl Exec for NoEditor {
             fn exec(

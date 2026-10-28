@@ -92,7 +92,7 @@ title is what drives Zed's in-progress indicator for a thread. tmux's own
 | `zax session list` | The zax sessions on the dedicated socket |
 | `zax session kill [name]` | Kill a session. Defaults to this worktree's own, when it has only one |
 | `zax worktree new <branch> [--from <base>] [--no-hooks] [--no-open] [--repo <target>]` | Branch plus worktree at the canonical path, then copy, hooks and the editor |
-| `zax worktree review <pr\|url> [--force] [--no-hooks] [--no-open] [--repo <target>]` | A pull request's head branch in a worktree, then copy, hooks and the editor |
+| `zax worktree review <pr\|url> [--force] [--no-hooks] [--no-open] [--no-review] [--repo <target>]` | A pull request's head branch in a worktree, then copy, hooks and the editor; `--no-review` opens it without starting a Claude review |
 | `zax worktree list` | The worktrees zax manages for this repository |
 | `zax worktree rm <branch> [--force]` | Remove one |
 | `zax pane prs-for-review \| branch-status \| my-prs \| tickets \| todo` | Built-in pane processes, normally launched by `session start` |
@@ -427,12 +427,18 @@ Inside a focused built-in pane:
 
 | Key | Action |
 | --- | --- |
-| `enter` | Open the pull request in a browser |
-| `y` | Copy its URL |
-| `r` | Refresh now |
-| `q` / `esc` | Close the pane |
+| `enter` / `SPC o b` | Open the pull request in a browser |
+| `SPC y` | Copy its URL |
+| `SPC r` | Refresh now |
+| `SPC q` | Close the pane |
 | `j` / `k`, arrows | Move the selection (`prs-for-review`, `my-prs`, `tickets`) |
-| `w` | `zax worktree review` for the selected row (`prs-for-review`, `my-prs`) |
+| `SPC w o` | Open the selected row's worktree in the editor, starting no review (`prs-for-review`, `my-prs`) |
+| `SPC w r` | `zax worktree review` for the selected row: open the worktree and start a Claude review (`prs-for-review`, `my-prs`) |
+
+`SPC` is the leader key. Pressing it, or any other prefix, opens a which-key
+popup over the pane listing what can follow; `esc` closes it. A sequence that
+goes nowhere shows `<keys> is not bound` in the bottom row, which otherwise
+lists the available keys. `q` and a bare `esc` no longer close the pane.
 
 In the `tickets` pane `enter` and `y` act on the ticket's URL, and the rest
 differ:
@@ -730,13 +736,13 @@ direnv.
 Last, the finished worktree is opened in `[open] command`, which defaults to
 `zed -e` and takes the worktree's path as its final argument. This happens
 after the copies and the hooks, so what opens is a worktree that is ready to
-work in rather than one that fills itself in while you look at it. `w` in the
-pull request panes goes through `zax worktree review`, so a review ends in an
-editor window on the branch.
+work in rather than one that fills itself in while you look at it. `SPC w o` and
+`SPC w r` in the pull request panes go through `zax worktree review`, so a
+review ends in an editor window on the branch.
 
 Pass `--no-open` to skip it for one command, or set `command = []` to never
 open anything. An editor that will not start is a warning and not a failed
-command: the worktree was made either way. A pane that pressed `w` shows that
+command: the worktree was made either way. A pane that ran the command shows that
 warning in its header, because from there a worktree with no editor window on
 it looks exactly like a keystroke that did nothing. The command is run with
 its output captured and is waited on, which suits an editor that hands the
@@ -815,10 +821,11 @@ command = ["nvim"]
 - With `[open] via = "herdr"`, a worktree is opened as a herdr space. zax asks
   `herdr worktree list` which space has the worktree open and focuses it, or
   runs `herdr worktree open`, which groups the new space under the
-  repository's own. A review worktree (`zax worktree review`, or `w` in the
-  pull request panes) also starts Claude in the new space with
-  `/pr-review <url>`, through `herdr agent start review-<number>`. A review
-  whose space was already open is only focused.
+  repository's own. A review worktree (`zax worktree review`, or `SPC w r` in
+  the pull request panes) also starts Claude in the new space with
+  `/pr-review <url>`, through `herdr agent start review-<number>`; `--no-review`
+  (`SPC w o`) only opens the space. A review whose space was already open is
+  only focused.
 - With `[editor] via = "herdr"`, a file is edited in a herdr space labelled
   with its name, in the file's directory. A space with that label already open
   is focused instead. The editor replaces the space's shell, so quitting it

@@ -187,8 +187,24 @@ impl KeyInput {
         Line::styled(items.join("  "), Style::default().fg(Color::DarkGray))
     }
 
+    /// Draw the footer row: the "not bound" notice if the last key broke a
+    /// sequence, otherwise the status bar. The notice wins because it answers
+    /// the key just pressed and the bar is there all the time.
+    pub fn render_footer(&self, frame: &mut Frame, row: Rect) {
+        match self.notice() {
+            Some(notice) => frame.render_widget(
+                Paragraph::new(Line::styled(
+                    truncate(notice, usize::from(row.width)),
+                    Style::default().fg(Color::Yellow),
+                )),
+                row,
+            ),
+            None => self.render_status(frame, row),
+        }
+    }
+
     /// Draw the status bar on `row`, truncated to its width.
-    pub fn render_status(&self, frame: &mut Frame, row: Rect) {
+    fn render_status(&self, frame: &mut Frame, row: Rect) {
         let text: String = self
             .status_line()
             .spans
@@ -201,6 +217,25 @@ impl KeyInput {
         );
         frame.render_widget(Paragraph::new(line), row);
     }
+}
+
+/// Split a pane's area into the body and the one-row footer under it. An
+/// area of a single row is all body: the header matters more than the bar.
+#[must_use]
+pub fn split_footer(area: Rect) -> (Rect, Rect) {
+    if area.height < 2 {
+        return (area, Rect { height: 0, ..area });
+    }
+    let body = Rect {
+        height: area.height - 1,
+        ..area
+    };
+    let footer = Rect {
+        y: area.y + body.height,
+        height: 1,
+        ..area
+    };
+    (body, footer)
 }
 
 fn status_item(prefix: Option<KeyChord>, candidate: &Candidate) -> Option<String> {
@@ -384,5 +419,72 @@ mod tests {
         assert!(shown.contains("o  open worktree"), "{shown}");
         press(&mut input, KeyCode::Esc);
         assert!(!screen(&input).contains("SPC"));
+    }
+}
+
+/// Key-typing helpers shared by the pane tests.
+#[cfg(test)]
+pub(crate) mod testing {
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    use crate::action::PaneAction;
+    use crate::branch_pane::BranchStatusPane;
+    use crate::exec_pane::ExecPane;
+    use crate::my_prs_pane::MyPrsPane;
+    use crate::prs_pane::PrsForReviewPane;
+    use crate::tickets_pane::TicketsPane;
+    use crate::todo_pane::TodoPane;
+
+    /// A pane that takes key events, so one `press` serves every pane test.
+    pub(crate) trait KeyPane {
+        fn on_key(&mut self, key: KeyEvent) -> PaneAction;
+    }
+
+    macro_rules! key_pane {
+        ($($pane:ty),*) => {$(
+            impl KeyPane for $pane {
+                fn on_key(&mut self, key: KeyEvent) -> PaneAction {
+                    <$pane>::on_key(self, key)
+                }
+            }
+        )*};
+    }
+    key_pane!(
+        BranchStatusPane,
+        ExecPane,
+        MyPrsPane,
+        PrsForReviewPane,
+        TicketsPane,
+        TodoPane
+    );
+
+    /// Type `"SPC w o"` into a pane and return what the last key did.
+    pub(crate) fn press(pane: &mut impl KeyPane, sequence: &str) -> PaneAction {
+        let mut action = PaneAction::None;
+        for event in events(sequence) {
+            action = pane.on_key(event);
+        }
+        action
+    }
+
+    /// `"SPC w o"` as the key events a user would type.
+    pub(crate) fn events(sequence: &str) -> Vec<KeyEvent> {
+        sequence
+            .split_whitespace()
+            .map(|token| {
+                let code = match token {
+                    "SPC" => KeyCode::Char(' '),
+                    "RET" => KeyCode::Enter,
+                    "<Esc>" => KeyCode::Esc,
+                    "<Up>" => KeyCode::Up,
+                    "<Down>" => KeyCode::Down,
+                    one if one.chars().count() == 1 => {
+                        KeyCode::Char(one.chars().next().unwrap_or(' '))
+                    }
+                    other => panic!("no such test key: {other}"),
+                };
+                KeyEvent::new(code, KeyModifiers::NONE)
+            })
+            .collect()
     }
 }

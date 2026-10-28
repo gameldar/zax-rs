@@ -3,15 +3,18 @@
 
 use std::time::{Duration, SystemTime};
 
-use ratatui::crossterm::event::{KeyCode, KeyEvent};
+use ratatui::crossterm::event::KeyEvent;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Text};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
+use zax_domain::keymap::Keymap;
+use zax_domain::KeyCommand;
 
 use crate::action::PaneAction;
 use crate::cache::Cached;
 use crate::chrome::{error_line, header_line};
+use crate::keys::{split_footer, KeyInput};
 
 pub struct ExecPane {
     title: String,
@@ -19,16 +22,18 @@ pub struct ExecPane {
     cache: Cached<Vec<String>>,
     scroll: usize,
     focused: bool,
+    keys: KeyInput,
 }
 
 impl ExecPane {
-    pub fn new(title: String, every: Duration) -> Self {
+    pub fn new(title: String, every: Duration, keymap: Keymap) -> Self {
         Self {
             title,
             every,
             cache: Cached::new(),
             scroll: 0,
             focused: false,
+            keys: KeyInput::new(keymap),
         }
     }
 
@@ -56,6 +61,7 @@ impl ExecPane {
         if area.height == 0 || area.width == 0 {
             return;
         }
+        let (area, footer) = split_footer(area);
 
         let mut lines: Vec<Line<'static>> = vec![header_line(
             &self.title,
@@ -81,21 +87,31 @@ impl ExecPane {
         }
 
         frame.render_widget(Paragraph::new(Text::from(lines)), area);
+        self.keys.render_which_key(frame, area);
+        self.keys.render_footer(frame, footer);
     }
 
     pub fn on_key(&mut self, key: KeyEvent) -> PaneAction {
+        match self.keys.press(key) {
+            Some(command) => self.run(command),
+            None => PaneAction::None,
+        }
+    }
+
+    fn run(&mut self, command: KeyCommand) -> PaneAction {
         let body_len = self.cache.value().map(Vec::len).unwrap_or(0);
-        match key.code {
-            KeyCode::Char('r') => PaneAction::Refresh,
-            KeyCode::Char('q') | KeyCode::Esc => PaneAction::Quit,
-            KeyCode::Char('j') | KeyCode::Down => {
+        match command {
+            KeyCommand::Refresh => PaneAction::Refresh,
+            KeyCommand::Quit => PaneAction::Quit,
+            KeyCommand::MoveDown => {
                 self.scroll = (self.scroll + 1).min(body_len.saturating_sub(1));
                 PaneAction::None
             }
-            KeyCode::Char('k') | KeyCode::Up => {
+            KeyCommand::MoveUp => {
                 self.scroll = self.scroll.saturating_sub(1);
                 PaneAction::None
             }
+            // Not in this pane's context; the keymap refuses to bind them.
             _ => PaneAction::None,
         }
     }
@@ -113,6 +129,8 @@ mod tests {
 
     use super::*;
     use crate::action::PaneAction;
+    use crate::keys::testing::press;
+    use zax_domain::keymap::{Keymaps, PaneContext};
 
     fn t(secs: u64) -> std::time::SystemTime {
         UNIX_EPOCH + Duration::from_secs(secs)
@@ -122,6 +140,11 @@ mod tests {
         KeyEvent::new(code, KeyModifiers::NONE)
     }
 
+    fn keymap() -> Keymap {
+        Keymaps::defaults().for_context(PaneContext::Exec).clone()
+    }
+
+    /// Type a key sequence such as `SPC w o`; the action of the last key.
     fn row(buffer: &Buffer, y: u16) -> String {
         (0..buffer.area.width)
             .map(|x| buffer[(x, y)].symbol())
@@ -139,7 +162,7 @@ mod tests {
     }
 
     fn pane() -> ExecPane {
-        ExecPane::new("Deploys".to_owned(), Duration::from_secs(60))
+        ExecPane::new("Deploys".to_owned(), Duration::from_secs(60), keymap())
     }
 
     #[test]
@@ -187,10 +210,17 @@ mod tests {
     }
 
     #[test]
-    fn r_asks_for_a_refresh_and_q_quits() {
+    fn spc_r_asks_for_a_refresh_and_spc_q_quits() {
         let mut pane = pane();
-        assert_eq!(pane.on_key(key(KeyCode::Char('r'))), PaneAction::Refresh);
-        assert_eq!(pane.on_key(key(KeyCode::Char('q'))), PaneAction::Quit);
+        assert_eq!(press(&mut pane, "SPC r"), PaneAction::Refresh);
+        assert_eq!(press(&mut pane, "SPC q"), PaneAction::Quit);
+    }
+
+    #[test]
+    fn bare_q_and_esc_no_longer_quit() {
+        let mut pane = pane();
+        assert_eq!(press(&mut pane, "q"), PaneAction::None);
+        assert_eq!(press(&mut pane, "<Esc>"), PaneAction::None);
     }
 
     #[test]
@@ -204,14 +234,14 @@ mod tests {
             t(100),
         );
 
-        assert_eq!(pane.on_key(key(KeyCode::Char('k'))), PaneAction::None);
+        assert_eq!(press(&mut pane, "k"), PaneAction::None);
         assert_eq!(row(&draw(&pane, t(100)), 1), "line 1", "already at the top");
 
-        pane.on_key(key(KeyCode::Char('j')));
-        pane.on_key(key(KeyCode::Char('j')));
+        press(&mut pane, "j");
+        press(&mut pane, "j");
         assert_eq!(row(&draw(&pane, t(100)), 1), "line 3");
 
-        pane.on_key(key(KeyCode::Char('k')));
+        press(&mut pane, "k");
         assert_eq!(row(&draw(&pane, t(100)), 1), "line 2");
     }
 

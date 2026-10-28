@@ -17,7 +17,7 @@ pub mod tickets_pane;
 pub mod todo_pane;
 pub mod worktrees_modal;
 
-pub use action::PaneAction;
+pub use action::{PaneAction, ReviewMode};
 pub use branch_pane::BranchStatusPane;
 pub use cache::Cached;
 pub use config_modal::{ConfigAction, ConfigModal};

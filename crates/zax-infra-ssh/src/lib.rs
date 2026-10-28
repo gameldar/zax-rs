@@ -52,7 +52,7 @@ impl<E: Exec> SshAgent for SshAddCli<E> {
                 // The case that looks like a working setup until a fetch needs
                 // the key: the agent is there, it is just empty.
                 "the agent is running but holds no keys\n\
-                 run `ssh-add` before using `w`: once a pane has started a \
+                 run `ssh-add` before using `SPC w o` or `SPC w r`: once a pane has started a \
                  fetch, a locked key can only be unlocked by a dialog"
                     .to_owned()
             } else {

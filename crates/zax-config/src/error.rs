@@ -16,6 +16,14 @@ pub enum ConfigError {
         field: &'static str,
         detail: String,
     },
+    #[error("invalid `keymap.{table}.\"{sequence}\"`: {detail}")]
+    Keymap {
+        table: String,
+        sequence: String,
+        detail: String,
+    },
+    #[error("`keymap.{0}` is not a keymap table; write all, {tables}", tables = zax_domain::PaneContext::ALL.map(|c| c.as_str()).join(", "))]
+    UnknownKeymapTable(String),
     #[error("`{0}` is not a pane kind; write builtin, exec or raw")]
     UnknownPaneKind(String),
     #[error("a `{kind}` pane needs a `{field}`")]

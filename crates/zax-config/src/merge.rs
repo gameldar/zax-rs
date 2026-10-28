@@ -1,8 +1,8 @@
 //! Layer merging. Your layer wins; arrays replace.
 
 use crate::raw::{
-    RawAgent, RawConfig, RawEditor, RawLayout, RawOpen, RawProjects, RawPrs, RawTickets, RawTmux,
-    RawTodo, RawWorktree,
+    RawAgent, RawConfig, RawEditor, RawKeymap, RawLayout, RawOpen, RawProjects, RawPrs, RawTickets,
+    RawTmux, RawTodo, RawWorktree,
 };
 
 /// Fold the layers in order, lowest precedence first.
@@ -22,7 +22,41 @@ fn fold_one(mut base: RawConfig, over: RawConfig) -> RawConfig {
     base.tickets = merge_tickets(base.tickets, over.tickets);
     base.todo = merge_todo(base.todo, over.todo);
     base.projects = merge_projects(base.projects, over.projects);
+    base.keymap = merge_keymap(base.keymap, over.keymap);
     base
+}
+
+/// Per table and per sequence the later layer wins. Sequences are compared
+/// with their whitespace collapsed, so `"SPC  w o"` in one layer overrides
+/// `"SPC w o"` in another.
+fn merge_keymap(base: Option<RawKeymap>, over: Option<RawKeymap>) -> Option<RawKeymap> {
+    match (base, over) {
+        (b, None) => b,
+        (None, o) => o.map(normalised),
+        (Some(b), Some(o)) => {
+            let mut b = normalised(b);
+            b.defaults = o.defaults.or(b.defaults);
+            for (table, entries) in normalised(o).tables {
+                b.tables.entry(table).or_default().extend(entries);
+            }
+            Some(b)
+        }
+    }
+}
+
+fn normalised(mut keymap: RawKeymap) -> RawKeymap {
+    for entries in keymap.tables.values_mut() {
+        *entries = std::mem::take(entries)
+            .into_iter()
+            .map(|(seq, command)| {
+                (
+                    seq.split_whitespace().collect::<Vec<_>>().join(" "),
+                    command,
+                )
+            })
+            .collect();
+    }
+    keymap
 }
 
 fn merge_editor(base: Option<RawEditor>, over: Option<RawEditor>) -> Option<RawEditor> {

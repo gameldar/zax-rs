@@ -4,13 +4,14 @@
 use std::path::PathBuf;
 
 use zax_domain::{
-    parse_duration, BuiltinPane, Command, LayoutSpec, PaneKind, PaneSize, PaneSpec, PrFilter,
-    ProjectPaths, Projects, ProjectsRoot, RepoPattern, RepoSlug, TodoFile, WorktreeRoot,
+    parse_duration, BuiltinPane, Command, KeyCommand, KeySequence, Keymaps, LayoutSpec,
+    PaneContext, PaneKind, PaneSize, PaneSpec, PrFilter, ProjectPaths, Projects, ProjectsRoot,
+    RepoPattern, RepoSlug, TodoFile, WorktreeRoot,
 };
 
 use crate::error::ConfigError;
 use crate::raw::{
-    RawConfig, RawEditor, RawOpen, RawPane, RawProjects, RawPrs, RawTickets, RawTodo,
+    RawConfig, RawEditor, RawKeymap, RawOpen, RawPane, RawProjects, RawPrs, RawTickets, RawTodo,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -27,6 +28,8 @@ pub struct Config {
     /// session started in. `None` means the feature is off - no `projects.root`
     /// was set, in the global layer that alone may set it.
     pub projects: Option<Projects>,
+    /// Every pane's key bindings: the defaults, then the `[keymap]` overrides.
+    pub keymaps: Keymaps,
     /// Things worth saying about the config that are not errors, such as a
     /// key whose meaning has changed. `zax doctor` prints them.
     pub notices: Vec<String>,
@@ -53,7 +56,7 @@ pub enum OpenConfig {
     Herdr,
 }
 
-/// What a single file is edited in: the todo pane's `o`.
+/// What a single file is edited in: the todo pane's `SPC o f`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EditorConfig {
     /// Run the command with the file's path appended; `None` edits nothing.
@@ -187,6 +190,7 @@ pub fn from_raw(raw: RawConfig, home: &str) -> Result<Config, ConfigError> {
     let tickets = tickets_from_raw(raw.tickets.unwrap_or_default())?;
     let todo = todo_from_raw(raw.todo.unwrap_or_default(), home)?;
     let projects = projects_from_raw(raw.projects, home)?;
+    let keymaps = keymaps_from_raw(raw.keymap.unwrap_or_default())?;
 
     Ok(Config {
         layout,
@@ -198,8 +202,116 @@ pub fn from_raw(raw: RawConfig, home: &str) -> Result<Config, ConfigError> {
         tickets,
         todo,
         projects,
+        keymaps,
         notices,
     })
+}
+
+/// Defaults (unless switched off), then `all`, then each context's table. Every
+/// entry unbinds its sequence before binding, so an override replaces rather
+/// than conflicts. `all` quietly skips panes that lack the command, leaving
+/// whatever they had bound; a context table naming one is an error.
+fn keymaps_from_raw(raw: RawKeymap) -> Result<Keymaps, ConfigError> {
+    let mut contexts = Vec::new();
+    let mut all = None;
+    for (name, entries) in &raw.tables {
+        if name == "all" {
+            all = Some(entries);
+        } else {
+            let context = name
+                .parse::<PaneContext>()
+                .map_err(|_| ConfigError::UnknownKeymapTable(name.clone()))?;
+            contexts.push((name.as_str(), context, entries));
+        }
+    }
+
+    let mut keymaps = if raw.defaults.unwrap_or(true) {
+        Keymaps::defaults()
+    } else {
+        Keymaps::empty()
+    };
+
+    // Within each phase the `"none"` entries run first. Entries are visited in
+    // key order, so `"SPC d"` would otherwise always be bound before the
+    // `"SPC d d" = "none"` that clears the way for it.
+    let all_entries = keymap_entries("all", all.into_iter().flatten())?;
+    for (sequence, seq, command) in phase_order(&all_entries) {
+        for context in PaneContext::ALL {
+            match command {
+                None => {
+                    keymaps.unbind(context, seq);
+                }
+                Some(command) if context.supports(command) => {
+                    keymaps.unbind(context, seq);
+                    keymaps
+                        .bind(context, seq, command)
+                        .map_err(|e| keymap_error("all", sequence, e))?;
+                }
+                Some(_) => {}
+            }
+        }
+    }
+
+    for (table, context, entries) in contexts {
+        let entries = keymap_entries(table, entries)?;
+        for (sequence, seq, command) in phase_order(&entries) {
+            keymaps.unbind(context, seq);
+            if let Some(command) = command {
+                keymaps
+                    .bind(context, seq, command)
+                    .map_err(|e| keymap_error(table, sequence, e))?;
+            }
+        }
+    }
+    Ok(keymaps)
+}
+
+type KeymapEntry<'a> = (&'a str, KeySequence, Option<KeyCommand>);
+
+fn keymap_entries<'a>(
+    table: &str,
+    entries: impl IntoIterator<Item = (&'a String, &'a String)>,
+) -> Result<Vec<KeymapEntry<'a>>, ConfigError> {
+    entries
+        .into_iter()
+        .map(|(sequence, command)| {
+            let (seq, command) = keymap_entry(table, sequence, command)?;
+            Ok((sequence.as_str(), seq, command))
+        })
+        .collect()
+}
+
+/// The entries with every unbind ahead of every bind.
+fn phase_order<'a>(
+    entries: &'a [KeymapEntry<'a>],
+) -> impl Iterator<Item = (&'a str, &'a KeySequence, Option<KeyCommand>)> {
+    let none = entries.iter().filter(|(_, _, c)| c.is_none());
+    let binds = entries.iter().filter(|(_, _, c)| c.is_some());
+    none.chain(binds).map(|(s, seq, c)| (*s, seq, *c))
+}
+
+/// `None` is the `"none"` command: unbind the sequence.
+fn keymap_entry(
+    table: &str,
+    sequence: &str,
+    command: &str,
+) -> Result<(KeySequence, Option<KeyCommand>), ConfigError> {
+    let seq = KeySequence::parse(sequence).map_err(|e| keymap_error(table, sequence, e))?;
+    if command == "none" {
+        return Ok((seq, None));
+    }
+    let command = command
+        .parse::<KeyCommand>()
+        .map_err(|e| keymap_error(table, sequence, e))?;
+    Ok((seq, Some(command)))
+}
+
+fn keymap_error(table: &str, sequence: &str, detail: impl std::fmt::Display) -> ConfigError {
+    ConfigError::Keymap {
+        table: table.to_owned(),
+        sequence: sequence.to_owned(),
+        detail: detail.to_string(),
+    }
 }
 
 /// An absent `root` is the feature off - and `paths` has nothing to override
@@ -349,7 +461,7 @@ fn migration_notices(open: Option<&RawOpen>, editor: Option<&RawEditor>) -> Vec<
         .is_some_and(|argv| *argv != default_argv(&DEFAULT_EDITOR));
     if open.is_none() && custom_editor {
         return vec![
-            "`[editor] command` now only edits files, such as the todo pane's `o`; \
+            "`[editor] command` now only edits files, such as the todo pane's `SPC o f`; \
              worktrees open in `[open] command`, which defaults to `zed -e`"
                 .to_owned(),
         ];
@@ -577,6 +689,176 @@ mod tests {
     fn config_from(text: &str) -> Config {
         let raw: RawConfig = toml::from_str(text).unwrap();
         from_raw(raw, "/home/me").unwrap()
+    }
+
+    fn keymap_err(text: &str) -> String {
+        let raw: RawConfig = toml::from_str(text).unwrap();
+        from_raw(raw, "/home/me").unwrap_err().to_string()
+    }
+
+    fn seq(text: &str) -> KeySequence {
+        KeySequence::parse(text).unwrap()
+    }
+
+    #[test]
+    fn no_keymap_table_gives_the_default_keymaps() {
+        assert_eq!(config_from("").keymaps, Keymaps::defaults());
+    }
+
+    #[test]
+    fn defaults_false_starts_from_no_bindings() {
+        let config = config_from("[keymap]\ndefaults = false\n");
+        assert_eq!(config.keymaps, Keymaps::empty());
+    }
+
+    #[test]
+    fn a_context_binding_replaces_the_default_on_that_sequence() {
+        let config = config_from("[keymap.tickets]\n\"SPC r\" = \"copy-url\"\n");
+        let tickets = config.keymaps.for_context(PaneContext::Tickets);
+        assert_eq!(
+            tickets.lookup(seq("SPC r").chords()),
+            zax_domain::Lookup::Command(KeyCommand::CopyUrl)
+        );
+        let mine = config.keymaps.for_context(PaneContext::MyPrs);
+        assert_eq!(
+            mine.lookup(seq("SPC r").chords()),
+            zax_domain::Lookup::Command(KeyCommand::Refresh)
+        );
+    }
+
+    #[test]
+    fn none_unbinds_a_default_sequence() {
+        let config = config_from("[keymap.tickets]\n\"SPC s\" = \"none\"\n");
+        let tickets = config.keymaps.for_context(PaneContext::Tickets);
+        assert_eq!(
+            tickets.lookup(seq("SPC s").chords()),
+            zax_domain::Lookup::Unbound
+        );
+    }
+
+    #[test]
+    fn all_binds_in_every_pane_that_supports_the_command() {
+        let config = config_from("[keymap.all]\n\"SPC g\" = \"copy-url\"\n");
+        for context in PaneContext::ALL {
+            let found = config
+                .keymaps
+                .for_context(context)
+                .lookup(seq("SPC g").chords());
+            if context.supports(KeyCommand::CopyUrl) {
+                assert_eq!(found, zax_domain::Lookup::Command(KeyCommand::CopyUrl));
+            } else {
+                assert_eq!(found, zax_domain::Lookup::Unbound, "{context}");
+            }
+        }
+    }
+
+    #[test]
+    fn all_leaves_panes_that_lack_the_command_untouched() {
+        let config = config_from("[keymap.all]\n\"x\" = \"copy-url\"\n");
+        let todo = config.keymaps.for_context(PaneContext::Todo);
+        assert_eq!(
+            todo.lookup(seq("x").chords()),
+            zax_domain::Lookup::Command(KeyCommand::TodoToggle)
+        );
+        let prs = config.keymaps.for_context(PaneContext::PrsForReview);
+        assert_eq!(
+            prs.lookup(seq("x").chords()),
+            zax_domain::Lookup::Command(KeyCommand::CopyUrl)
+        );
+    }
+
+    #[test]
+    fn a_single_key_can_replace_a_group_in_a_context_table() {
+        let config =
+            config_from("[keymap.todo]\n\"SPC d\" = \"todo-delete\"\n\"SPC d d\" = \"none\"\n");
+        let todo = config.keymaps.for_context(PaneContext::Todo);
+        assert_eq!(
+            todo.lookup(seq("SPC d").chords()),
+            zax_domain::Lookup::Command(KeyCommand::TodoDelete)
+        );
+    }
+
+    #[test]
+    fn a_single_key_can_replace_a_group_in_tickets() {
+        let config = config_from(
+            "[keymap.tickets]\n\"SPC w\" = \"worktree-open\"\n\"SPC w o\" = \"none\"\n\"SPC w l\" = \"none\"\n",
+        );
+        let tickets = config.keymaps.for_context(PaneContext::Tickets);
+        assert_eq!(
+            tickets.lookup(seq("SPC w").chords()),
+            zax_domain::Lookup::Command(KeyCommand::WorktreeOpen)
+        );
+    }
+
+    #[test]
+    fn an_esc_after_a_prefix_is_a_config_error_naming_the_key() {
+        let err = keymap_err("[keymap.todo]\n\"SPC <Esc>\" = \"refresh\"\n");
+        assert!(err.contains("keymap.todo.\"SPC <Esc>\""), "{err}");
+    }
+
+    #[test]
+    fn a_context_table_overrides_all() {
+        let config = config_from(
+            "[keymap.all]\n\"SPC g\" = \"refresh\"\n[keymap.todo]\n\"SPC g\" = \"todo-add\"\n",
+        );
+        let todo = config.keymaps.for_context(PaneContext::Todo);
+        assert_eq!(
+            todo.lookup(seq("SPC g").chords()),
+            zax_domain::Lookup::Command(KeyCommand::TodoAdd)
+        );
+    }
+
+    #[test]
+    fn a_keymap_error_names_the_table_and_the_sequence() {
+        let unknown_command = keymap_err("[keymap.tickets]\n\"SPC g\" = \"explode\"\n");
+        assert!(
+            unknown_command.contains("keymap.tickets.\"SPC g\""),
+            "{unknown_command}"
+        );
+
+        let unknown_table = keymap_err("[keymap.nowhere]\n\"SPC g\" = \"refresh\"\n");
+        assert!(unknown_table.contains("keymap.nowhere"), "{unknown_table}");
+
+        let unsupported = keymap_err("[keymap.exec]\n\"SPC g\" = \"copy-url\"\n");
+        assert!(
+            unsupported.contains("keymap.exec.\"SPC g\""),
+            "{unsupported}"
+        );
+
+        let bad_sequence = keymap_err("[keymap.todo]\n\"SPC <wat>\" = \"refresh\"\n");
+        assert!(
+            bad_sequence.contains("keymap.todo.\"SPC <wat>\""),
+            "{bad_sequence}"
+        );
+
+        let conflict = keymap_err("[keymap.todo]\n\"SPC d\" = \"refresh\"\n");
+        assert!(conflict.contains("keymap.todo.\"SPC d\""), "{conflict}");
+
+        let in_all = keymap_err("[keymap.all]\n\"SPC q x\" = \"refresh\"\n");
+        assert!(in_all.contains("keymap.all.\"SPC q x\""), "{in_all}");
+    }
+
+    #[test]
+    fn a_later_layer_wins_per_sequence() {
+        let layer = |text: &str| toml::from_str::<RawConfig>(text).unwrap();
+        let merged = crate::merge::merge(vec![
+            layer("[keymap.tickets]\n\"SPC g\" = \"refresh\"\n\"SPC h\" = \"copy-url\"\n"),
+            layer("[keymap]\ndefaults = false\n[keymap.tickets]\n\"SPC  g\" = \"open\"\n"),
+        ]);
+        let config = from_raw(merged, "/h").unwrap();
+        let tickets = config.keymaps.for_context(PaneContext::Tickets);
+        assert_eq!(
+            tickets.lookup(seq("SPC g").chords()),
+            zax_domain::Lookup::Command(KeyCommand::Open)
+        );
+        assert_eq!(
+            tickets.lookup(seq("SPC h").chords()),
+            zax_domain::Lookup::Command(KeyCommand::CopyUrl)
+        );
+        assert_eq!(
+            tickets.lookup(seq("SPC q").chords()),
+            zax_domain::Lookup::Unbound
+        );
     }
 
     #[test]

@@ -783,6 +783,21 @@ prefix = \"C-a\"
     }
 
     #[test]
+    fn a_keymap_table_survives_a_save_of_another_key_untouched() {
+        let keymap = "# my keys\n[keymap.tickets]\n\"SPC w s\" = \"worktree-open\"\n";
+        let global = format!("[tmux]\nprefix = \"C-a\"\n\n{keymap}");
+        let fixture = Fixture::new(Some(&global), None, None);
+        let mut draft = fixture.draft();
+
+        draft.set(LayerSlot::Global, SettingKey::TmuxPrefix, scalar("C-q"));
+        draft.save().unwrap();
+
+        let saved = fixture.text(LayerSlot::Global);
+        assert!(saved.contains(keymap), "got:\n{saved}");
+        assert!(draft.validate().is_ok());
+    }
+
+    #[test]
     fn a_save_does_not_create_a_file_for_a_layer_that_was_not_edited() {
         let fixture = Fixture::new(None, None, None);
         let mut draft = fixture.draft();

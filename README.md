@@ -249,6 +249,39 @@ to 100: a column of three even rows is written `67%` then `50%`, not `33%`
 apiece. The defaults above give 45% / 20% / 35% of a column that is 30% of the
 window wide.
 
+### Keymap
+
+Pane keys are leader sequences: `j`/`k`, `RET` and `x` act directly, and
+everything else sits under `SPC`. `[keymap]` rebinds them.
+
+```toml
+[keymap]
+defaults = true             # false: start from no bindings at all
+
+[keymap.all]                # every pane that supports the command
+"SPC g" = "refresh"
+
+[keymap.tickets]            # one table per pane: prs-for-review, my-prs,
+"SPC w s" = "worktree-open" # branch-status, tickets, todo, exec
+"SPC s" = "none"            # "none" unbinds the sequence
+```
+
+Sequences are space-separated keys: `SPC`, `RET`, `TAB`, `DEL`, `<Esc>`,
+`<Up>`, `<Down>`, `<Left>`, `<Right>`, `C-x`, `M-x`, or a plain character
+(`W` for shift-w). Commands are `move-down`, `move-up`, `open`, `copy-url`,
+`refresh`, `quit`, `worktree-open`, `worktree-review`, `worktree-list`,
+`open-pr`, `transition`, `todo-add`, `todo-edit`, `todo-toggle`,
+`todo-snooze`, `todo-delete`, `todo-open-file` and `todo-show-done`; each pane
+accepts only the ones it can run.
+
+Bindings resolve in order: the defaults (unless `defaults = false`), then
+`all`, then the pane's own table. An entry replaces whatever was on that
+sequence. `all` skips panes that lack the command. An unknown command, table
+or pane mismatch, a bad sequence, or a sequence that is a prefix of (or
+shadowed by) another is an error naming `keymap.<table>."<sequence>"`. Across
+the three config layers the later layer wins per sequence; the repo's
+`.zax.toml` may set `[keymap]`, and it runs nothing.
+
 ### Panes
 
 Three kinds, and the built-ins are privileged instances of the same

@@ -6,6 +6,7 @@
 pub mod branch;
 pub mod date;
 pub mod forge;
+pub mod keymap;
 pub mod layout;
 pub mod projects;
 pub mod prs_filter;
@@ -24,6 +25,9 @@ pub use forge::{
     Attention, BranchView, CheckState, Mergeable, MyPullRequest, PrRef, PrRefError, PullRequest,
     PullRequestStatus, RepoSlug, RepoSlugError, ReviewQueueItem, ReviewState, ReviewedPullRequest,
     ReviewerState, Revisit,
+};
+pub use keymap::{
+    Command as KeyCommand, KeyChord, KeySequence, Keymap, Keymaps, Lookup, PaneContext,
 };
 pub use layout::{
     format_duration, parse_duration, BuiltinPane, BuiltinPaneError, Command, CommandError,

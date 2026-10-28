@@ -6,7 +6,8 @@ use std::time::SystemTime;
 use thiserror::Error;
 use zax_domain::{
     BranchName, CheckoutProbe, Command, LiveSession, PaneSize, PrFilter, PrRef, PullRequest,
-    PullRequestStatus, RepoSlug, RootRepoName, SessionName, Worktree, WorktreeRoot,
+    PullRequestStatus, RepoSlug, ReviewedPullRequest, RootRepoName, SessionName, Worktree,
+    WorktreeRoot,
 };
 
 /// Every way the outside world can fail, in terms a pane can render.
@@ -159,6 +160,11 @@ pub trait Forge {
         &self,
         filter: &PrFilter,
     ) -> Result<Vec<PullRequestStatus>, PortError>;
+    /// Open pull requests the user reviewed and did not author; the filter is a hint.
+    fn reviewed_pull_requests(
+        &self,
+        filter: &PrFilter,
+    ) -> Result<Vec<ReviewedPullRequest>, PortError>;
     /// The repository the current directory belongs to, as the forge resolves
     /// it. This is the repository a bare pull request number is read against
     /// and the one `origin` points at, so it is what a pull request from

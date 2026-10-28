@@ -229,7 +229,7 @@ max_age = "14d"
 | `projects.paths` | none | `owner/name = path` overrides for a checkout not at `<root>/<name>`. Global layer only; edited by hand, not the config editor |
 | `tmux.prefix` | `C-Space` | Prefix key for zax's tmux server |
 | `prs.include` / `prs.exclude` | none | Which repositories `prs-for-review` and `my-prs` show |
-| `prs.max_age` | none | Hide pull requests older than this, in `prs-for-review` only |
+| `prs.max_age` | none | Hide review requests older than this, in `prs-for-review` only (revisits never age out) |
 | `open.via` | `"command"` | How a worktree is opened: `"command"` runs `open.command`, `"herdr"` opens it as a herdr space |
 | `open.command` | `["zed", "-e"]` | What opens a worktree, with the path as its last argument. `[]` opens nothing. Unused with `via = "herdr"` |
 | `editor.via` | `"command"` | How a file is edited: `"command"` runs `editor.command`, `"herdr"` runs it in a herdr space of its own |
@@ -271,6 +271,39 @@ focus. It keeps the last good result and marks itself stale on failure rather
 than blanking, because a `gh` hiccup must never look like an empty review
 queue.
 
+### The review queue
+
+`prs-for-review` holds two kinds of pull request, both open and neither
+written by you:
+
+- **Requests** - your review is requested.
+- **Revisits** - you already reviewed it and something of yours is still on
+  it. A revisit stays while a review thread you started is unresolved, or
+  while its head has moved since your latest review. A review whose commit
+  has since been force-pushed away counts as moved. Threads you only replied
+  to do not count.
+
+A pull request that is both is one row, a request. Once a reviewed pull
+request has no open thread of yours and no push since your review, it leaves
+the queue.
+
+After the check glyph, each row carries a two-column state field:
+
+| Field | Means |
+| --- | --- |
+| blank | Requested |
+| ` 1`-` 9`, ` +` | A revisit with that many of your threads open (dim) |
+| `↻` | A revisit: the author pushed since your review |
+| `↻1`-`↻9`, `↻+` | Both |
+
+Rows are ranked, and ties go to the older pull request:
+
+| Rank | Means |
+| --- | --- |
+| updated | The author pushed since your review; you are holding it up |
+| requested | Nobody has looked yet |
+| open threads | Waiting on the author |
+
 ### Filtering the review queue
 
 `prs-for-review` shows every pull request that asks for your review, which on
@@ -290,7 +323,9 @@ max_age = "14d"
 - An absent or empty `include` means every repository.
 - An exclusion beats an inclusion, so the example above reads the way it
   looks: everything of `acme`, except `legacy-api`.
-- `max_age` hides anything opened longer ago than it.
+- `max_age` hides a review request opened longer ago than it. It never hides
+  a revisit: that is a review you already started, and your open threads stay
+  open whatever the pull request's age.
 
 zax also folds what it can into the GitHub search itself, so the search's
 50-result cap applies to an already narrowed queue rather than to everything.
@@ -340,10 +375,10 @@ Under the rows, one line spells out all four signals for the selected row -
 checks, review decision, threads and mergeability - in words.
 
 `[prs] include` and `exclude` narrow both pull request panes. **`max_age`
-applies to `prs-for-review` only.** It exists to hide a review request that
-has gone stale; your own three-week-old pull request is not stale, it is the
-one that is rotting, and ageing it out of this pane would hide exactly what
-the pane is for.
+applies to `prs-for-review`'s requests only.** It exists to hide a review
+request that has gone stale; your own three-week-old pull request is not
+stale, it is the one that is rotting, and ageing it out of this pane would
+hide exactly what the pane is for.
 
 ## Keys in a session
 

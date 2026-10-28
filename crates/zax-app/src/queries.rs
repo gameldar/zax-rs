@@ -1,12 +1,13 @@
 //! The read-only use cases, plus worktree removal and `zax doctor`.
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::time::SystemTime;
 
 use thiserror::Error;
 use zax_domain::{
-    BranchName, BranchView, MyPullRequest, PrFilter, PullRequest, RootRepoName, Transport,
-    WorkIndex, WorktreePath, WorktreePathError, WorktreeRoot,
+    BranchName, BranchView, MyPullRequest, PrFilter, RepoSlug, ReviewQueueItem, ReviewerState,
+    Revisit, RootRepoName, Transport, WorkIndex, WorktreePath, WorktreePathError, WorktreeRoot,
 };
 
 use crate::ports::{
@@ -14,18 +15,50 @@ use crate::ports::{
     WorktreeOpener, WorktreeScanner,
 };
 
-/// The `prs-for-review` pane's data source.
+/// The `prs-for-review` pane's data source: pending requests plus revisits.
 ///
 /// The filter is applied here even though the forge was given it too. A forge
 /// can only narrow what it is able to express, and its search is capped, so
 /// asking it to narrow is worth doing - but this is the only place that decides
-/// what the pane shows.
-pub fn list_review_requests<Fg: Forge>(
+/// what the pane shows. `max_age` applies to requests only.
+pub fn list_review_queue<Fg: Forge>(
     forge: &Fg,
     filter: &PrFilter,
     now: SystemTime,
-) -> Result<Vec<PullRequest>, PortError> {
-    Ok(filter.apply(forge.review_requests(filter)?, now))
+) -> Result<Vec<ReviewQueueItem>, PortError> {
+    let requests = filter.apply(forge.review_requests(filter)?, now);
+    let reviewed = forge.reviewed_pull_requests(filter)?;
+
+    let mut queue: Vec<ReviewQueueItem> = requests
+        .into_iter()
+        .map(|pr| ReviewQueueItem {
+            pr,
+            state: ReviewerState::Requested,
+        })
+        .collect();
+    let requested: HashSet<(RepoSlug, u32)> = queue
+        .iter()
+        .map(|item| (item.pr.repo.clone(), item.pr.number))
+        .collect();
+    queue.extend(
+        reviewed
+            .into_iter()
+            .filter(|r| filter.admits_repo(&r.pr.repo))
+            .filter(|r| !requested.contains(&(r.pr.repo.clone(), r.pr.number)))
+            .filter_map(|r| {
+                Revisit::of(r.my_open_threads, r.head_moved).map(|revisit| ReviewQueueItem {
+                    pr: r.pr,
+                    state: ReviewerState::Revisit(revisit),
+                })
+            }),
+    );
+    queue.sort_by(|a, b| {
+        a.state
+            .rank()
+            .cmp(&b.state.rank())
+            .then_with(|| a.pr.created_at.cmp(&b.pr.created_at))
+    });
+    Ok(queue)
 }
 
 /// The `my-prs` pane's data source.
@@ -206,12 +239,14 @@ pub fn list_work<S: WorktreeScanner, M: Multiplexer, Fg: Forge>(
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)]
+    use std::num::NonZeroU32;
     use std::path::{Path, PathBuf};
     use std::time::{Duration, UNIX_EPOCH};
 
     use zax_domain::{
         Attention, BranchName, BranchView, CheckState, Mergeable, PrFilter, PullRequest,
-        PullRequestStatus, RepoPattern, RepoSlug, ReviewState, RootRepoName, WorktreeRoot,
+        PullRequestStatus, RepoPattern, RepoSlug, ReviewState, ReviewedPullRequest, ReviewerState,
+        Revisit, RootRepoName, WorktreeRoot,
     };
 
     use super::*;
@@ -233,32 +268,53 @@ mod tests {
         }
     }
 
+    fn reviewed(number: u32, threads: u32, moved: bool) -> ReviewedPullRequest {
+        ReviewedPullRequest {
+            pr: pr(number),
+            my_open_threads: threads,
+            head_moved: moved,
+        }
+    }
+
+    fn aged(mut pr: PullRequest, secs: u64) -> PullRequest {
+        pr.created_at = UNIX_EPOCH + Duration::from_secs(secs);
+        pr
+    }
+
+    fn numbers(items: &[ReviewQueueItem]) -> Vec<u32> {
+        items.iter().map(|i| i.pr.number).collect()
+    }
+
+    fn threads(count: u32) -> NonZeroU32 {
+        NonZeroU32::new(count).unwrap()
+    }
+
+    const NOW: u64 = 1_700_000_100;
+
+    fn now() -> SystemTime {
+        UNIX_EPOCH + Duration::from_secs(NOW)
+    }
+
     #[test]
-    fn review_requests_pass_through_from_the_forge() {
+    fn review_requests_pass_through_from_the_forge_as_requested() {
         let forge = FakeForge::with_review_requests(vec![pr(1), pr(2)]);
-        let now = UNIX_EPOCH + Duration::from_secs(1_700_000_100);
-        assert_eq!(
-            list_review_requests(&forge, &PrFilter::default(), now)
-                .unwrap()
-                .len(),
-            2
-        );
+        let listed = list_review_queue(&forge, &PrFilter::default(), now()).unwrap();
+        assert_eq!(numbers(&listed), vec![1, 2]);
+        assert!(listed.iter().all(|i| i.state == ReviewerState::Requested));
     }
 
     #[test]
     fn review_requests_drop_the_rows_the_filter_refuses() {
-        let mut stale = pr(3);
-        stale.created_at = UNIX_EPOCH + Duration::from_secs(1_600_000_000);
+        let stale = aged(pr(3), 1_600_000_000);
         let forge = FakeForge::with_review_requests(vec![pr(1), stale]);
         let filter = PrFilter {
             max_age: Some(Duration::from_secs(14 * 86_400)),
             ..PrFilter::default()
         };
-        let now = UNIX_EPOCH + Duration::from_secs(1_700_000_100);
 
-        let listed = list_review_requests(&forge, &filter, now).unwrap();
+        let listed = list_review_queue(&forge, &filter, now()).unwrap();
 
-        assert_eq!(listed.iter().map(|p| p.number).collect::<Vec<_>>(), vec![1]);
+        assert_eq!(numbers(&listed), vec![1]);
     }
 
     #[test]
@@ -270,19 +326,158 @@ mod tests {
             exclude: vec![RepoPattern::parse("acme/legacy-api").unwrap()],
             ..PrFilter::default()
         };
-        let now = UNIX_EPOCH + Duration::from_secs(1_700_000_100);
 
-        list_review_requests(&forge, &filter, now).unwrap();
+        list_review_queue(&forge, &filter, now()).unwrap();
 
         assert_eq!(*forge.asked_with.borrow(), vec![filter]);
+    }
+
+    #[test]
+    fn the_reviewed_search_is_given_the_filter() {
+        let forge = FakeForge::default();
+        let filter = PrFilter {
+            exclude: vec![RepoPattern::parse("acme/legacy-api").unwrap()],
+            ..PrFilter::default()
+        };
+
+        list_review_queue(&forge, &filter, now()).unwrap();
+
+        assert_eq!(*forge.asked_reviewed_with.borrow(), vec![filter]);
     }
 
     #[test]
     fn a_forge_failure_is_surfaced_rather_than_swallowed_into_an_empty_list() {
         // An empty review queue and a broken gh must never look the same.
         let forge = FakeForge::failing(PortError::MissingTool { tool: "gh" });
-        let now = UNIX_EPOCH + Duration::from_secs(1_700_000_100);
-        assert!(list_review_requests(&forge, &PrFilter::default(), now).is_err());
+        assert!(list_review_queue(&forge, &PrFilter::default(), now()).is_err());
+    }
+
+    #[test]
+    fn the_request_search_failing_fails_the_whole_queue() {
+        let forge = FakeForge::failing(PortError::MissingTool { tool: "gh" })
+            .and_reviewed(vec![reviewed(5, 1, false)]);
+        assert!(list_review_queue(&forge, &PrFilter::default(), now()).is_err());
+    }
+
+    #[test]
+    fn the_reviewed_search_failing_fails_the_whole_queue() {
+        let forge = FakeForge::with_review_requests(vec![pr(1)])
+            .failing_reviewed(PortError::MissingTool { tool: "gh" });
+        assert!(list_review_queue(&forge, &PrFilter::default(), now()).is_err());
+    }
+
+    #[test]
+    fn a_reviewed_pr_with_an_open_thread_of_yours_is_a_revisit() {
+        let forge = FakeForge::with_reviewed(vec![reviewed(5, 2, false)]);
+        let listed = list_review_queue(&forge, &PrFilter::default(), now()).unwrap();
+        assert_eq!(
+            listed,
+            vec![ReviewQueueItem {
+                pr: pr(5),
+                state: ReviewerState::Revisit(Revisit::OpenThreads(threads(2))),
+            }]
+        );
+    }
+
+    #[test]
+    fn a_reviewed_pr_with_no_open_threads_and_no_push_is_not_listed() {
+        let forge = FakeForge::with_reviewed(vec![reviewed(5, 0, false)]);
+        let listed = list_review_queue(&forge, &PrFilter::default(), now()).unwrap();
+        assert!(listed.is_empty());
+    }
+
+    #[test]
+    fn a_reviewed_pr_whose_head_moved_is_an_updated_revisit() {
+        let forge = FakeForge::with_reviewed(vec![reviewed(5, 0, true), reviewed(6, 3, true)]);
+        let listed = list_review_queue(&forge, &PrFilter::default(), now()).unwrap();
+        let states: Vec<ReviewerState> = listed.iter().map(|i| i.state).collect();
+        assert_eq!(
+            states,
+            vec![
+                ReviewerState::Revisit(Revisit::Updated),
+                ReviewerState::Revisit(Revisit::UpdatedWithOpenThreads(threads(3))),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_pr_in_both_searches_is_one_requested_row() {
+        let forge =
+            FakeForge::with_review_requests(vec![pr(5)]).and_reviewed(vec![reviewed(5, 2, true)]);
+        let listed = list_review_queue(&forge, &PrFilter::default(), now()).unwrap();
+        assert_eq!(
+            listed,
+            vec![ReviewQueueItem {
+                pr: pr(5),
+                state: ReviewerState::Requested,
+            }]
+        );
+    }
+
+    #[test]
+    fn the_same_number_in_another_repository_is_a_separate_row() {
+        let mut elsewhere = reviewed(5, 1, false);
+        elsewhere.pr.repo = RepoSlug::parse("acme/south").unwrap();
+        let forge = FakeForge::with_review_requests(vec![pr(5)]).and_reviewed(vec![elsewhere]);
+        let listed = list_review_queue(&forge, &PrFilter::default(), now()).unwrap();
+        assert_eq!(listed.len(), 2);
+    }
+
+    #[test]
+    fn max_age_never_drops_a_revisit() {
+        let old_request = aged(pr(1), 1_600_000_000);
+        let mut old_revisit = reviewed(2, 1, false);
+        old_revisit.pr = aged(old_revisit.pr, 1_600_000_000);
+        let forge =
+            FakeForge::with_review_requests(vec![old_request]).and_reviewed(vec![old_revisit]);
+        let filter = PrFilter {
+            max_age: Some(Duration::from_secs(14 * 86_400)),
+            ..PrFilter::default()
+        };
+
+        let listed = list_review_queue(&forge, &filter, now()).unwrap();
+
+        assert_eq!(numbers(&listed), vec![2]);
+    }
+
+    #[test]
+    fn an_excluded_repository_is_dropped_from_both_searches() {
+        let mut request = pr(1);
+        request.repo = RepoSlug::parse("acme/legacy-api").unwrap();
+        let mut revisit = reviewed(2, 1, true);
+        revisit.pr.repo = RepoSlug::parse("acme/legacy-api").unwrap();
+        let forge = FakeForge::with_review_requests(vec![request, pr(3)])
+            .and_reviewed(vec![revisit, reviewed(4, 1, true)]);
+        let filter = PrFilter {
+            exclude: vec![RepoPattern::parse("acme/legacy-api").unwrap()],
+            ..PrFilter::default()
+        };
+
+        let listed = list_review_queue(&forge, &filter, now()).unwrap();
+
+        assert_eq!(numbers(&listed), vec![4, 3]);
+    }
+
+    #[test]
+    fn the_queue_is_ordered_updated_then_requested_then_open_threads_oldest_first() {
+        let at = |mut r: ReviewedPullRequest, secs: u64| {
+            r.pr = aged(r.pr, secs);
+            r
+        };
+        let forge = FakeForge::with_review_requests(vec![
+            aged(pr(20), 1_650_000_000),
+            aged(pr(21), 1_640_000_000),
+        ])
+        .and_reviewed(vec![
+            at(reviewed(30, 1, false), 1_600_000_000),
+            at(reviewed(10, 0, true), 1_690_000_000),
+            at(reviewed(11, 4, true), 1_680_000_000),
+            at(reviewed(31, 2, false), 1_590_000_000),
+        ]);
+
+        let listed = list_review_queue(&forge, &PrFilter::default(), now()).unwrap();
+
+        assert_eq!(numbers(&listed), vec![11, 10, 21, 20, 31, 30]);
     }
 
     #[test]

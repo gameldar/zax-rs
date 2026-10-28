@@ -1,5 +1,7 @@
-//! `prs-for-review`: the pull requests waiting on you, one compact row each.
+//! `prs-for-review`: the pull requests waiting on you, requested or to revisit,
+//! one compact row each.
 
+use std::num::NonZeroU32;
 use std::time::SystemTime;
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
@@ -8,18 +10,18 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
-use zax_domain::PullRequest;
+use zax_domain::{ReviewQueueItem, ReviewerState, Revisit};
 
 use crate::action::PaneAction;
 use crate::cache::Cached;
-use crate::chrome::{error_line, header_line};
+use crate::chrome::{error_line, header_line, GLYPH_UPDATED};
 use crate::fmt::{display_width, format_age, truncate};
 use crate::pr_fields::{check_glyph, check_style};
 
 const TITLE: &str = "Review requests";
 
 pub struct PrsForReviewPane {
-    cache: Cached<Vec<PullRequest>>,
+    cache: Cached<Vec<ReviewQueueItem>>,
     selected: usize,
     focused: bool,
 }
@@ -43,7 +45,7 @@ impl PrsForReviewPane {
         self.focused = focused;
     }
 
-    pub fn apply(&mut self, result: Result<Vec<PullRequest>, String>, at: SystemTime) {
+    pub fn apply(&mut self, result: Result<Vec<ReviewQueueItem>, String>, at: SystemTime) {
         match result {
             Ok(prs) => {
                 // The queue can shrink under the cursor between refreshes.
@@ -54,11 +56,11 @@ impl PrsForReviewPane {
         }
     }
 
-    pub fn rows(&self) -> &[PullRequest] {
+    pub fn rows(&self) -> &[ReviewQueueItem] {
         self.cache.value().map(Vec::as_slice).unwrap_or(&[])
     }
 
-    pub fn selected(&self) -> Option<&PullRequest> {
+    pub fn selected(&self) -> Option<&ReviewQueueItem> {
         self.rows().get(self.selected)
     }
 
@@ -92,8 +94,8 @@ impl PrsForReviewPane {
             }
             Some(prs) => {
                 let window = self.visible_rows(prs.len(), area.height);
-                for (index, pr) in prs.iter().enumerate().skip(window.start).take(window.len()) {
-                    lines.push(self.row(pr, index == self.selected, area.width, now));
+                for (index, item) in prs.iter().enumerate().skip(window.start).take(window.len()) {
+                    lines.push(self.row(item, index == self.selected, area.width, now));
                 }
             }
         }
@@ -120,14 +122,26 @@ impl PrsForReviewPane {
         first..(first + visible).min(len)
     }
 
-    fn row(&self, pr: &PullRequest, selected: bool, width: u16, now: SystemTime) -> Line<'static> {
+    fn row(
+        &self,
+        item: &ReviewQueueItem,
+        selected: bool,
+        width: u16,
+        now: SystemTime,
+    ) -> Line<'static> {
+        let pr = &item.pr;
         let age = format_age(pr.age(now));
         let check = check_glyph(pr.checks).to_owned();
+        let state = state_field(item.state);
         let draft = if pr.is_draft { " draft" } else { "" };
 
-        // What a row cannot do without: the check glyph, the age, the draft
-        // flag and the three separators between the spans below.
-        let essential = display_width(&check) + display_width(draft) + display_width(&age) + 3;
+        // What a row cannot do without: the check glyph, the state field, the
+        // age, the draft flag and the three separators between the spans below.
+        let essential = display_width(&check)
+            + display_width(&state)
+            + display_width(draft)
+            + display_width(&age)
+            + 3;
 
         // The reference shrinks too, not just the title. A repository name may
         // be wide and long, and a context pane is routinely narrow - the
@@ -169,6 +183,7 @@ impl PrsForReviewPane {
 
         Line::from(vec![
             Span::styled(check, check_style(pr.checks).patch(base)),
+            Span::styled(state, state_style(item.state).patch(base)),
             Span::styled(" ", base),
             Span::styled(reference, base.fg(Color::Cyan)),
             Span::styled(author, base.fg(Color::DarkGray)),
@@ -195,20 +210,52 @@ impl PrsForReviewPane {
             }
             KeyCode::Enter => self
                 .selected()
-                .map(|pr| PaneAction::OpenUrl(pr.url.clone()))
+                .map(|item| PaneAction::OpenUrl(item.pr.url.clone()))
                 .unwrap_or_default(),
             KeyCode::Char('y') => self
                 .selected()
-                .map(|pr| PaneAction::CopyUrl(pr.url.clone()))
+                .map(|item| PaneAction::CopyUrl(item.pr.url.clone()))
                 .unwrap_or_default(),
             KeyCode::Char('w') => self
                 .selected()
-                .map(|pr| PaneAction::ReviewWorktree {
-                    repo: pr.repo.clone(),
-                    number: pr.number,
+                .map(|item| PaneAction::ReviewWorktree {
+                    repo: item.pr.repo.clone(),
+                    number: item.pr.number,
                 })
                 .unwrap_or_default(),
             _ => PaneAction::None,
+        }
+    }
+}
+
+/// The two-column field after the check glyph: blank for a request, else the
+/// updated glyph and your open-thread count.
+fn state_field(state: ReviewerState) -> String {
+    match state {
+        ReviewerState::Requested => "  ".to_owned(),
+        ReviewerState::Revisit(Revisit::OpenThreads(count)) => format!(" {}", thread_count(count)),
+        ReviewerState::Revisit(Revisit::Updated) => format!("{GLYPH_UPDATED} "),
+        ReviewerState::Revisit(Revisit::UpdatedWithOpenThreads(count)) => {
+            format!("{GLYPH_UPDATED}{}", thread_count(count))
+        }
+    }
+}
+
+// One column, whatever the count: the row's budget is built on it.
+fn thread_count(count: NonZeroU32) -> String {
+    if count.get() > 9 {
+        "+".to_owned()
+    } else {
+        count.get().to_string()
+    }
+}
+
+fn state_style(state: ReviewerState) -> Style {
+    match state {
+        ReviewerState::Requested => Style::default(),
+        ReviewerState::Revisit(Revisit::OpenThreads(_)) => Style::default().fg(Color::DarkGray),
+        ReviewerState::Revisit(Revisit::Updated | Revisit::UpdatedWithOpenThreads(_)) => {
+            Style::default().fg(Color::Yellow)
         }
     }
 }
@@ -237,10 +284,13 @@ mod tests {
     use ratatui::buffer::Buffer;
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use ratatui::Terminal;
-    use zax_domain::{CheckState, PullRequest, RepoSlug};
+    use std::num::NonZeroU32;
+
+    use zax_domain::{CheckState, PullRequest, RepoSlug, ReviewQueueItem, ReviewerState, Revisit};
 
     use super::*;
     use crate::action::PaneAction;
+    use crate::chrome::{GLYPH_PASS, GLYPH_UPDATED};
 
     fn t(secs: u64) -> SystemTime {
         UNIX_EPOCH + Duration::from_secs(secs)
@@ -279,12 +329,128 @@ mod tests {
         }
     }
 
+    fn requested(pr: PullRequest) -> ReviewQueueItem {
+        ReviewQueueItem {
+            pr,
+            state: ReviewerState::Requested,
+        }
+    }
+
+    fn revisit(pr: PullRequest, revisit: Revisit) -> ReviewQueueItem {
+        ReviewQueueItem {
+            pr,
+            state: ReviewerState::Revisit(revisit),
+        }
+    }
+
+    fn threads(count: u32) -> NonZeroU32 {
+        NonZeroU32::new(count).unwrap()
+    }
+
+    /// The row `pane` builds for `item` at a comfortable width, as plain text.
+    fn rendered(item: &ReviewQueueItem) -> String {
+        let pane = PrsForReviewPane::new();
+        pane.row(item, false, 80, t(100))
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect()
+    }
+
+    fn omega() -> PullRequest {
+        pr("acme/omega", 1963, false, CheckState::Passing)
+    }
+
+    #[test]
+    fn a_requested_row_has_a_blank_two_column_state_field() {
+        let text = rendered(&requested(omega()));
+        assert!(
+            text.starts_with(&format!("{GLYPH_PASS}   omega#1963")),
+            "got: {text:?}"
+        );
+    }
+
+    #[test]
+    fn an_open_threads_revisit_shows_the_count() {
+        let text = rendered(&revisit(omega(), Revisit::OpenThreads(threads(3))));
+        assert!(
+            text.starts_with(&format!("{GLYPH_PASS} 3 omega#1963")),
+            "got: {text:?}"
+        );
+    }
+
+    #[test]
+    fn an_updated_revisit_shows_the_updated_glyph() {
+        let text = rendered(&revisit(omega(), Revisit::Updated));
+        assert!(
+            text.starts_with(&format!("{GLYPH_PASS}{GLYPH_UPDATED}  omega#1963")),
+            "got: {text:?}"
+        );
+    }
+
+    #[test]
+    fn an_updated_revisit_with_open_threads_shows_glyph_and_count() {
+        let text = rendered(&revisit(
+            omega(),
+            Revisit::UpdatedWithOpenThreads(threads(2)),
+        ));
+        assert!(
+            text.starts_with(&format!("{GLYPH_PASS}{GLYPH_UPDATED}2 omega#1963")),
+            "got: {text:?}"
+        );
+    }
+
+    #[test]
+    fn a_count_above_nine_renders_plus() {
+        let open = rendered(&revisit(omega(), Revisit::OpenThreads(threads(10))));
+        assert!(
+            open.starts_with(&format!("{GLYPH_PASS} + omega#1963")),
+            "got: {open:?}"
+        );
+        let both = rendered(&revisit(
+            omega(),
+            Revisit::UpdatedWithOpenThreads(threads(40)),
+        ));
+        assert!(
+            both.starts_with(&format!("{GLYPH_PASS}{GLYPH_UPDATED}+ omega#1963")),
+            "got: {both:?}"
+        );
+    }
+
+    #[test]
+    fn the_state_field_is_two_columns_for_every_state() {
+        let states = [
+            ReviewerState::Requested,
+            ReviewerState::Revisit(Revisit::OpenThreads(threads(1))),
+            ReviewerState::Revisit(Revisit::OpenThreads(threads(10))),
+            ReviewerState::Revisit(Revisit::Updated),
+            ReviewerState::Revisit(Revisit::UpdatedWithOpenThreads(threads(1))),
+            ReviewerState::Revisit(Revisit::UpdatedWithOpenThreads(threads(10))),
+        ];
+        for state in states {
+            let field = state_field(state);
+            assert_eq!(
+                unicode_width::UnicodeWidthStr::width(field.as_str()),
+                2,
+                "{state:?} gave {field:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_revisit_draft_still_shows_the_draft_flag() {
+        let draft = pr("acme/south", 42, true, CheckState::Failing);
+        let text = rendered(&revisit(draft, Revisit::Updated));
+        assert!(text.contains(" draft"), "got: {text:?}");
+        assert!(text.contains(GLYPH_UPDATED), "got: {text:?}");
+    }
+
     fn loaded() -> PrsForReviewPane {
         let mut pane = PrsForReviewPane::new();
         pane.apply(
             Ok(vec![
-                pr("acme/omega", 1963, false, CheckState::Passing),
-                pr("acme/south", 42, true, CheckState::Failing),
+                requested(pr("acme/omega", 1963, false, CheckState::Passing)),
+                requested(pr("acme/south", 42, true, CheckState::Failing)),
             ]),
             t(100),
         );
@@ -305,12 +471,12 @@ mod tests {
         // there is not room for both, the name is what goes.
         let mut pane = PrsForReviewPane::new();
         pane.apply(
-            Ok(vec![pr(
+            Ok(vec![requested(pr(
                 "acme/a-rather-long-repository-name",
                 1963,
                 false,
                 CheckState::Passing,
-            )]),
+            ))]),
             t(100),
         );
         let row = pane.rows().first().expect("one row").clone();
@@ -350,8 +516,8 @@ mod tests {
 
     #[test]
     fn a_pull_request_without_an_author_shows_no_parentheses() {
-        let mut orphan = pr("acme/omega", 1963, false, CheckState::Passing);
-        orphan.author = None;
+        let mut orphan = requested(pr("acme/omega", 1963, false, CheckState::Passing));
+        orphan.pr.author = None;
         let mut pane = PrsForReviewPane::new();
         pane.apply(Ok(vec![orphan]), t(100));
         let first = row(&draw(&pane, t(100)), 1);
@@ -362,12 +528,17 @@ mod tests {
     fn the_author_gives_way_before_the_repository_name() {
         let mut pane = PrsForReviewPane::new();
         pane.apply(
-            Ok(vec![pr("acme/omega", 1963, false, CheckState::Passing)]),
+            Ok(vec![requested(pr(
+                "acme/omega",
+                1963,
+                false,
+                CheckState::Passing,
+            ))]),
             t(100),
         );
         let pr = pane.rows().first().expect("one row").clone();
-        // Glyph, three separators and `now` leave exactly `omega#1963`.
-        let built = pane.row(&pr, false, 1 + 3 + 3 + 10, t(100));
+        // Glyph, state field, three separators and `now` leave exactly `omega#1963`.
+        let built = pane.row(&pr, false, 1 + 2 + 3 + 3 + 10, t(100));
         let rendered: String = built.spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(rendered.contains("omega#1963"), "got: {rendered:?}");
         assert!(!rendered.contains('('), "got: {rendered:?}");
@@ -392,7 +563,7 @@ mod tests {
         let mut pane = PrsForReviewPane::new();
         pane.apply(
             Ok((0..10)
-                .map(|n| pr("acme/omega", n, false, CheckState::Passing))
+                .map(|n| requested(pr("acme/omega", n, false, CheckState::Passing)))
                 .collect()),
             t(100),
         );
@@ -406,7 +577,12 @@ mod tests {
         // A queue shorter than the pane fills what it has and no more.
         let mut short = PrsForReviewPane::new();
         short.apply(
-            Ok(vec![pr("acme/omega", 1, false, CheckState::Passing)]),
+            Ok(vec![requested(pr(
+                "acme/omega",
+                1,
+                false,
+                CheckState::Passing,
+            ))]),
             t(100),
         );
         assert_eq!(short.visible_rows(1, 6), 0..1);
@@ -423,7 +599,7 @@ mod tests {
         let mut pane = PrsForReviewPane::new();
         pane.apply(
             Ok((100..110)
-                .map(|n| pr("acme/omega", n, false, CheckState::Passing))
+                .map(|n| requested(pr("acme/omega", n, false, CheckState::Passing)))
                 .collect()),
             t(100),
         );
@@ -510,21 +686,21 @@ mod tests {
     #[test]
     fn selection_starts_at_the_first_row_and_clamps_at_both_ends() {
         let mut pane = loaded();
-        assert_eq!(pane.selected().map(|p| p.number), Some(1963));
+        assert_eq!(pane.selected().map(|p| p.pr.number), Some(1963));
 
         pane.on_key(key(KeyCode::Char('k')));
         assert_eq!(
-            pane.selected().map(|p| p.number),
+            pane.selected().map(|p| p.pr.number),
             Some(1963),
             "clamped at the top"
         );
 
         pane.on_key(key(KeyCode::Char('j')));
-        assert_eq!(pane.selected().map(|p| p.number), Some(42));
+        assert_eq!(pane.selected().map(|p| p.pr.number), Some(42));
 
         pane.on_key(key(KeyCode::Char('j')));
         assert_eq!(
-            pane.selected().map(|p| p.number),
+            pane.selected().map(|p| p.pr.number),
             Some(42),
             "clamped at the bottom"
         );
@@ -570,10 +746,15 @@ mod tests {
         let mut pane = loaded();
         pane.on_key(key(KeyCode::Char('j')));
         pane.apply(
-            Ok(vec![pr("acme/omega", 1963, false, CheckState::Passing)]),
+            Ok(vec![requested(pr(
+                "acme/omega",
+                1963,
+                false,
+                CheckState::Passing,
+            ))]),
             t(200),
         );
-        assert_eq!(pane.selected().map(|p| p.number), Some(1963));
+        assert_eq!(pane.selected().map(|p| p.pr.number), Some(1963));
     }
 
     #[test]
@@ -597,7 +778,7 @@ mod tests {
         // the pane builds is also the thing the budget actually controls.
         let mut pane = PrsForReviewPane::new();
         pane.apply(
-            Ok(vec![PullRequest {
+            Ok(vec![requested(PullRequest {
                 repo: RepoSlug::parse("acme/日本語リポジトリ").unwrap(),
                 number: 1963,
                 title: "Export reports as CSV".to_owned(),
@@ -606,7 +787,7 @@ mod tests {
                 created_at: t(100),
                 checks: CheckState::Passing,
                 author: Some("gameldar".to_owned()),
-            }]),
+            })]),
             t(100),
         );
         let pr = pane.rows().first().expect("one row").clone();
@@ -633,13 +814,14 @@ mod tests {
         // below could not fail: with both width budgets replaced by
         // `usize::MAX` the test still passed.
         //
-        // The parts: the one-column check glyph, the three separators the row
+        // The parts: the one-column check glyph, the two-column state field
+        // (blank for a request), the three separators the row
         // always carries, the three-column age of a pull request created at the
         // fixture's own `now`, and `#1963`, which is never truncated because it
         // is what identifies the pull request. The repository name and the
         // title can both go to nothing.
-        let floor = w(crate::chrome::GLYPH_PASS) + 3 + w("now") + w("#1963");
-        assert_eq!(floor, 12, "the fixture's floor, spelled out");
+        let floor = w(crate::chrome::GLYPH_PASS) + w("  ") + 3 + w("now") + w("#1963");
+        assert_eq!(floor, 14, "the fixture's floor, spelled out");
         assert_eq!(
             columns(&pane.row(&pr, false, 0, t(100))),
             floor,

@@ -137,7 +137,7 @@ fn run_prs_pane() -> Result<()> {
     let filter = wiring::resolve()?.config.prs;
     let (request, results) = spawn_fetcher(move || {
         let gh = zax_infra_github::GhCli::new(SystemExec, cwd.clone());
-        queries::list_review_requests(&gh, &filter, SystemTime::now()).map_err(|e| e.to_string())
+        queries::list_review_queue(&gh, &filter, SystemTime::now()).map_err(|e| e.to_string())
     });
     pane_loop!(
         PrsForReviewPane::new(),

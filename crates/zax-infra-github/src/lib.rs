@@ -321,6 +321,7 @@ mod tests {
         let gh = cli(vec![ok(include_str!("../tests/fixtures/pr_head.json"))]);
         let head = gh.pull_request_head(&PrRef::Number(1963)).unwrap();
         assert_eq!(head.head_ref, "patch-1");
+        assert_eq!(head.url, "https://github.com/acme/omega/pull/1963");
         assert_eq!(gh.exec_ref().args(0)[2], "1963");
     }
 

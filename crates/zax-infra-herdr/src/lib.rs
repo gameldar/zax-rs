@@ -14,11 +14,13 @@ use zax_app::{Editor, PortError, WorktreeOpener};
 use zax_domain::Command;
 use zax_exec::{shell_quote, Exec, ExecError, Output};
 
-use crate::dto::{Failure, Reply, WorkspaceCreated, WorkspaceList, WorktreeList};
+use crate::dto::{Failure, Reply, WorkspaceCreated, WorkspaceList, WorktreeList, WorktreeOpened};
 
 const TOOL: &str = "herdr";
 const INSTALL_HINT: &str = "install herdr from https://herdr.dev, or set HERDR_BIN_PATH \
                             to the herdr binary";
+/// The skill a review agent is started with, followed by the pull request URL.
+const REVIEW_SKILL: &str = "/pr-review";
 
 /// The `herdr` CLI, which opens a worktree as a herdr space.
 pub struct HerdrCli<E: Exec> {
@@ -122,11 +124,14 @@ fn same_path(listed: &str, path: &Path) -> bool {
     }
 }
 
-impl<E: Exec> WorktreeOpener for HerdrCli<E> {
+impl<E: Exec> HerdrCli<E> {
     /// Focus the space that already has the worktree open, or open one. herdr
     /// opens a worktree only from the repository's own checkout, never from
     /// another linked worktree, so that is the directory it is opened from.
-    fn open_worktree(&self, path: &Path) -> Result<(), PortError> {
+    ///
+    /// Returns the new space's pane, or `None` when an existing space was
+    /// focused: that space's pane may be busy, so nothing is run in it.
+    fn open_or_focus(&self, path: &Path) -> Result<Option<String>, PortError> {
         let text = path.to_string_lossy();
         let list: WorktreeList = self.call(&["worktree", "list", "--cwd", &text])?;
         let open = list
@@ -134,20 +139,60 @@ impl<E: Exec> WorktreeOpener for HerdrCli<E> {
             .iter()
             .find(|w| same_path(&w.path, path))
             .and_then(|w| w.open_workspace_id.as_deref());
-        match open {
-            Some(id) => self.focus(id),
-            None => self
-                .run(&[
-                    "worktree",
-                    "open",
-                    "--cwd",
-                    &list.source.source_checkout_path,
-                    "--path",
-                    &text,
-                    "--focus",
-                ])
-                .map(|_| ()),
+        if let Some(id) = open {
+            return self.focus(id).map(|()| None);
         }
+        let opened: WorktreeOpened = self.call(&[
+            "worktree",
+            "open",
+            "--cwd",
+            &list.source.source_checkout_path,
+            "--path",
+            &text,
+            "--focus",
+        ])?;
+        Ok(Some(opened.root_pane.pane_id))
+    }
+}
+
+/// herdr takes an agent name of at most 32 characters, a lowercase letter
+/// then `[a-z0-9_-]`, so the pull request number is all of the URL it gets.
+fn review_agent_name(pr_url: &str) -> String {
+    let number = pr_url
+        .trim_end_matches('/')
+        .rsplit('/')
+        .next()
+        .filter(|n| !n.is_empty() && n.len() <= 20 && n.bytes().all(|b| b.is_ascii_digit()));
+    match number {
+        Some(n) => format!("review-{n}"),
+        None => "review".to_owned(),
+    }
+}
+
+impl<E: Exec> WorktreeOpener for HerdrCli<E> {
+    fn open_worktree(&self, path: &Path) -> Result<(), PortError> {
+        self.open_or_focus(path).map(|_| ())
+    }
+
+    /// Claude, started in the new space with the review skill on the pull
+    /// request. A space that was already open is only focused.
+    fn open_for_review(&self, path: &Path, pr_url: &str) -> Result<(), PortError> {
+        let Some(pane) = self.open_or_focus(path)? else {
+            return Ok(());
+        };
+        let prompt = format!("{REVIEW_SKILL} {pr_url}");
+        self.run(&[
+            "agent",
+            "start",
+            &review_agent_name(pr_url),
+            "--kind",
+            "claude",
+            "--pane",
+            &pane,
+            "--",
+            &prompt,
+        ])
+        .map(|_| ())
     }
 
     fn probe(&self) -> Result<String, PortError> {
@@ -269,6 +314,9 @@ mod tests {
 
     const FOCUSED: &str = r#"{"id":"cli:workspace:focus","result":{"type":"workspace_info"}}"#;
 
+    const OPENED: &str = r#"{"id":"cli:worktree:open","result":{"type":"worktree_opened",
+        "already_open":false,"root_pane":{"pane_id":"w9:p1"},"workspace":{"workspace_id":"w9"}}}"#;
+
     #[test]
     fn a_worktree_already_open_in_a_space_focuses_that_space() {
         let wt = "/src/worktrees/acme/OMEGA-1-x";
@@ -285,7 +333,7 @@ mod tests {
     #[test]
     fn a_worktree_no_space_has_open_is_opened_as_one() {
         let wt = "/src/worktrees/acme/OMEGA-1-x";
-        let herdr = herdr(vec![ok(&worktree_list(wt, None)), ok("{}")]);
+        let herdr = herdr(vec![ok(&worktree_list(wt, None)), ok(OPENED)]);
 
         herdr.open_worktree(Path::new(wt)).unwrap();
 
@@ -303,6 +351,62 @@ mod tests {
                 "--focus"
             ]
         );
+    }
+
+    #[test]
+    fn a_review_starts_claude_on_the_pull_request_in_the_new_space() {
+        let wt = "/src/worktrees/acme/patch-1";
+        let url = "https://github.com/acme/omega/pull/1963";
+        let herdr = herdr(vec![
+            ok(&worktree_list(wt, None)),
+            ok(OPENED),
+            ok(r#"{"id":"cli:agent:start","result":{"type":"agent_started"}}"#),
+        ]);
+
+        herdr.open_for_review(Path::new(wt), url).unwrap();
+
+        assert_eq!(
+            herdr.exec_ref().args(2),
+            [
+                "agent",
+                "start",
+                "review-1963",
+                "--kind",
+                "claude",
+                "--pane",
+                "w9:p1",
+                "--",
+                "/pr-review https://github.com/acme/omega/pull/1963"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_review_of_a_worktree_already_open_only_focuses_its_space() {
+        // Its pane may be running anything, including a review already.
+        let wt = "/src/worktrees/acme/patch-1";
+        let herdr = herdr(vec![ok(&worktree_list(wt, Some("w9"))), ok(FOCUSED)]);
+
+        herdr
+            .open_for_review(Path::new(wt), "https://github.com/acme/omega/pull/1963")
+            .unwrap();
+
+        let exec = herdr.exec_ref();
+        assert_eq!(exec.args(1), ["workspace", "focus", "w9"]);
+        assert_eq!(exec.calls().len(), 2);
+    }
+
+    #[test]
+    fn a_review_agent_is_named_for_the_pull_request_number() {
+        assert_eq!(
+            review_agent_name("https://github.com/acme/omega/pull/1963"),
+            "review-1963"
+        );
+        assert_eq!(
+            review_agent_name("https://github.com/acme/omega/pull/1963/"),
+            "review-1963"
+        );
+        assert_eq!(review_agent_name("https://example.com/odd"), "review");
     }
 
     #[test]

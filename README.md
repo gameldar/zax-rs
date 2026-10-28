@@ -782,7 +782,10 @@ command = ["nvim"]
 - With `[open] via = "herdr"`, a worktree is opened as a herdr space. zax asks
   `herdr worktree list` which space has the worktree open and focuses it, or
   runs `herdr worktree open`, which groups the new space under the
-  repository's own.
+  repository's own. A review worktree (`zax worktree review`, or `w` in the
+  pull request panes) also starts Claude in the new space with
+  `/pr-review <url>`, through `herdr agent start review-<number>`. A review
+  whose space was already open is only focused.
 - With `[editor] via = "herdr"`, a file is edited in a herdr space labelled
   with its name, in the file's directory. A space with that label already open
   is focused instead. The editor replaces the space's shell, so quitting it

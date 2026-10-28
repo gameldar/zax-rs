@@ -941,10 +941,12 @@ impl Editor for FakeEditor {
     }
 }
 
-/// An opener that records which worktrees it was asked to open.
+/// An opener that records which worktrees it was asked to open, and which
+/// pull request each review was started on.
 #[derive(Debug, Default)]
 pub struct FakeOpener {
     pub opened: RefCell<Vec<PathBuf>>,
+    pub reviewed: RefCell<Vec<String>>,
     failure: Option<PortError>,
 }
 
@@ -965,6 +967,11 @@ impl WorktreeOpener for FakeOpener {
             Some(error) => Err(error.clone()),
             None => Ok(()),
         }
+    }
+
+    fn open_for_review(&self, path: &Path, pr_url: &str) -> Result<(), PortError> {
+        self.reviewed.borrow_mut().push(pr_url.to_owned());
+        self.open_worktree(path)
     }
 
     fn probe(&self) -> Result<String, PortError> {

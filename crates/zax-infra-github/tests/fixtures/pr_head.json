@@ -1,5 +1,6 @@
 {
   "number": 1963,
+  "url": "https://github.com/acme/omega/pull/1963",
   "headRefName": "patch-1",
   "headRepository": { "name": "omega" },
   "headRepositoryOwner": { "login": "a-contributor" },

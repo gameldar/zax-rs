@@ -50,6 +50,13 @@ pub struct Workspace {
     pub label: String,
 }
 
+/// `already_open` is not read: `worktree list` has already been asked, and
+/// only a worktree no space had open is opened.
+#[derive(Debug, Deserialize)]
+pub struct WorktreeOpened {
+    pub root_pane: Pane,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct WorkspaceCreated {
     pub root_pane: Pane,

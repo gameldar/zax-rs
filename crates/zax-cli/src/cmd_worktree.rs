@@ -154,9 +154,10 @@ fn review(
         );
     }
     report(&outcome.worktree);
-    warn(open_worktree(
+    warn(open_review_worktree(
         &wiring::opener(&ctx.config),
         outcome.worktree.path.as_path(),
+        &outcome.pr_url,
         !no_open,
     ));
     Ok(())
@@ -174,6 +175,23 @@ fn open_worktree<O: WorktreeOpener>(opener: &O, path: &Path, open: bool) -> Opti
         return None;
     }
     opener.open_worktree(path).err().map(|e| e.to_string())
+}
+
+/// As `open_worktree`, but the opener is also asked to start the review of
+/// `pr_url`, which an opener that can run an agent does in the new space.
+fn open_review_worktree<O: WorktreeOpener>(
+    opener: &O,
+    path: &Path,
+    pr_url: &str,
+    open: bool,
+) -> Option<String> {
+    if !open {
+        return None;
+    }
+    opener
+        .open_for_review(path, pr_url)
+        .err()
+        .map(|e| e.to_string())
 }
 
 /// Marked as zax's own, because the review pane runs this command as a
@@ -241,7 +259,7 @@ mod tests {
     use zax_app::PortError;
     use zax_domain::{RepoTarget, WorktreeRoot};
 
-    use super::{open_worktree, parse_repo, provisioning_and_root};
+    use super::{open_review_worktree, open_worktree, parse_repo, provisioning_and_root};
 
     fn config() -> zax_config::Config {
         zax_config::parse::from_raw(zax_config::raw::RawConfig::default(), "/h").unwrap()
@@ -307,6 +325,41 @@ mod tests {
             *opener.opened.borrow(),
             vec![PathBuf::from("/src/worktrees/acme/patch-1")]
         );
+    }
+
+    #[test]
+    fn a_review_worktree_is_handed_over_with_its_pull_request() {
+        let opener = FakeOpener::default();
+        let url = "https://github.com/acme/omega/pull/1963";
+
+        let warning = open_review_worktree(
+            &opener,
+            Path::new("/src/worktrees/acme/patch-1"),
+            url,
+            true,
+        );
+
+        assert_eq!(warning, None);
+        assert_eq!(*opener.reviewed.borrow(), vec![url.to_owned()]);
+        assert_eq!(
+            *opener.opened.borrow(),
+            vec![PathBuf::from("/src/worktrees/acme/patch-1")]
+        );
+    }
+
+    #[test]
+    fn no_open_starts_no_review_either() {
+        let opener = FakeOpener::default();
+
+        open_review_worktree(
+            &opener,
+            Path::new("/src/worktrees/acme/patch-1"),
+            "https://github.com/acme/omega/pull/1963",
+            false,
+        );
+
+        assert!(opener.reviewed.borrow().is_empty());
+        assert!(opener.opened.borrow().is_empty());
     }
 
     #[test]

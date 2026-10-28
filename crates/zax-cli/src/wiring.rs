@@ -280,6 +280,13 @@ impl WorktreeOpener for OpenerAdapter {
         }
     }
 
+    fn open_for_review(&self, path: &Path, pr_url: &str) -> Result<(), PortError> {
+        match self {
+            Self::Command(cli) => cli.open_for_review(path, pr_url),
+            Self::Herdr(herdr) => herdr.open_for_review(path, pr_url),
+        }
+    }
+
     fn probe(&self) -> Result<String, PortError> {
         match self {
             Self::Command(cli) => WorktreeOpener::probe(cli),

@@ -140,6 +140,8 @@ pub trait GitRepo {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PullRequestHead {
     pub number: u32,
+    /// Where the pull request is read, as the forge spells it.
+    pub url: String,
     pub head_ref: String,
     /// `None` when the forge no longer has the head repository, which is what
     /// GitHub reports once a fork has been deleted. `refs/pull/<n>/head`
@@ -209,6 +211,12 @@ pub trait WorktreeOpener {
     /// Open the worktree at `path`. Returns once the opener has been asked,
     /// not once whatever it opened has been closed.
     fn open_worktree(&self, path: &Path) -> Result<(), PortError>;
+    /// Open a review worktree and start reviewing `pr_url` in it. An opener
+    /// that cannot run an agent, such as an editor, only opens the worktree.
+    fn open_for_review(&self, path: &Path, pr_url: &str) -> Result<(), PortError> {
+        let _ = pr_url;
+        self.open_worktree(path)
+    }
     /// For `zax doctor`: can the configured opener be started at all?
     fn probe(&self) -> Result<String, PortError>;
 }

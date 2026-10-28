@@ -38,7 +38,7 @@ pub fn graphql_query(query: &str, variables: &[(&str, &str)]) -> Vec<String> {
 }
 
 pub const PR_HEAD_FIELDS: &str =
-    "number,headRefName,headRepository,headRepositoryOwner,isCrossRepository";
+    "number,url,headRefName,headRepository,headRepositoryOwner,isCrossRepository";
 
 pub fn pr_head(reference: &str) -> Vec<String> {
     vec![
@@ -98,7 +98,7 @@ mod tests {
                 "view",
                 "1963",
                 "--json",
-                "number,headRefName,headRepository,headRepositoryOwner,isCrossRepository",
+                "number,url,headRefName,headRepository,headRepositoryOwner,isCrossRepository",
             ]
         );
     }

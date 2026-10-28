@@ -37,7 +37,7 @@ pub fn run(command: WorktreeCommand) -> Result<()> {
 }
 
 /// `worktree.root` is always the session's own: new worktrees have to land
-/// where this session's tickets pane and `W` popup look for them, whichever
+/// where this session's tickets pane and `SPC w l` popup look for them, whichever
 /// repository they belong to. `copy` and `hooks` are the target repository's
 /// own setup, since that is what its worktree actually needs copied and run.
 fn provisioning_and_root(

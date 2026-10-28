@@ -20,6 +20,7 @@ use zax_broker::topics::{
     WORK,
 };
 use zax_broker::BrokerPaths;
+use zax_domain::keymap::PaneContext;
 use zax_domain::TicketKey;
 use zax_exec::{Exec, SystemExec};
 use zax_protocol::{method, Snapshot, SourceKey};
@@ -42,7 +43,9 @@ const RECONNECT_EVERY: Duration = Duration::from_secs(5);
 pub fn run() -> Result<()> {
     let ctx = wiring::resolve()?;
     let Some(provider) = ctx.config.tickets.provider.clone() else {
-        return idle(TicketsPane::unconfigured());
+        return idle(TicketsPane::unconfigured(
+            ctx.config.keymaps.for_context(PaneContext::Tickets).clone(),
+        ));
     };
     let provider_argv = anchor_provider(
         provider.argv(),
@@ -70,10 +73,10 @@ pub fn run() -> Result<()> {
     );
     let opener = wiring::opener(&ctx.config);
 
-    let mut pane = TicketsPane::new();
+    let mut pane = TicketsPane::new(ctx.config.keymaps.for_context(PaneContext::Tickets).clone());
     pane.set_focused(true);
     // A ticket belongs to no repository; with `projects.root` configured
-    // there is more than one checkout `w` could mean, so it asks rather
+    // there is more than one checkout `SPC w o` could mean, so it asks rather
     // than guessing from where this session happened to start.
     pane.set_repo_choice(ctx.config.projects.is_some());
     let mut screen = Screen::enter()?;
@@ -215,7 +218,7 @@ pub fn run() -> Result<()> {
                     }
                 },
                 // A ticket's worktree can go in any checkout under
-                // `projects.root`, so `w` is answered with the list rather
+                // `projects.root`, so `SPC w o` is answered with the list rather
                 // than starting work in a guess.
                 PaneAction::ChooseRepo { branch } => {
                     let checkouts = wiring::checkouts();
@@ -355,7 +358,7 @@ fn apply_work(pane: &mut TicketsPane, snapshot: Snapshot) {
     }
 }
 
-/// The unconfigured pane: draw, wait for `q`.
+/// The unconfigured pane: draw, wait for the quit sequence (`SPC q`).
 fn idle(mut pane: TicketsPane) -> Result<()> {
     let mut screen = Screen::enter()?;
     loop {

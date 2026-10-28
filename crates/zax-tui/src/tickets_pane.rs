@@ -8,15 +8,17 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
+use zax_domain::keymap::Keymap;
 use zax_domain::{
-    branch_slug, join, Attention, BranchName, RepoChoices, Ticket, TicketKey, TicketRank,
-    TicketRow, Transition, WorkIndex,
+    branch_slug, join, Attention, BranchName, KeyCommand, RepoChoices, Ticket, TicketKey,
+    TicketRank, TicketRow, Transition, WorkIndex,
 };
 
 use crate::action::PaneAction;
 use crate::cache::Cached;
 use crate::chrome::{error_line, header_line};
 use crate::fmt::{display_width, truncate};
+use crate::keys::{split_footer, KeyInput};
 use crate::my_prs_pane::{attention_glyph, attention_style};
 use crate::pr_fields::{check_glyph, check_style};
 use crate::repo_picker::{RepoPicker, RepoPickerAction};
@@ -50,22 +52,17 @@ pub struct TicketsPane {
     selected: usize,
     focused: bool,
     picker: Option<Picker>,
-    /// `projects.root` is configured, so `w` asks which checkout a new
+    /// `projects.root` is configured, so `SPC w o` asks which checkout a new
     /// worktree goes in instead of starting it in whatever repository the
     /// session happened to start in.
     repo_choice: bool,
     repo_picker: Option<RepoPicker>,
     notice: Option<String>,
-}
-
-impl Default for TicketsPane {
-    fn default() -> Self {
-        Self::new()
-    }
+    keys: KeyInput,
 }
 
 impl TicketsPane {
-    pub fn new() -> Self {
+    pub fn new(keymap: Keymap) -> Self {
         Self {
             configured: true,
             tickets: Cached::new(),
@@ -77,15 +74,16 @@ impl TicketsPane {
             repo_choice: false,
             repo_picker: None,
             notice: None,
+            keys: KeyInput::new(keymap),
         }
     }
 
     /// No `[tickets] provider`: the pane explains itself and never talks to
     /// the broker.
-    pub fn unconfigured() -> Self {
+    pub fn unconfigured(keymap: Keymap) -> Self {
         Self {
             configured: false,
-            ..Self::new()
+            ..Self::new(keymap)
         }
     }
 
@@ -148,10 +146,11 @@ impl TicketsPane {
             self.notice = Some(format!("{key} has no transitions to offer"));
             return;
         }
+        self.keys.cancel();
         self.picker = Some(Picker { key, transitions });
     }
 
-    /// Whether `projects.root` is configured: with it on, `w` asks which
+    /// Whether `projects.root` is configured: with it on, `SPC w o` asks which
     /// checkout to start work in rather than guessing from where the session
     /// started.
     pub fn set_repo_choice(&mut self, enabled: bool) {
@@ -161,6 +160,7 @@ impl TicketsPane {
     /// The host already has the checkouts to offer (`ResolveCheckout::list`);
     /// showing them is all that is left to do here.
     pub fn show_repo_picker(&mut self, branch: BranchName, choices: RepoChoices) {
+        self.keys.cancel();
         self.repo_picker = Some(RepoPicker::new(branch, choices));
     }
 
@@ -188,6 +188,7 @@ impl TicketsPane {
             picker.render(frame, area);
             return;
         }
+        let (area, footer) = split_footer(area);
         let mut lines = vec![self.top_line(area.width, now)];
 
         if !self.configured {
@@ -196,6 +197,8 @@ impl TicketsPane {
                 Style::default().fg(Color::DarkGray),
             ));
             frame.render_widget(Paragraph::new(Text::from(lines)), area);
+            self.keys.render_which_key(frame, area);
+            self.keys.render_footer(frame, footer);
             return;
         }
 
@@ -231,6 +234,8 @@ impl TicketsPane {
             lines.push(error_line(&message));
         }
         frame.render_widget(Paragraph::new(Text::from(lines)), area);
+        self.keys.render_which_key(frame, area);
+        self.keys.render_footer(frame, footer);
     }
 
     /// The header, or the transition picker while it is open.
@@ -371,27 +376,34 @@ impl TicketsPane {
                 }
             };
         }
+        match self.keys.press(key) {
+            Some(command) => self.run(command),
+            None => PaneAction::None,
+        }
+    }
+
+    fn run(&mut self, command: KeyCommand) -> PaneAction {
         let len = self.rows.len();
-        match key.code {
-            KeyCode::Char('r') => PaneAction::Refresh,
-            KeyCode::Char('q') | KeyCode::Esc => PaneAction::Quit,
-            KeyCode::Char('j') | KeyCode::Down => {
+        match command {
+            KeyCommand::Refresh => PaneAction::Refresh,
+            KeyCommand::Quit => PaneAction::Quit,
+            KeyCommand::MoveDown => {
                 self.selected = (self.selected + 1).min(len.saturating_sub(1));
                 PaneAction::None
             }
-            KeyCode::Char('k') | KeyCode::Up => {
+            KeyCommand::MoveUp => {
                 self.selected = self.selected.saturating_sub(1);
                 PaneAction::None
             }
-            KeyCode::Enter => self
+            KeyCommand::Open => self
                 .selected_row()
                 .map(|r| PaneAction::OpenUrl(r.ticket.url.clone()))
                 .unwrap_or_default(),
-            KeyCode::Char('y') => self
+            KeyCommand::CopyUrl => self
                 .selected_row()
                 .map(|r| PaneAction::CopyUrl(r.ticket.url.clone()))
                 .unwrap_or_default(),
-            KeyCode::Char('p') => match self
+            KeyCommand::OpenPr => match self
                 .selected_row()
                 .map(|r| r.work.most_urgent_pr().map(|p| p.status.pr.url.clone()))
             {
@@ -402,8 +414,8 @@ impl TicketsPane {
                 }
                 None => PaneAction::None,
             },
-            KeyCode::Char('w') => self.start_or_open(),
-            KeyCode::Char('W') => match self.selected_row() {
+            KeyCommand::WorktreeOpen => self.start_or_open(),
+            KeyCommand::WorktreeList => match self.selected_row() {
                 Some(r) if r.work.worktrees.is_empty() => {
                     self.notice = Some(format!("{} has no worktrees", r.ticket.key));
                     PaneAction::None
@@ -413,7 +425,7 @@ impl TicketsPane {
                 },
                 None => PaneAction::None,
             },
-            KeyCode::Char('s') => {
+            KeyCommand::Transition => {
                 let can = self.tickets.value().is_some_and(|v| v.transitions);
                 match self.selected_row() {
                     Some(r) if can => PaneAction::ListTransitions {
@@ -422,6 +434,7 @@ impl TicketsPane {
                     _ => PaneAction::None,
                 }
             }
+            // Not in this pane's context; the keymap refuses to bind them.
             _ => PaneAction::None,
         }
     }
@@ -524,6 +537,8 @@ mod tests {
     use zax_domain::*;
 
     use super::*;
+    use crate::keys::testing::press;
+    use zax_domain::keymap::{Keymaps, PaneContext};
 
     fn t(secs: u64) -> SystemTime {
         UNIX_EPOCH + Duration::from_secs(secs)
@@ -532,6 +547,13 @@ mod tests {
         KeyEvent::new(code, KeyModifiers::NONE)
     }
 
+    fn keymap() -> Keymap {
+        Keymaps::defaults()
+            .for_context(PaneContext::Tickets)
+            .clone()
+    }
+
+    /// Type a key sequence such as `SPC w o`; the action of the last key.
     fn ticket(k: &str, category: StatusCategory, summary: &str) -> Ticket {
         Ticket {
             key: TicketKey::parse(k).unwrap(),
@@ -555,7 +577,7 @@ mod tests {
     }
 
     fn pane_with(tickets: Vec<Ticket>, work: WorkIndex) -> TicketsPane {
-        let mut pane = TicketsPane::new();
+        let mut pane = TicketsPane::new(keymap());
         pane.set_focused(true);
         pane.apply_tickets(Some(("Jira".into(), true, tickets)), Some(t(100)), None);
         pane.apply_work(Some(work), Some(t(100)), None);
@@ -579,7 +601,7 @@ mod tests {
 
     #[test]
     fn tickets_render_before_work_arrives() {
-        let mut pane = TicketsPane::new();
+        let mut pane = TicketsPane::new(keymap());
         pane.apply_tickets(
             Some((
                 "Jira".into(),
@@ -679,29 +701,29 @@ mod tests {
     }
 
     #[test]
-    fn enter_opens_and_y_copies_the_ticket() {
+    fn enter_opens_and_spc_y_copies_the_ticket() {
         let mut pane = pane_with(
             vec![ticket("OMEGA-1", StatusCategory::ToDo, "x")],
             WorkIndex::default(),
         );
         assert_eq!(
-            pane.on_key(key(KeyCode::Enter)),
+            press(&mut pane, "RET"),
             PaneAction::OpenUrl("https://x/browse/OMEGA-1".into())
         );
         assert_eq!(
-            pane.on_key(key(KeyCode::Char('y'))),
+            press(&mut pane, "SPC y"),
             PaneAction::CopyUrl("https://x/browse/OMEGA-1".into())
         );
     }
 
     #[test]
-    fn w_starts_work_when_there_is_none_and_opens_it_when_there_is() {
+    fn spc_w_o_starts_work_when_there_is_none_and_opens_it_when_there_is() {
         let mut pane = pane_with(
             vec![ticket("OMEGA-1", StatusCategory::ToDo, "Make it go")],
             WorkIndex::default(),
         );
         assert_eq!(
-            pane.on_key(key(KeyCode::Char('w'))),
+            press(&mut pane, "SPC w o"),
             PaneAction::StartWork {
                 branch: BranchName::parse_local("OMEGA-1-make-it-go").unwrap(),
                 repo: None,
@@ -713,7 +735,7 @@ mod tests {
         };
         let mut pane = pane_with(vec![ticket("OMEGA-1", StatusCategory::ToDo, "x")], work);
         assert_eq!(
-            pane.on_key(key(KeyCode::Char('w'))),
+            press(&mut pane, "SPC w o"),
             PaneAction::OpenWorktree {
                 path: PathBuf::from("/w/omega/OMEGA-1-a"),
                 others: 1
@@ -722,14 +744,14 @@ mod tests {
     }
 
     #[test]
-    fn w_asks_for_a_repo_when_projects_are_configured() {
+    fn spc_w_o_asks_for_a_repo_when_projects_are_configured() {
         let mut pane = pane_with(
             vec![ticket("OMEGA-1", StatusCategory::ToDo, "Make it go")],
             WorkIndex::default(),
         );
         pane.set_repo_choice(true);
         assert_eq!(
-            pane.on_key(key(KeyCode::Char('w'))),
+            press(&mut pane, "SPC w o"),
             PaneAction::ChooseRepo {
                 branch: BranchName::parse_local("OMEGA-1-make-it-go").unwrap()
             }
@@ -737,14 +759,14 @@ mod tests {
     }
 
     #[test]
-    fn w_starts_work_directly_without_projects() {
+    fn spc_w_o_starts_work_directly_without_projects() {
         let mut pane = pane_with(
             vec![ticket("OMEGA-1", StatusCategory::ToDo, "Make it go")],
             WorkIndex::default(),
         );
         pane.set_repo_choice(false);
         assert_eq!(
-            pane.on_key(key(KeyCode::Char('w'))),
+            press(&mut pane, "SPC w o"),
             PaneAction::StartWork {
                 branch: BranchName::parse_local("OMEGA-1-make-it-go").unwrap(),
                 repo: None,
@@ -761,7 +783,7 @@ mod tests {
         let mut pane = pane_with(vec![ticket("OMEGA-1", StatusCategory::ToDo, "x")], work);
         pane.set_repo_choice(true);
         assert_eq!(
-            pane.on_key(key(KeyCode::Char('w'))),
+            press(&mut pane, "SPC w o"),
             PaneAction::OpenWorktree {
                 path: PathBuf::from("/w/omega/OMEGA-1-a"),
                 others: 0
@@ -789,7 +811,7 @@ mod tests {
         let branch = BranchName::parse_local("OMEGA-1-go").unwrap();
         pane.show_repo_picker(branch.clone(), repo_choices(None));
         assert_eq!(
-            pane.on_key(key(KeyCode::Enter)),
+            press(&mut pane, "RET"),
             PaneAction::StartWork {
                 branch,
                 repo: Some(PathBuf::from("/h/src/omega")),
@@ -811,17 +833,17 @@ mod tests {
         assert_eq!(pane.on_key(key(KeyCode::Esc)), PaneAction::None);
         // The picker is gone, not merely hidden: the next `j` moves the
         // ticket list rather than being swallowed by the picker again.
-        assert_eq!(pane.on_key(key(KeyCode::Char('j'))), PaneAction::None);
+        assert_eq!(press(&mut pane, "j"), PaneAction::None);
         assert_eq!(pane.selected, 1);
     }
 
     #[test]
-    fn capital_w_asks_for_the_worktrees_popup_or_says_there_are_none() {
+    fn spc_w_l_asks_for_the_worktrees_popup_or_says_there_are_none() {
         let mut pane = pane_with(
             vec![ticket("OMEGA-1", StatusCategory::ToDo, "x")],
             WorkIndex::default(),
         );
-        assert_eq!(pane.on_key(key(KeyCode::Char('W'))), PaneAction::None);
+        assert_eq!(press(&mut pane, "SPC w l"), PaneAction::None);
         assert!(draw(&pane, 60, 6)
             .join("\n")
             .contains("OMEGA-1 has no worktrees"));
@@ -831,7 +853,7 @@ mod tests {
         };
         let mut pane = pane_with(vec![ticket("OMEGA-1", StatusCategory::Done, "x")], work);
         assert_eq!(
-            pane.on_key(key(KeyCode::Char('W'))),
+            press(&mut pane, "SPC w l"),
             PaneAction::ListWorktrees {
                 key: TicketKey::parse("OMEGA-1").unwrap()
             }
@@ -839,26 +861,26 @@ mod tests {
     }
 
     #[test]
-    fn p_without_a_pull_request_says_so() {
+    fn spc_o_p_without_a_pull_request_says_so() {
         let mut pane = pane_with(
             vec![ticket("OMEGA-1", StatusCategory::ToDo, "x")],
             WorkIndex::default(),
         );
-        assert_eq!(pane.on_key(key(KeyCode::Char('p'))), PaneAction::None);
+        assert_eq!(press(&mut pane, "SPC o p"), PaneAction::None);
         assert!(draw(&pane, 40, 6)
             .iter()
             .any(|l| l.contains("no pull request")));
     }
 
     #[test]
-    fn s_asks_for_transitions_and_a_digit_picks_one() {
+    fn spc_s_asks_for_transitions_and_a_digit_picks_one() {
         let mut pane = pane_with(
             vec![ticket("OMEGA-1", StatusCategory::ToDo, "x")],
             WorkIndex::default(),
         );
         let k = TicketKey::parse("OMEGA-1").unwrap();
         assert_eq!(
-            pane.on_key(key(KeyCode::Char('s'))),
+            press(&mut pane, "SPC s"),
             PaneAction::ListTransitions { key: k.clone() }
         );
         pane.show_picker(
@@ -889,6 +911,37 @@ mod tests {
     }
 
     #[test]
+    fn a_prefix_typed_before_the_picker_opened_does_not_wait_behind_it() {
+        let mut pane = pane_with(
+            vec![ticket("OMEGA-1", StatusCategory::ToDo, "x")],
+            WorkIndex::default(),
+        );
+        let k = TicketKey::parse("OMEGA-1").unwrap();
+        assert_eq!(press(&mut pane, "SPC"), PaneAction::None);
+        pane.show_picker(
+            k.clone(),
+            vec![
+                Transition {
+                    id: "a".into(),
+                    name: "a".into(),
+                },
+                Transition {
+                    id: "b".into(),
+                    name: "b".into(),
+                },
+            ],
+        );
+        assert_eq!(
+            pane.on_key(key(KeyCode::Char('2'))),
+            PaneAction::Transition {
+                key: k,
+                id: "b".into()
+            }
+        );
+        assert_eq!(press(&mut pane, "q"), PaneAction::None);
+    }
+
+    #[test]
     fn esc_closes_the_picker_rather_than_the_pane() {
         let mut pane = pane_with(
             vec![ticket("OMEGA-1", StatusCategory::ToDo, "x")],
@@ -902,12 +955,12 @@ mod tests {
             }],
         );
         assert_eq!(pane.on_key(key(KeyCode::Esc)), PaneAction::None);
-        assert_eq!(pane.on_key(key(KeyCode::Esc)), PaneAction::Quit);
+        assert_eq!(press(&mut pane, "SPC q"), PaneAction::Quit);
     }
 
     #[test]
-    fn s_does_nothing_when_the_provider_cannot_transition() {
-        let mut pane = TicketsPane::new();
+    fn spc_s_does_nothing_when_the_provider_cannot_transition() {
+        let mut pane = TicketsPane::new(keymap());
         pane.apply_tickets(
             Some((
                 "Jira".into(),
@@ -917,12 +970,42 @@ mod tests {
             Some(t(1)),
             None,
         );
-        assert_eq!(pane.on_key(key(KeyCode::Char('s'))), PaneAction::None);
+        assert_eq!(press(&mut pane, "SPC s"), PaneAction::None);
+    }
+
+    #[test]
+    fn spc_r_refreshes_and_spc_q_quits_but_q_and_esc_do_not() {
+        let mut pane = pane_with(
+            vec![ticket("OMEGA-1", StatusCategory::ToDo, "x")],
+            WorkIndex::default(),
+        );
+        assert_eq!(press(&mut pane, "SPC r"), PaneAction::Refresh);
+        assert_eq!(press(&mut pane, "q"), PaneAction::None);
+        assert_eq!(press(&mut pane, "<Esc>"), PaneAction::None);
+        assert_eq!(press(&mut pane, "SPC q"), PaneAction::Quit);
+    }
+
+    #[test]
+    fn an_unconfigured_pane_still_quits_with_spc_q() {
+        let mut pane = TicketsPane::unconfigured(keymap());
+        assert_eq!(press(&mut pane, "SPC q"), PaneAction::Quit);
+    }
+
+    #[test]
+    fn a_pane_notice_stays_in_the_body_and_the_status_bar_fills_the_footer() {
+        let mut pane = pane_with(
+            vec![ticket("OMEGA-1", StatusCategory::ToDo, "x")],
+            WorkIndex::default(),
+        );
+        press(&mut pane, "SPC o p");
+        let lines = draw(&pane, 80, 6);
+        assert!(lines[..5].iter().any(|l| l.contains("no pull request")));
+        assert!(lines[5].contains("SPC"), "{lines:#?}");
     }
 
     #[test]
     fn an_unconfigured_pane_says_how_to_configure_it() {
-        let lines = draw(&TicketsPane::unconfigured(), 40, 4);
+        let lines = draw(&TicketsPane::unconfigured(keymap()), 40, 4);
         assert!(
             lines
                 .iter()

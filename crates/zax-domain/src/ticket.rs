@@ -92,7 +92,7 @@ pub struct Transition {
     pub name: String,
 }
 
-/// The branch `w` creates for a ticket: its key and the first four words of
+/// The branch `SPC w o` creates for a ticket: its key and the first four words of
 /// its summary, lowercased, every run of other characters one `-`.
 ///
 /// A summary with no ASCII word in it (empty, emoji, CJK) gives `<KEY>-work`.

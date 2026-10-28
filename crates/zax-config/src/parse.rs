@@ -43,7 +43,7 @@ pub struct WorktreeConfig {
     pub hooks: Vec<Command>,
 }
 
-/// What a worktree is opened in: the tickets pane's `w`, and `zax worktree
+/// What a worktree is opened in: the tickets pane's `SPC w o`, and `zax worktree
 /// new` and `review` once the worktree is ready.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OpenConfig {

@@ -233,7 +233,7 @@ fn run_exec_pane(title: String, every: Duration, command: Command) -> Result<()>
 /// nothing to report but a missing helper program, and the user can see that
 /// nothing opened. Building a review worktree is different: it mutates the
 /// repository, it can refuse for reasons the user needs to read, and a pane
-/// that swallowed the answer would leave a `w` press looking like a no-op.
+/// that swallowed the answer would leave a worktree key press looking like a no-op.
 pub(crate) fn perform(action: PaneAction) -> Result<Option<String>> {
     perform_with(&SystemExec, action)
 }
@@ -281,7 +281,7 @@ fn perform_with<E: Exec>(exec: &E, action: PaneAction) -> Result<Option<String>>
 /// refused review exits non-zero, and zax prints its whole error chain as the
 /// last line of stderr, so that line is the message; anything else (a tool
 /// that wrote nothing, a status with no explanation) still produces a line,
-/// because the point is that a failed `w` is never silent. A worktree that was
+/// because the point is that a failed worktree action is never silent. A worktree that was
 /// made but could not be opened exits zero and warns, and that warning is just
 /// as invisible to the user as a refusal would be: the editor never appeared
 /// either way.
@@ -290,7 +290,7 @@ fn review_message(result: Result<zax_exec::Output, zax_exec::ExecError>) -> Opti
         Ok(out) if out.ok() => marked::find_warning(&out.stderr)?,
         // zax's own line, which names the reason. Only when it never got to
         // write one does the tool's own last word stand in, because a failed
-        // `w` falling silent is the thing being prevented.
+        // a worktree action falling silent is the thing being prevented.
         Ok(out) => marked::find_error(&out.stderr)
             .or_else(|| {
                 out.stderr
@@ -368,7 +368,7 @@ mod tests {
 
     #[test]
     fn a_refused_review_reaches_the_pane_instead_of_vanishing() {
-        // The two refusals a `w` press can actually meet, spelled the way zax
+        // The two refusals a worktree key press can actually meet, spelled the way zax
         // prints them.
         let refusal = "zax: pull request #42 belongs to acme/omega, but this \
                        is someone/zed-ai-extensions";
@@ -393,7 +393,7 @@ mod tests {
 
     #[test]
     fn a_failed_review_row_action_hands_the_pane_a_line_to_show() {
-        // The `w` press mutates the repository and can refuse; discarding its
+        // The worktree key press mutates the repository and can refuse; discarding its
         // result leaves the keystroke looking like a no-op.
         let exec = RecordingExec::with_responses(vec![Output {
             status: 1,

@@ -219,6 +219,14 @@ impl MyPrsPane {
                 self.scroll.page_up();
                 PaneAction::None
             }
+            KeyCommand::Top => {
+                self.scroll.top();
+                PaneAction::None
+            }
+            KeyCommand::Bottom => {
+                self.scroll.bottom(len);
+                PaneAction::None
+            }
             KeyCommand::Open => self
                 .selected()
                 .map(|m| PaneAction::OpenUrl(m.status.pr.url.clone()))

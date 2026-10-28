@@ -419,6 +419,14 @@ impl TicketsPane {
                 self.scroll.page_up();
                 PaneAction::None
             }
+            KeyCommand::Top => {
+                self.scroll.top();
+                PaneAction::None
+            }
+            KeyCommand::Bottom => {
+                self.scroll.bottom(len);
+                PaneAction::None
+            }
             KeyCommand::Open => self
                 .selected_row()
                 .map(|r| PaneAction::OpenUrl(r.ticket.url.clone()))

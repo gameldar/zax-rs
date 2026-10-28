@@ -34,6 +34,10 @@ pub enum Key {
     PageUp,
     /// Page down.
     PageDown,
+    /// Home.
+    Home,
+    /// End.
+    End,
 }
 
 /// One key press with its modifiers.
@@ -78,7 +82,7 @@ pub enum KeyParseError {
     #[error("a key sequence needs at least one key")]
     Empty,
     /// A key spelling was not recognised.
-    #[error("`{0}` is not a key; use SPC, RET, TAB, DEL, <Esc>, <Up>, <Down>, <Left>, <Right>, <PageUp>, <PageDown>, C-x, M-x or a single character")]
+    #[error("`{0}` is not a key; use SPC, RET, TAB, DEL, <Esc>, <Up>, <Down>, <Left>, <Right>, <PageUp>, <PageDown>, <Home>, <End>, C-x, M-x or a single character")]
     Unknown(String),
 }
 
@@ -112,6 +116,8 @@ impl FromStr for KeyChord {
             "<Right>" => Key::Right,
             "<PageUp>" => Key::PageUp,
             "<PageDown>" => Key::PageDown,
+            "<Home>" => Key::Home,
+            "<End>" => Key::End,
             _ => {
                 let mut chars = rest.chars();
                 match (chars.next(), chars.next()) {
@@ -145,6 +151,8 @@ impl fmt::Display for KeyChord {
             Key::Right => f.write_str("<Right>"),
             Key::PageUp => f.write_str("<PageUp>"),
             Key::PageDown => f.write_str("<PageDown>"),
+            Key::Home => f.write_str("<Home>"),
+            Key::End => f.write_str("<End>"),
         }
     }
 }
@@ -216,6 +224,10 @@ pub enum Command {
     PageDown,
     /// Move the selection up a pane's height (scroll, in an exec pane).
     PageUp,
+    /// Move the selection to the first row (scroll, in an exec pane).
+    Top,
+    /// Move the selection to the last row (scroll, in an exec pane).
+    Bottom,
     /// Open the selection in the browser.
     Open,
     /// Copy the selection's url.
@@ -251,11 +263,13 @@ pub enum Command {
 }
 
 impl Command {
-    const ALL: [Self; 20] = [
+    const ALL: [Self; 22] = [
         Self::MoveDown,
         Self::MoveUp,
         Self::PageDown,
         Self::PageUp,
+        Self::Top,
+        Self::Bottom,
         Self::Open,
         Self::CopyUrl,
         Self::Refresh,
@@ -282,6 +296,8 @@ impl Command {
             Self::MoveUp => "move-up",
             Self::PageDown => "page-down",
             Self::PageUp => "page-up",
+            Self::Top => "top",
+            Self::Bottom => "bottom",
             Self::Open => "open",
             Self::CopyUrl => "copy-url",
             Self::Refresh => "refresh",
@@ -309,6 +325,8 @@ impl Command {
             Self::MoveUp => "up",
             Self::PageDown => "page down",
             Self::PageUp => "page up",
+            Self::Top => "top",
+            Self::Bottom => "bottom",
             Self::Open => "open in browser",
             Self::CopyUrl => "copy url",
             Self::Refresh => "refresh",
@@ -374,6 +392,8 @@ const PR_LIST: &[Command] = &[
     Command::MoveUp,
     Command::PageDown,
     Command::PageUp,
+    Command::Top,
+    Command::Bottom,
     Command::Open,
     Command::CopyUrl,
     Command::Refresh,
@@ -392,6 +412,8 @@ const TICKETS: &[Command] = &[
     Command::MoveUp,
     Command::PageDown,
     Command::PageUp,
+    Command::Top,
+    Command::Bottom,
     Command::Open,
     Command::CopyUrl,
     Command::Refresh,
@@ -406,6 +428,8 @@ const TODO: &[Command] = &[
     Command::MoveUp,
     Command::PageDown,
     Command::PageUp,
+    Command::Top,
+    Command::Bottom,
     Command::Refresh,
     Command::Quit,
     Command::TodoAdd,
@@ -421,6 +445,8 @@ const EXEC: &[Command] = &[
     Command::MoveUp,
     Command::PageDown,
     Command::PageUp,
+    Command::Top,
+    Command::Bottom,
     Command::Refresh,
     Command::Quit,
 ];
@@ -819,6 +845,8 @@ fn default_table(context: PaneContext) -> Vec<(&'static str, Command)> {
         ("C-d", Command::PageDown),
         ("<PageUp>", Command::PageUp),
         ("C-u", Command::PageUp),
+        ("<Home>", Command::Top),
+        ("<End>", Command::Bottom),
         ("SPC r", Command::Refresh),
         ("SPC q", Command::Quit),
     ];
@@ -892,6 +920,8 @@ mod tests {
             "C--",
             "<PageUp>",
             "C-<PageDown>",
+            "<Home>",
+            "M-<End>",
         ] {
             assert_eq!(s(text).to_string(), text);
         }
@@ -915,6 +945,8 @@ mod tests {
             Key::Backspace,
             Key::PageUp,
             Key::PageDown,
+            Key::Home,
+            Key::End,
         ];
         for code in keys {
             for (ctrl, alt) in [(false, false), (true, false), (false, true), (true, true)] {
@@ -1070,6 +1102,8 @@ mod tests {
             cmd(context, "<Up>", Command::MoveUp);
             cmd(context, "<PageDown>", Command::PageDown);
             cmd(context, "C-u", Command::PageUp);
+            cmd(context, "<Home>", Command::Top);
+            cmd(context, "<End>", Command::Bottom);
         }
         cmd(PaneContext::BranchStatus, "SPC o b", Command::Open);
         cmd(PaneContext::Tickets, "SPC o p", Command::OpenPr);

@@ -267,12 +267,13 @@ defaults = true             # false: start from no bindings at all
 ```
 
 Sequences are space-separated keys: `SPC`, `RET`, `TAB`, `DEL`, `<Esc>`,
-`<Up>`, `<Down>`, `<Left>`, `<Right>`, `<PageUp>`, `<PageDown>`, `C-x`,
-`M-x`, or a plain character (`W` for shift-w). Commands are `move-down`,
-`move-up`, `page-down`, `page-up`, `open`, `copy-url`,
-`refresh`, `quit`, `worktree-open`, `worktree-review`, `worktree-list`,
-`open-pr`, `transition`, `todo-add`, `todo-edit`, `todo-toggle`,
-`todo-snooze`, `todo-delete`, `todo-open-file` and `todo-show-done`; each pane
+`<Up>`, `<Down>`, `<Left>`, `<Right>`, `<PageUp>`, `<PageDown>`, `<Home>`,
+`<End>`, `C-x`, `M-x`, or a plain character (`W` for shift-w). Commands are
+`move-down`, `move-up`, `page-down`, `page-up`, `top`, `bottom`, `open`,
+`copy-url`, `refresh`, `quit`, `worktree-open`, `worktree-review`,
+`worktree-list`, `open-pr`, `transition`, `todo-add`, `todo-edit`,
+`todo-toggle`, `todo-snooze`, `todo-delete`, `todo-open-file` and
+`todo-show-done`; each pane
 accepts only the ones it can run.
 
 Bindings resolve in order: the defaults (unless `defaults = false`), then
@@ -284,10 +285,11 @@ the three config layers the later layer wins per sequence; the repo's
 `.zax.toml` may set `[keymap]`, and it runs nothing.
 
 Every list pane, and the exec pane's output, pages with `<PageDown>`/`C-d`
-and `<PageUp>`/`C-u` (the branch pane has no rows to page). A `▲` or `▼` in
-the last column marks rows hidden above or below. Clicking a row selects it
-and the wheel moves the selection. zax captures the mouse, so hold shift
-(option in iTerm2) to drag-select text.
+and `<PageUp>`/`C-u`, and jumps to the first or last row with `<Home>` and
+`<End>` (the branch pane has no rows to page). A `▲` or `▼` in the last
+column marks rows hidden above or below. Clicking a row selects it and the
+wheel moves the selection. zax captures the mouse, so hold shift (option in
+iTerm2) to drag-select text.
 
 ### Panes
 

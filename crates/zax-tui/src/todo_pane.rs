@@ -225,6 +225,14 @@ impl TodoPane {
                 self.scroll.page_up();
                 PaneAction::None
             }
+            KeyCommand::Top => {
+                self.scroll.top();
+                PaneAction::None
+            }
+            KeyCommand::Bottom => {
+                self.scroll.bottom(len);
+                PaneAction::None
+            }
             KeyCommand::TodoAdd => {
                 self.keys.cancel();
                 self.prompt = Some(Prompt::new(PromptMode::Add, ""));

@@ -229,6 +229,14 @@ impl PrsForReviewPane {
                 self.scroll.page_up();
                 PaneAction::None
             }
+            KeyCommand::Top => {
+                self.scroll.top();
+                PaneAction::None
+            }
+            KeyCommand::Bottom => {
+                self.scroll.bottom(len);
+                PaneAction::None
+            }
             KeyCommand::Open => self
                 .selected()
                 .map(|item| PaneAction::OpenUrl(item.pr.url.clone()))
@@ -780,6 +788,25 @@ mod tests {
             Some(100),
             "clamped at the start"
         );
+    }
+
+    #[test]
+    fn home_and_end_jump_to_the_first_and_last_rows() {
+        let mut pane = ten_prs();
+        draw(&pane, t(100));
+
+        press(&mut pane, "<End>");
+        assert_eq!(pane.selected().map(|p| p.pr.number), Some(109));
+        let bottom = draw(&pane, t(100));
+        assert!(row(&bottom, 4).contains("#109"));
+        assert_eq!(gutter(&bottom, 1), "\u{25b2}");
+        assert_eq!(gutter(&bottom, 4), " ");
+
+        press(&mut pane, "<Home>");
+        assert_eq!(pane.selected().map(|p| p.pr.number), Some(100));
+        let top = draw(&pane, t(100));
+        assert!(row(&top, 1).contains("#100"));
+        assert_eq!(gutter(&top, 1), " ");
     }
 
     #[test]

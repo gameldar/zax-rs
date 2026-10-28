@@ -163,6 +163,14 @@ impl ExecPane {
                 self.scroll = self.scroll.saturating_sub(self.page.get().max(1));
                 PaneAction::None
             }
+            KeyCommand::Top => {
+                self.scroll = 0;
+                PaneAction::None
+            }
+            KeyCommand::Bottom => {
+                self.scroll = body_len.saturating_sub(1);
+                PaneAction::None
+            }
             // Not in this pane's context; the keymap refuses to bind them.
             _ => PaneAction::None,
         }
@@ -340,6 +348,11 @@ mod tests {
         for _ in 0..10 {
             press(&mut pane, "<PageUp>");
         }
+        assert_eq!(text(&draw(&pane, t(100)), 1), "line 1");
+
+        press(&mut pane, "<End>");
+        assert_eq!(text(&draw(&pane, t(100)), 1), "line 20");
+        press(&mut pane, "<Home>");
         assert_eq!(text(&draw(&pane, t(100)), 1), "line 1");
     }
 

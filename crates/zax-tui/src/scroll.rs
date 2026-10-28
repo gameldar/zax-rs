@@ -87,6 +87,16 @@ impl ListScroll {
         self.selected = self.selected.saturating_sub(page);
     }
 
+    /// Jump to the first row; the next layout scrolls the window to it.
+    pub fn top(&mut self) {
+        self.selected = 0;
+    }
+
+    /// Jump to the last row; the next layout scrolls the window to it.
+    pub fn bottom(&mut self, len: usize) {
+        self.select(len.saturating_sub(1), len);
+    }
+
     /// A pane's height before the first draw is unknown; a page is one row
     /// until then, so the key still does something sensible.
     fn page(&self) -> usize {
@@ -261,6 +271,23 @@ mod tests {
         }
         assert_eq!(scroll.selected(), 0);
         assert_eq!(rows(&scroll, 20, 5), 0..5);
+    }
+
+    #[test]
+    fn top_and_bottom_jump_to_the_ends_and_take_the_window_with_them() {
+        let mut scroll = ListScroll::new();
+        rows(&scroll, 10, 4);
+
+        scroll.bottom(10);
+        assert_eq!(scroll.selected(), 9);
+        assert_eq!(rows(&scroll, 10, 4), 6..10);
+
+        scroll.top();
+        assert_eq!(scroll.selected(), 0);
+        assert_eq!(rows(&scroll, 10, 4), 0..4);
+
+        scroll.bottom(0);
+        assert_eq!(scroll.selected(), 0, "an empty list has nowhere to go");
     }
 
     #[test]

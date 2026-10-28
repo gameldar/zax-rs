@@ -2,7 +2,7 @@
 
 use std::time::SystemTime;
 
-use ratatui::crossterm::event::KeyEvent;
+use ratatui::crossterm::event::{KeyEvent, MouseEvent};
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
@@ -20,13 +20,14 @@ use crate::pr_fields::{
     check_glyph, check_style, checks_label, mergeable_label, mergeable_style, review_label,
     review_style, threads_label, threads_style,
 };
+use crate::scroll::{ListScroll, Viewport};
 
 const TITLE: &str = "My pull requests";
 const SEPARATOR: &str = " · ";
 
 pub struct MyPrsPane {
     cache: Cached<Vec<MyPullRequest>>,
-    selected: usize,
+    scroll: ListScroll,
     focused: bool,
     keys: KeyInput,
 }
@@ -35,7 +36,7 @@ impl MyPrsPane {
     pub fn new(keymap: Keymap) -> Self {
         Self {
             cache: Cached::new(),
-            selected: 0,
+            scroll: ListScroll::new(),
             focused: false,
             keys: KeyInput::new(keymap),
         }
@@ -49,7 +50,7 @@ impl MyPrsPane {
         match result {
             Ok(mine) => {
                 // The queue can shrink under the cursor between refreshes.
-                self.selected = self.selected.min(mine.len().saturating_sub(1));
+                self.scroll.clamp(mine.len());
                 self.cache.record_ok(mine, at);
             }
             Err(message) => self.cache.record_err(message, at),
@@ -61,7 +62,7 @@ impl MyPrsPane {
     }
 
     pub fn selected(&self) -> Option<&MyPullRequest> {
-        self.rows().get(self.selected)
+        self.rows().get(self.scroll.selected())
     }
 
     pub fn render(&self, frame: &mut Frame, area: Rect, now: SystemTime) {
@@ -92,18 +93,19 @@ impl MyPrsPane {
                 Style::default().fg(Color::DarkGray),
             )),
             Some(mine) => {
-                let window = self.visible_rows(mine.len(), area.height);
+                let window = self.viewport(mine.len(), area);
                 for (index, row) in mine
                     .iter()
                     .enumerate()
-                    .skip(window.start)
-                    .take(window.len())
+                    .skip(window.rows.start)
+                    .take(window.rows.len())
                 {
-                    lines.push(self.row(row, index == self.selected, area.width, now));
+                    let selected = index == self.scroll.selected();
+                    lines.push(self.row(row, selected, window.width, now));
                 }
                 // Only once a row is on screen: a detail line describing a row
                 // the pane had no room to draw describes nothing.
-                if !window.is_empty() {
+                if !window.rows.is_empty() {
                     if let Some(selected) = self.selected() {
                         lines.push(detail_line(&selected.status, area.width));
                     }
@@ -112,20 +114,21 @@ impl MyPrsPane {
         }
 
         frame.render_widget(Paragraph::new(Text::from(lines)), area);
+        if self.cache.value().is_some_and(|mine| !mine.is_empty()) {
+            self.scroll.render_gutter(frame);
+        }
         self.keys.render_which_key(frame, area);
         self.keys.render_footer(frame, footer);
     }
 
-    /// Which rows a pane of this height shows.
+    /// Which rows a pane of this size shows.
     ///
     /// Two lines of chrome rather than the review pane's one: the header, and
-    /// the detail line under the rows. Derived from `selected` at every draw
-    /// so it cannot fall out of step with it.
-    fn visible_rows(&self, len: usize, height: u16) -> std::ops::Range<usize> {
-        let visible = usize::from(height).saturating_sub(2);
-        let first = self.selected.saturating_sub(visible.saturating_sub(1));
-        let first = first.min(len);
-        first..(first + visible).min(len)
+    /// the detail line under the rows.
+    fn viewport(&self, len: usize, area: Rect) -> Viewport {
+        let visible = usize::from(area.height).saturating_sub(2);
+        self.scroll
+            .layout(len, visible, area.x, area.y + 1, area.width)
     }
 
     /// `<ci><attention> repo#number title[ draft] age`.
@@ -188,17 +191,32 @@ impl MyPrsPane {
         }
     }
 
+    /// A click selects the row under it; the wheel moves the selection.
+    pub fn on_mouse(&mut self, mouse: MouseEvent) {
+        if self.scroll.on_mouse(mouse, self.rows().len()) {
+            self.keys.cancel();
+        }
+    }
+
     fn run(&mut self, command: KeyCommand) -> PaneAction {
         let len = self.rows().len();
         match command {
             KeyCommand::Refresh => PaneAction::Refresh,
             KeyCommand::Quit => PaneAction::Quit,
             KeyCommand::MoveDown => {
-                self.selected = (self.selected + 1).min(len.saturating_sub(1));
+                self.scroll.down(len);
                 PaneAction::None
             }
             KeyCommand::MoveUp => {
-                self.selected = self.selected.saturating_sub(1);
+                self.scroll.up();
+                PaneAction::None
+            }
+            KeyCommand::PageDown => {
+                self.scroll.page_down(len);
+                PaneAction::None
+            }
+            KeyCommand::PageUp => {
+                self.scroll.page_up();
                 PaneAction::None
             }
             KeyCommand::Open => self
@@ -527,10 +545,10 @@ mod tests {
             t(100),
         );
 
-        assert_eq!(pane.visible_rows(10, 6), 0..4);
+        assert_eq!(pane.viewport(10, Rect::new(0, 0, 48, 6)).rows, 0..4);
         for expected in [0..4, 0..4, 0..4, 1..5, 2..6] {
             press(&mut pane, "j");
-            assert_eq!(pane.visible_rows(10, 6), expected);
+            assert_eq!(pane.viewport(10, Rect::new(0, 0, 48, 6)).rows, expected);
         }
 
         // A pane with room for the chrome and nothing else shows no rows
@@ -538,7 +556,9 @@ mod tests {
         // wherever it starts, which is what is being asserted.
         for height in [0, 1, 2] {
             assert!(
-                pane.visible_rows(10, height).is_empty(),
+                pane.viewport(10, Rect::new(0, 0, 48, height))
+                    .rows
+                    .is_empty(),
                 "height {height} showed rows"
             );
         }

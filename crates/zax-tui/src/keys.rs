@@ -29,6 +29,8 @@ pub fn chord(key: &KeyEvent) -> Option<KeyChord> {
         KeyCode::Right => Key::Right,
         KeyCode::Tab => Key::Tab,
         KeyCode::Backspace => Key::Backspace,
+        KeyCode::PageUp => Key::PageUp,
+        KeyCode::PageDown => Key::PageDown,
         _ => return None,
     };
     Some(KeyChord {
@@ -241,7 +243,7 @@ pub fn split_footer(area: Rect) -> (Rect, Rect) {
 fn status_item(prefix: Option<KeyChord>, candidate: &Candidate) -> Option<String> {
     if matches!(
         candidate.command,
-        Some(KeyCommand::MoveDown | KeyCommand::MoveUp)
+        Some(KeyCommand::MoveDown | KeyCommand::MoveUp | KeyCommand::PageDown | KeyCommand::PageUp)
     ) {
         return None;
     }
@@ -478,6 +480,8 @@ pub(crate) mod testing {
                     "<Esc>" => KeyCode::Esc,
                     "<Up>" => KeyCode::Up,
                     "<Down>" => KeyCode::Down,
+                    "<PageUp>" => KeyCode::PageUp,
+                    "<PageDown>" => KeyCode::PageDown,
                     one if one.chars().count() == 1 => {
                         KeyCode::Char(one.chars().next().unwrap_or(' '))
                     }

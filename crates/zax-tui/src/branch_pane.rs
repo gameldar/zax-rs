@@ -2,7 +2,7 @@
 
 use std::time::SystemTime;
 
-use ratatui::crossterm::event::KeyEvent;
+use ratatui::crossterm::event::{KeyEvent, MouseEvent};
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
@@ -94,6 +94,9 @@ impl BranchStatusPane {
         self.keys.render_which_key(frame, area);
         self.keys.render_footer(frame, footer);
     }
+
+    /// One branch, no rows: there is nothing for the mouse to pick.
+    pub fn on_mouse(&mut self, _mouse: MouseEvent) {}
 
     pub fn on_key(&mut self, key: KeyEvent) -> PaneAction {
         match self.keys.press(key) {

@@ -13,6 +13,7 @@ pub(crate) mod pr_fields;
 pub mod prs_pane;
 pub mod refresh;
 pub mod repo_picker;
+pub mod scroll;
 pub mod tickets_pane;
 pub mod todo_pane;
 pub mod worktrees_modal;

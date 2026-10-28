@@ -267,8 +267,9 @@ defaults = true             # false: start from no bindings at all
 ```
 
 Sequences are space-separated keys: `SPC`, `RET`, `TAB`, `DEL`, `<Esc>`,
-`<Up>`, `<Down>`, `<Left>`, `<Right>`, `C-x`, `M-x`, or a plain character
-(`W` for shift-w). Commands are `move-down`, `move-up`, `open`, `copy-url`,
+`<Up>`, `<Down>`, `<Left>`, `<Right>`, `<PageUp>`, `<PageDown>`, `C-x`,
+`M-x`, or a plain character (`W` for shift-w). Commands are `move-down`,
+`move-up`, `page-down`, `page-up`, `open`, `copy-url`,
 `refresh`, `quit`, `worktree-open`, `worktree-review`, `worktree-list`,
 `open-pr`, `transition`, `todo-add`, `todo-edit`, `todo-toggle`,
 `todo-snooze`, `todo-delete`, `todo-open-file` and `todo-show-done`; each pane
@@ -281,6 +282,12 @@ or pane mismatch, a bad sequence, or a sequence that is a prefix of (or
 shadowed by) another is an error naming `keymap.<table>."<sequence>"`. Across
 the three config layers the later layer wins per sequence; the repo's
 `.zax.toml` may set `[keymap]`, and it runs nothing.
+
+Every list pane, and the exec pane's output, pages with `<PageDown>`/`C-d`
+and `<PageUp>`/`C-u` (the branch pane has no rows to page). A `▲` or `▼` in
+the last column marks rows hidden above or below. Clicking a row selects it
+and the wheel moves the selection. zax captures the mouse, so hold shift
+(option in iTerm2) to drag-select text.
 
 ### Panes
 

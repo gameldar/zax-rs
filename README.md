@@ -1,4 +1,10 @@
-# zax - Zed Agent eXtensions
+# zax
+
+zax started life as **Z**ed **A**i e**X**tensions: a way to put context
+around the agent terminal in Zed. It has since grown beyond Zed - it also
+works alongside [herdr](https://herdr.dev), opening worktrees and review
+agents as herdr spaces (see [Opening in herdr](#opening-in-herdr)) - but the
+name stuck.
 
 Zed's AI agent panel runs a single command when it opens a terminal thread
 (`agent.terminal_init_command`, usually `claude`). That terminal is where
@@ -15,6 +21,8 @@ It runs on its own tmux socket with its own configuration, so it can neither
 read nor disturb a personal tmux setup, and its sessions outlive Zed: closing
 the agent terminal or restarting Zed reattaches to a live agent with its
 scrollback intact.
+
+> **Note:** this repository was written with the aid of AI coding tools.
 
 ## Requirements
 
@@ -1011,3 +1019,7 @@ cargo fmt --all
 `nix flake check` runs fmt, clippy and the tests. Warnings are errors. The
 integration tests boot a real tmux server on a temporary socket, so tmux has
 to be present to run the full suite.
+
+## License
+
+Released under the [MIT License](LICENSE).

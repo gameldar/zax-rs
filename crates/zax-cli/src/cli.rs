@@ -238,15 +238,9 @@ mod tests {
 
     #[test]
     fn worktree_review_takes_a_repo() {
-        let cli = Cli::try_parse_from([
-            "zax",
-            "worktree",
-            "review",
-            "1963",
-            "--repo",
-            "acme/omega",
-        ])
-        .unwrap();
+        let cli =
+            Cli::try_parse_from(["zax", "worktree", "review", "1963", "--repo", "acme/omega"])
+                .unwrap();
         match cli.command {
             Commands::Worktree {
                 command: WorktreeCommand::Review { repo, .. },

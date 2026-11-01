@@ -545,7 +545,7 @@ mod tests {
         let buffer = draw(&loaded(), t(100 + 3 * 86_400));
         let first = row(&buffer, 1);
         assert!(first.contains("omega#1963"), "got: {first:?}");
-        assert!(first.contains("Stamp"), "got: {first:?}");
+        assert!(first.contains("Export"), "got: {first:?}");
         assert!(first.contains("3d"), "got: {first:?}");
         assert!(first.contains(crate::chrome::GLYPH_PASS), "got: {first:?}");
     }
@@ -555,7 +555,7 @@ mod tests {
         let buffer = draw(&loaded(), t(100));
         let first = row(&buffer, 1);
         assert!(
-            first.contains("omega#1963 (gameldar) Stamp"),
+            first.contains("omega#1963 (gameldar) Export"),
             "got: {first:?}"
         );
     }
@@ -567,7 +567,7 @@ mod tests {
         let mut pane = PrsForReviewPane::new(keymap());
         pane.apply(Ok(vec![orphan]), t(100));
         let first = row(&draw(&pane, t(100)), 1);
-        assert!(first.contains("omega#1963 Stamp"), "got: {first:?}");
+        assert!(first.contains("omega#1963 Export"), "got: {first:?}");
     }
 
     #[test]

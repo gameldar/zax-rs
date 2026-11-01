@@ -375,7 +375,10 @@ mod tests {
                        is someone/zed-ai-extensions";
         let message = review_message(out(1, refusal)).unwrap();
         assert!(message.contains("acme/omega"), "got: {message}");
-        assert!(message.contains("someone/zed-ai-extensions"), "got: {message}");
+        assert!(
+            message.contains("someone/zed-ai-extensions"),
+            "got: {message}"
+        );
     }
 
     #[test]

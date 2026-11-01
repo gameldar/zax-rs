@@ -149,8 +149,8 @@ mod tests {
 
     #[test]
     fn refuses_a_branch_that_already_exists() {
-        let git = FakeGitRepo::new("/Users/me/src/acme", "main")
-            .with_existing_branch("OMEGA-1963-stamp");
+        let git =
+            FakeGitRepo::new("/Users/me/src/acme", "main").with_existing_branch("OMEGA-1963-stamp");
         let fs = FakeFs::default();
         let runner = FakeRunner::default();
 

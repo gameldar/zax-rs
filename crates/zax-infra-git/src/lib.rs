@@ -225,10 +225,7 @@ mod tests {
     use super::*;
 
     fn cli(exec: RecordingExec) -> GitCli<RecordingExec> {
-        GitCli::new(
-            exec,
-            PathBuf::from("/Users/me/src/worktrees/acme/topic"),
-        )
+        GitCli::new(exec, PathBuf::from("/Users/me/src/worktrees/acme/topic"))
     }
 
     fn git_failed(stderr: &str) -> PortError {
@@ -266,9 +263,7 @@ mod tests {
 
     #[test]
     fn the_remote_url_is_asked_for_the_way_git_resolves_it() {
-        let git = cli(RecordingExec::returning(
-            "git@github.com:acme/omega.git\n",
-        ));
+        let git = cli(RecordingExec::returning("git@github.com:acme/omega.git\n"));
 
         assert_eq!(
             git.remote_url("origin").unwrap(),

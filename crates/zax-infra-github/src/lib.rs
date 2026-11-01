@@ -238,10 +238,7 @@ mod tests {
         let calls = gh.exec_ref().calls();
         assert_eq!(calls[0].args, ["api", "user", "-q", ".login"]);
         assert!(
-            calls[1]
-                .args
-                .iter()
-                .any(|a| a.contains("author:octocat")),
+            calls[1].args.iter().any(|a| a.contains("author:octocat")),
             "the resolved login must reach the search: {:?}",
             calls[1].args
         );
@@ -266,10 +263,7 @@ mod tests {
                 .any(|a| a.contains("reviewed-by:octocat -author:octocat")),
             "the resolved login must reach the search: {args:?}"
         );
-        assert!(
-            args.iter().any(|a| a == "login=octocat"),
-            "got: {args:?}"
-        );
+        assert!(args.iter().any(|a| a == "login=octocat"), "got: {args:?}");
     }
 
     #[test]

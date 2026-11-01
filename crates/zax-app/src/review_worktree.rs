@@ -393,7 +393,10 @@ mod tests {
 
         let message = err.to_string();
         assert!(message.contains("acme/omega"), "got: {message}");
-        assert!(message.contains("someone/zed-ai-extensions"), "got: {message}");
+        assert!(
+            message.contains("someone/zed-ai-extensions"),
+            "got: {message}"
+        );
         assert!(
             git.fetched.borrow().is_empty(),
             "nothing may be fetched into this repository"

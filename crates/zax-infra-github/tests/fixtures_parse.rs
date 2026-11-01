@@ -85,11 +85,7 @@ fn a_pull_request_missing_a_field_is_an_error_not_a_disappearance() {
     // pull request leaves the review queue with nothing to say it has gone.
     let json = include_str!("fixtures/search_prs.json");
 
-    let without_repo = json.replacen(
-        r#""repository": { "nameWithOwner": "acme/omega" },"#,
-        "",
-        1,
-    );
+    let without_repo = json.replacen(r#""repository": { "nameWithOwner": "acme/omega" },"#, "", 1);
     assert_ne!(
         without_repo, json,
         "the fixture shape changed; fix this test"

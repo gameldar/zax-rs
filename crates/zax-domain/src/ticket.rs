@@ -174,8 +174,7 @@ mod tests {
 
     #[test]
     fn a_slug_is_the_key_and_the_first_four_words_of_the_summary() {
-        let slug =
-            branch_slug(&key("OMEGA-2713"), "US123 Make export history available").unwrap();
+        let slug = branch_slug(&key("OMEGA-2713"), "US123 Make export history available").unwrap();
         assert_eq!(slug.as_str(), "OMEGA-2713-us123-make-export-history");
     }
 

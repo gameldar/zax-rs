@@ -296,7 +296,7 @@ mod tests {
         let name = SessionName::derive(&repo, &branch);
         assert_eq!(
             name.as_str(),
-            "zax-zed-ai-extensions-OMEGA-1963-stamp-218dfc7b"
+            "zax-zed-ai-extensions-OMEGA-1963-stamp-3287eed2"
         );
     }
 

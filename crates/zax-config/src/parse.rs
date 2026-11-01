@@ -1421,9 +1421,7 @@ hooks = ["direnv allow", "bundle install"]
         let slug = zax_domain::RepoSlug::parse("gameldar/zed-ai-extensions").unwrap();
         assert_eq!(
             projects.paths.get(&slug),
-            Some(std::path::Path::new(
-                "/home/me/src/tools/zed-ai-extensions"
-            ))
+            Some(std::path::Path::new("/home/me/src/tools/zed-ai-extensions"))
         );
     }
 

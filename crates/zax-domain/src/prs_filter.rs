@@ -305,10 +305,7 @@ mod tests {
 
     #[test]
     fn a_pattern_displays_as_it_was_written() {
-        assert_eq!(
-            RepoPattern::parse("acme/*").unwrap().to_string(),
-            "acme/*"
-        );
+        assert_eq!(RepoPattern::parse("acme/*").unwrap().to_string(), "acme/*");
     }
 
     #[test]

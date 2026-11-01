@@ -299,7 +299,10 @@ mod tests {
         let message = err.to_string();
         assert!(message.contains("acme/omega"), "got: {message}");
         assert!(message.contains("/h/src/omega"), "got: {message}");
-        assert!(message.contains("origin is someone/omega"), "got: {message}");
+        assert!(
+            message.contains("origin is someone/omega"),
+            "got: {message}"
+        );
     }
 
     #[test]

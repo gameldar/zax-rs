@@ -221,10 +221,7 @@ mod tests {
     #[test]
     fn an_unfiltered_search_asks_for_the_whole_review_queue() {
         let q = review_requested_query("octocat", &PrFilter::default(), now());
-        assert_eq!(
-            q,
-            "is:pr is:open archived:false review-requested:octocat"
-        );
+        assert_eq!(q, "is:pr is:open archived:false review-requested:octocat");
     }
 
     #[test]

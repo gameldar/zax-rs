@@ -309,18 +309,18 @@ mod tests {
 
     #[test]
     fn arrows_move_within_the_filtered_list() {
-        // "no" matches omega and nolan but not alpha, so down from the first
-        // match has to land on nolan, the second entry of the filtered view,
+        // "om" matches omega and omen but not alpha, so down from the first
+        // match has to land on omen, the second entry of the filtered view,
         // not on alpha or past the end of the full list.
         let mut picker = RepoPicker::new(
             branch(),
-            choices(&["/h/src/alpha", "/h/src/omega", "/h/src/nolan"], None),
+            choices(&["/h/src/alpha", "/h/src/omega", "/h/src/omen"], None),
         );
-        type_str(&mut picker, "no");
+        type_str(&mut picker, "om");
         picker.on_key(key(KeyCode::Down));
         assert_eq!(
             picker.on_key(key(KeyCode::Enter)),
-            RepoPickerAction::Choose(PathBuf::from("/h/src/nolan"))
+            RepoPickerAction::Choose(PathBuf::from("/h/src/omen"))
         );
         picker.on_key(key(KeyCode::Up));
         assert_eq!(

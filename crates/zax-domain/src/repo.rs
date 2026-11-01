@@ -370,9 +370,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             path.as_path(),
-            Path::new(
-                "/Users/me/src/worktrees/zed-ai-extensions/OMEGA-1963-export-csv-reports"
-            )
+            Path::new("/Users/me/src/worktrees/zed-ai-extensions/OMEGA-1963-export-csv-reports")
         );
     }
 

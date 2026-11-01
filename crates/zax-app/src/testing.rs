@@ -867,11 +867,8 @@ mod tests {
         let fs = FakeFs::with_existing(["/Users/me/src/acme/.env"]);
         assert!(fs.exists(Path::new("/Users/me/src/acme/.env")));
         assert!(!fs.exists(Path::new("/Users/me/src/acme/.envrc")));
-        fs.copy_file(
-            Path::new("/Users/me/src/acme/.env"),
-            Path::new("/w/.env"),
-        )
-        .unwrap();
+        fs.copy_file(Path::new("/Users/me/src/acme/.env"), Path::new("/w/.env"))
+            .unwrap();
         assert!(fs.exists(Path::new("/w/.env")));
         assert_eq!(fs.copies().len(), 1);
     }

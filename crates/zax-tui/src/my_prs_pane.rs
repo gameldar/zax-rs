@@ -443,7 +443,7 @@ mod tests {
     fn a_row_carries_both_glyphs_the_reference_the_title_and_the_age() {
         let first = line(&draw(&loaded(), t(100 + 3 * 86_400)), 1);
         assert!(first.contains("zax#12"), "got: {first:?}");
-        assert!(first.contains("Stamp"), "got: {first:?}");
+        assert!(first.contains("Export"), "got: {first:?}");
         assert!(first.contains("3d"), "got: {first:?}");
         assert!(first.contains(crate::chrome::GLYPH_FAIL), "got: {first:?}");
         assert!(

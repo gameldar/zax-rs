@@ -198,10 +198,7 @@ mod tests {
 
         let call = &editor.exec_ref().calls()[0];
         assert_eq!(call.program, "zed");
-        assert_eq!(
-            call.args,
-            ["-e", "/Users/me/src/worktrees/acme/patch-1"]
-        );
+        assert_eq!(call.args, ["-e", "/Users/me/src/worktrees/acme/patch-1"]);
     }
 
     #[test]

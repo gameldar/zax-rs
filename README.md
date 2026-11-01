@@ -998,9 +998,6 @@ and `zax-jira` only on `zax-exec` and `zax-protocol`. Nothing at `zax-app` or
 below mentions tmux, herdr, git or GitHub by name. Parsing happens once, at the boundary, into types that make the invalid states
 unrepresentable.
 
-The original design document is
-`docs/superpowers/specs/2026-09-18-zax-design.md`.
-
 ## Development
 
 ```sh

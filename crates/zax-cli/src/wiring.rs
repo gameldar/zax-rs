@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use zax_app::{Editor, FileSystem, PortError, WorktreeOpener};
 use zax_config::{Config, EditorConfig, OpenConfig};
-use zax_domain::{MainCheckout, RootRepoName, TodoFile};
+use zax_domain::{MainCheckout, ReviewPass, RootRepoName, TodoFile};
 use zax_exec::{InteractiveExec, SystemExec, SystemHandover};
 use zax_infra_editor::EditorCli;
 use zax_infra_git::{GitCheckouts, GitCli};
@@ -280,10 +280,15 @@ impl WorktreeOpener for OpenerAdapter {
         }
     }
 
-    fn open_for_review(&self, path: &Path, pr_url: &str) -> Result<(), PortError> {
+    fn open_for_review(
+        &self,
+        path: &Path,
+        pr_url: &str,
+        pass: ReviewPass,
+    ) -> Result<(), PortError> {
         match self {
-            Self::Command(cli) => cli.open_for_review(path, pr_url),
-            Self::Herdr(herdr) => herdr.open_for_review(path, pr_url),
+            Self::Command(cli) => cli.open_for_review(path, pr_url, pass),
+            Self::Herdr(herdr) => herdr.open_for_review(path, pr_url, pass),
         }
     }
 

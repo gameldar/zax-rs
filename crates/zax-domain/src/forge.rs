@@ -304,8 +304,10 @@ impl Revisit {
 /// it, as with `Attention`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReviewerState {
-    /// Your review is requested.
+    /// Your review is requested, and you have not reviewed it before.
     Requested,
+    /// Your review is requested again: you have reviewed it before.
+    ReRequested,
     Revisit(Revisit),
 }
 
@@ -313,10 +315,28 @@ impl ReviewerState {
     pub fn rank(self) -> u8 {
         match self {
             Self::Revisit(Revisit::Updated | Revisit::UpdatedWithOpenThreads(_)) => 0,
-            Self::Requested => 1,
+            Self::Requested | Self::ReRequested => 1,
             Self::Revisit(Revisit::OpenThreads(_)) => 2,
         }
     }
+
+    /// The review a fresh agent should run on this pull request: a first look,
+    /// or a follow-up on a review you already left.
+    pub fn review_pass(self) -> ReviewPass {
+        match self {
+            Self::Requested => ReviewPass::First,
+            Self::ReRequested | Self::Revisit(_) => ReviewPass::Again,
+        }
+    }
+}
+
+/// Whether a review agent looks at a pull request for the first time or
+/// follows up on a review you already left. Typed rather than a bool so a call
+/// site reads `Again`, not an unlabelled `true`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReviewPass {
+    First,
+    Again,
 }
 
 /// A row of the `prs-for-review` pane.
@@ -876,10 +896,24 @@ mod tests {
             ReviewerState::Revisit(Revisit::Updated),
             ReviewerState::Revisit(Revisit::UpdatedWithOpenThreads(n(1))),
             ReviewerState::Requested,
+            ReviewerState::ReRequested,
             ReviewerState::Revisit(Revisit::OpenThreads(n(1))),
         ];
         let ranks: Vec<u8> = ranked.iter().map(|s| s.rank()).collect();
-        assert_eq!(ranks, vec![0, 0, 1, 2]);
+        assert_eq!(ranks, vec![0, 0, 1, 1, 2]);
+    }
+
+    #[test]
+    fn only_a_first_request_is_a_first_review_pass() {
+        assert_eq!(ReviewerState::Requested.review_pass(), ReviewPass::First);
+        for again in [
+            ReviewerState::ReRequested,
+            ReviewerState::Revisit(Revisit::Updated),
+            ReviewerState::Revisit(Revisit::OpenThreads(n(1))),
+            ReviewerState::Revisit(Revisit::UpdatedWithOpenThreads(n(1))),
+        ] {
+            assert_eq!(again.review_pass(), ReviewPass::Again);
+        }
     }
 
     #[test]

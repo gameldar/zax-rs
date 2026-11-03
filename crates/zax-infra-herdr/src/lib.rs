@@ -11,7 +11,7 @@ use std::path::Path;
 
 use serde::de::DeserializeOwned;
 use zax_app::{Editor, PortError, WorktreeOpener};
-use zax_domain::Command;
+use zax_domain::{Command, ReviewPass};
 use zax_exec::{shell_quote, Exec, ExecError, Output};
 
 use crate::dto::{Failure, Reply, WorkspaceCreated, WorkspaceList, WorktreeList, WorktreeOpened};
@@ -21,6 +21,8 @@ const INSTALL_HINT: &str = "install herdr from https://herdr.dev, or set HERDR_B
                             to the herdr binary";
 /// The skill a review agent is started with, followed by the pull request URL.
 const REVIEW_SKILL: &str = "/pr-review";
+/// The review skill's flag for a follow-up on a review already left.
+const RE_REVIEW_FLAG: &str = "--re-review";
 
 /// The `herdr` CLI, which opens a worktree as a herdr space.
 pub struct HerdrCli<E: Exec> {
@@ -176,11 +178,19 @@ impl<E: Exec> WorktreeOpener for HerdrCli<E> {
 
     /// Claude, started in the new space with the review skill on the pull
     /// request. A space that was already open is only focused.
-    fn open_for_review(&self, path: &Path, pr_url: &str) -> Result<(), PortError> {
+    fn open_for_review(
+        &self,
+        path: &Path,
+        pr_url: &str,
+        pass: ReviewPass,
+    ) -> Result<(), PortError> {
         let Some(pane) = self.open_or_focus(path)? else {
             return Ok(());
         };
-        let prompt = format!("{REVIEW_SKILL} {pr_url}");
+        let prompt = match pass {
+            ReviewPass::First => format!("{REVIEW_SKILL} {pr_url}"),
+            ReviewPass::Again => format!("{REVIEW_SKILL} {pr_url} {RE_REVIEW_FLAG}"),
+        };
         self.run(&[
             "agent",
             "start",
@@ -363,7 +373,9 @@ mod tests {
             ok(r#"{"id":"cli:agent:start","result":{"type":"agent_started"}}"#),
         ]);
 
-        herdr.open_for_review(Path::new(wt), url).unwrap();
+        herdr
+            .open_for_review(Path::new(wt), url, ReviewPass::First)
+            .unwrap();
 
         assert_eq!(
             herdr.exec_ref().args(2),
@@ -382,13 +394,37 @@ mod tests {
     }
 
     #[test]
+    fn a_follow_up_review_passes_the_re_review_flag_to_the_skill() {
+        let wt = "/src/worktrees/acme/patch-1";
+        let url = "https://github.com/acme/omega/pull/1963";
+        let herdr = herdr(vec![
+            ok(&worktree_list(wt, None)),
+            ok(OPENED),
+            ok(r#"{"id":"cli:agent:start","result":{"type":"agent_started"}}"#),
+        ]);
+
+        herdr
+            .open_for_review(Path::new(wt), url, ReviewPass::Again)
+            .unwrap();
+
+        assert_eq!(
+            herdr.exec_ref().args(2).last().map(String::as_str),
+            Some("/pr-review https://github.com/acme/omega/pull/1963 --re-review")
+        );
+    }
+
+    #[test]
     fn a_review_of_a_worktree_already_open_only_focuses_its_space() {
         // Its pane may be running anything, including a review already.
         let wt = "/src/worktrees/acme/patch-1";
         let herdr = herdr(vec![ok(&worktree_list(wt, Some("w9"))), ok(FOCUSED)]);
 
         herdr
-            .open_for_review(Path::new(wt), "https://github.com/acme/omega/pull/1963")
+            .open_for_review(
+                Path::new(wt),
+                "https://github.com/acme/omega/pull/1963",
+                ReviewPass::First,
+            )
             .unwrap();
 
         let exec = herdr.exec_ref();

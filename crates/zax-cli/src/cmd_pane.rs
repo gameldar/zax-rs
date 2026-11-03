@@ -12,7 +12,7 @@ use anyhow::Result;
 use ratatui::crossterm::event::{self, Event, KeyEventKind};
 use zax_app::queries;
 use zax_domain::keymap::PaneContext;
-use zax_domain::{parse_duration, Command};
+use zax_domain::{parse_duration, Command, ReviewPass};
 use zax_exec::{Exec, SystemExec};
 use zax_tui::{
     refresh, BranchStatusPane, ExecPane, MyPrsPane, PaneAction, PrsForReviewPane, ReviewMode,
@@ -252,8 +252,12 @@ fn perform_with<E: Exec>(exec: &E, action: PaneAction) -> Result<Option<String>>
                 "review".to_owned(),
                 format!("https://github.com/{repo}/pull/{number}"),
             ];
-            if mode == ReviewMode::Open {
-                args.push("--no-review".to_owned());
+            match mode {
+                ReviewMode::Open => args.push("--no-review".to_owned()),
+                ReviewMode::OpenAndReview(ReviewPass::Again) => {
+                    args.push("--re-review".to_owned());
+                }
+                ReviewMode::OpenAndReview(ReviewPass::First) => {}
             }
             let result = exec.exec(&zax, &args, None, &[]);
             return Ok(review_message(result));
@@ -349,6 +353,7 @@ fn pipe_into(program: &str, args: &[String], text: &str) -> std::io::Result<()> 
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)]
+    use zax_domain::ReviewPass;
     use zax_exec::{ExecError, Output, RecordingExec};
     use zax_tui::{PaneAction, ReviewMode};
 
@@ -407,7 +412,7 @@ mod tests {
         let action = PaneAction::ReviewWorktree {
             repo: zax_domain::RepoSlug::parse("acme/omega").unwrap(),
             number: 42,
-            mode: ReviewMode::OpenAndReview,
+            mode: ReviewMode::OpenAndReview(ReviewPass::First),
         };
 
         let message = perform_with(&exec, action).unwrap().unwrap();
@@ -429,9 +434,31 @@ mod tests {
         let action = PaneAction::ReviewWorktree {
             repo: zax_domain::RepoSlug::parse("acme/omega").unwrap(),
             number: 42,
-            mode: ReviewMode::OpenAndReview,
+            mode: ReviewMode::OpenAndReview(ReviewPass::First),
         };
         assert_eq!(perform_with(&exec, action).unwrap(), None);
+    }
+
+    #[test]
+    fn a_follow_up_review_passes_re_review_to_the_worktree_command() {
+        let exec = RecordingExec::returning("");
+        let action = PaneAction::ReviewWorktree {
+            repo: zax_domain::RepoSlug::parse("acme/omega").unwrap(),
+            number: 42,
+            mode: ReviewMode::OpenAndReview(ReviewPass::Again),
+        };
+
+        assert_eq!(perform_with(&exec, action).unwrap(), None);
+
+        assert_eq!(
+            exec.args(0),
+            [
+                "worktree",
+                "review",
+                "https://github.com/acme/omega/pull/42",
+                "--re-review"
+            ]
+        );
     }
 
     #[test]

@@ -9,7 +9,7 @@ use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 use zax_domain::keymap::Keymap;
-use zax_domain::{Attention, KeyCommand, MyPullRequest, PullRequestStatus};
+use zax_domain::{Attention, KeyCommand, MyPullRequest, PullRequestStatus, ReviewPass};
 
 use crate::action::{PaneAction, ReviewMode};
 use crate::cache::Cached;
@@ -236,7 +236,10 @@ impl MyPrsPane {
                 .map(|m| PaneAction::CopyUrl(m.status.pr.url.clone()))
                 .unwrap_or_default(),
             KeyCommand::WorktreeOpen => self.worktree(ReviewMode::Open),
-            KeyCommand::WorktreeReview => self.worktree(ReviewMode::OpenAndReview),
+            // Your own pull request: there is no review of yours to follow up.
+            KeyCommand::WorktreeReview => {
+                self.worktree(ReviewMode::OpenAndReview(ReviewPass::First))
+            }
             // Not in this pane's context; the keymap refuses to bind them.
             _ => PaneAction::None,
         }
@@ -641,7 +644,7 @@ mod tests {
             PaneAction::ReviewWorktree {
                 repo,
                 number: 12,
-                mode: ReviewMode::OpenAndReview,
+                mode: ReviewMode::OpenAndReview(ReviewPass::First),
             }
         );
         assert_eq!(press(&mut pane, "SPC r"), PaneAction::Refresh);

@@ -29,11 +29,22 @@ pub fn list_review_queue<Fg: Forge>(
     let requests = filter.apply(forge.review_requests(filter)?, now);
     let reviewed = forge.reviewed_pull_requests(filter)?;
 
+    // Read before `Revisit::of` drops the reviewed pull requests with nothing
+    // left in them: a request on one of those is still a request to review
+    // again.
+    let reviewed_before: HashSet<(RepoSlug, u32)> = reviewed
+        .iter()
+        .map(|r| (r.pr.repo.clone(), r.pr.number))
+        .collect();
     let mut queue: Vec<ReviewQueueItem> = requests
         .into_iter()
-        .map(|pr| ReviewQueueItem {
-            pr,
-            state: ReviewerState::Requested,
+        .map(|pr| {
+            let state = if reviewed_before.contains(&(pr.repo.clone(), pr.number)) {
+                ReviewerState::ReRequested
+            } else {
+                ReviewerState::Requested
+            };
+            ReviewQueueItem { pr, state }
         })
         .collect();
     let requested: HashSet<(RepoSlug, u32)> = queue
@@ -401,7 +412,7 @@ mod tests {
     }
 
     #[test]
-    fn a_pr_in_both_searches_is_one_requested_row() {
+    fn a_pr_in_both_searches_is_one_re_requested_row() {
         let forge =
             FakeForge::with_review_requests(vec![pr(5)]).and_reviewed(vec![reviewed(5, 2, true)]);
         let listed = list_review_queue(&forge, &PrFilter::default(), now()).unwrap();
@@ -409,7 +420,22 @@ mod tests {
             listed,
             vec![ReviewQueueItem {
                 pr: pr(5),
-                state: ReviewerState::Requested,
+                state: ReviewerState::ReRequested,
+            }]
+        );
+    }
+
+    #[test]
+    fn a_request_on_a_reviewed_pr_with_nothing_left_is_still_re_requested() {
+        // No open threads and no push: `Revisit::of` alone would drop it.
+        let forge =
+            FakeForge::with_review_requests(vec![pr(5)]).and_reviewed(vec![reviewed(5, 0, false)]);
+        let listed = list_review_queue(&forge, &PrFilter::default(), now()).unwrap();
+        assert_eq!(
+            listed,
+            vec![ReviewQueueItem {
+                pr: pr(5),
+                state: ReviewerState::ReRequested,
             }]
         );
     }

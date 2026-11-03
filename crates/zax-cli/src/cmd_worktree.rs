@@ -7,7 +7,7 @@ use zax_app::{
     queries, CreateReviewWorktree, CreateReviewWorktreeRequest, CreateWorktree,
     CreateWorktreeRequest, Provisioning, ResolveCheckout, WorktreeOpener,
 };
-use zax_domain::{BranchName, PrRef, RepoTarget, WorktreeRoot};
+use zax_domain::{BranchName, PrRef, RepoTarget, ReviewPass, WorktreeRoot};
 use zax_tui::ReviewMode;
 
 use crate::cli::WorktreeCommand;
@@ -29,8 +29,16 @@ pub fn run(command: WorktreeCommand) -> Result<()> {
             force,
             no_open,
             no_review,
+            re_review,
             repo,
-        } => review(pr, no_hooks, force, no_open, no_review, repo),
+        } => {
+            let mode = match (no_review, re_review) {
+                (true, _) => ReviewMode::Open,
+                (false, true) => ReviewMode::OpenAndReview(ReviewPass::Again),
+                (false, false) => ReviewMode::OpenAndReview(ReviewPass::First),
+            };
+            review(pr, no_hooks, force, no_open, mode, repo)
+        }
         WorktreeCommand::List => list(),
         WorktreeCommand::Rm { branch, force } => remove(branch, force),
     }
@@ -122,7 +130,7 @@ fn review(
     no_hooks: bool,
     force: bool,
     no_open: bool,
-    no_review: bool,
+    mode: ReviewMode,
     repo: Option<String>,
 ) -> Result<()> {
     let ctx = wiring::resolve()?;
@@ -161,11 +169,7 @@ fn review(
         &wiring::opener(&ctx.config),
         outcome.worktree.path.as_path(),
         &outcome.pr_url,
-        if no_review {
-            ReviewMode::Open
-        } else {
-            ReviewMode::OpenAndReview
-        },
+        mode,
         if no_open {
             Opening::Skip
         } else {
@@ -209,14 +213,15 @@ fn open_review_worktree<O: WorktreeOpener>(
     opening: Opening,
 ) -> Option<String> {
     let open = opening == Opening::Open;
-    if mode == ReviewMode::Open {
-        return open_worktree(opener, path, open);
-    }
+    let pass = match mode {
+        ReviewMode::Open => return open_worktree(opener, path, open),
+        ReviewMode::OpenAndReview(pass) => pass,
+    };
     if !open {
         return None;
     }
     opener
-        .open_for_review(path, pr_url)
+        .open_for_review(path, pr_url, pass)
         .err()
         .map(|e| e.to_string())
 }
@@ -284,7 +289,7 @@ mod tests {
 
     use zax_app::testing::FakeOpener;
     use zax_app::PortError;
-    use zax_domain::{RepoTarget, WorktreeRoot};
+    use zax_domain::{RepoTarget, ReviewPass, WorktreeRoot};
 
     use super::{
         open_review_worktree, open_worktree, parse_repo, provisioning_and_root, Opening, ReviewMode,
@@ -365,12 +370,15 @@ mod tests {
             &opener,
             Path::new("/src/worktrees/acme/patch-1"),
             url,
-            ReviewMode::OpenAndReview,
+            ReviewMode::OpenAndReview(ReviewPass::Again),
             Opening::Open,
         );
 
         assert_eq!(warning, None);
-        assert_eq!(*opener.reviewed.borrow(), vec![url.to_owned()]);
+        assert_eq!(
+            *opener.reviewed.borrow(),
+            vec![(url.to_owned(), ReviewPass::Again)]
+        );
         assert_eq!(
             *opener.opened.borrow(),
             vec![PathBuf::from("/src/worktrees/acme/patch-1")]
@@ -385,7 +393,7 @@ mod tests {
             &opener,
             Path::new("/src/worktrees/acme/patch-1"),
             "https://github.com/acme/omega/pull/1963",
-            ReviewMode::OpenAndReview,
+            ReviewMode::OpenAndReview(ReviewPass::First),
             Opening::Skip,
         );
 

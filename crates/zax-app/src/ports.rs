@@ -6,8 +6,8 @@ use std::time::SystemTime;
 use thiserror::Error;
 use zax_domain::{
     BranchName, CheckoutProbe, Command, LiveSession, PaneSize, PrFilter, PrRef, PullRequest,
-    PullRequestStatus, RepoSlug, ReviewedPullRequest, RootRepoName, SessionName, Worktree,
-    WorktreeRoot,
+    PullRequestStatus, RepoSlug, ReviewPass, ReviewedPullRequest, RootRepoName, SessionName,
+    Worktree, WorktreeRoot,
 };
 
 /// Every way the outside world can fail, in terms a pane can render.
@@ -211,10 +211,16 @@ pub trait WorktreeOpener {
     /// Open the worktree at `path`. Returns once the opener has been asked,
     /// not once whatever it opened has been closed.
     fn open_worktree(&self, path: &Path) -> Result<(), PortError>;
-    /// Open a review worktree and start reviewing `pr_url` in it. An opener
-    /// that cannot run an agent, such as an editor, only opens the worktree.
-    fn open_for_review(&self, path: &Path, pr_url: &str) -> Result<(), PortError> {
-        let _ = pr_url;
+    /// Open a review worktree and start reviewing `pr_url` in it, as a first
+    /// review or a follow-up as `pass` says. An opener that cannot run an
+    /// agent, such as an editor, only opens the worktree.
+    fn open_for_review(
+        &self,
+        path: &Path,
+        pr_url: &str,
+        pass: ReviewPass,
+    ) -> Result<(), PortError> {
+        let _ = (pr_url, pass);
         self.open_worktree(path)
     }
     /// For `zax doctor`: can the configured opener be started at all?

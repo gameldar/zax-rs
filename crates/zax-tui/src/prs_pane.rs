@@ -245,19 +245,21 @@ impl PrsForReviewPane {
                 .selected()
                 .map(|item| PaneAction::CopyUrl(item.pr.url.clone()))
                 .unwrap_or_default(),
-            KeyCommand::WorktreeOpen => self.worktree(ReviewMode::Open),
-            KeyCommand::WorktreeReview => self.worktree(ReviewMode::OpenAndReview),
+            KeyCommand::WorktreeOpen => self.worktree(|_| ReviewMode::Open),
+            KeyCommand::WorktreeReview => {
+                self.worktree(|item| ReviewMode::OpenAndReview(item.state.review_pass()))
+            }
             // Not in this pane's context; the keymap refuses to bind them.
             _ => PaneAction::None,
         }
     }
 
-    fn worktree(&self, mode: ReviewMode) -> PaneAction {
+    fn worktree(&self, mode: impl Fn(&ReviewQueueItem) -> ReviewMode) -> PaneAction {
         self.selected()
             .map(|item| PaneAction::ReviewWorktree {
                 repo: item.pr.repo.clone(),
                 number: item.pr.number,
-                mode,
+                mode: mode(item),
             })
             .unwrap_or_default()
     }
@@ -267,7 +269,7 @@ impl PrsForReviewPane {
 /// updated glyph and your open-thread count.
 fn state_field(state: ReviewerState) -> String {
     match state {
-        ReviewerState::Requested => "  ".to_owned(),
+        ReviewerState::Requested | ReviewerState::ReRequested => "  ".to_owned(),
         ReviewerState::Revisit(Revisit::OpenThreads(count)) => format!(" {}", thread_count(count)),
         ReviewerState::Revisit(Revisit::Updated) => format!("{GLYPH_UPDATED} "),
         ReviewerState::Revisit(Revisit::UpdatedWithOpenThreads(count)) => {
@@ -287,7 +289,7 @@ fn thread_count(count: NonZeroU32) -> String {
 
 fn state_style(state: ReviewerState) -> Style {
     match state {
-        ReviewerState::Requested => Style::default(),
+        ReviewerState::Requested | ReviewerState::ReRequested => Style::default(),
         ReviewerState::Revisit(Revisit::OpenThreads(_)) => Style::default().fg(Color::DarkGray),
         ReviewerState::Revisit(Revisit::Updated | Revisit::UpdatedWithOpenThreads(_)) => {
             Style::default().fg(Color::Yellow)
@@ -320,7 +322,9 @@ mod tests {
     use ratatui::Terminal;
     use std::num::NonZeroU32;
 
-    use zax_domain::{CheckState, PullRequest, RepoSlug, ReviewQueueItem, ReviewerState, Revisit};
+    use zax_domain::{
+        CheckState, PullRequest, RepoSlug, ReviewPass, ReviewQueueItem, ReviewerState, Revisit,
+    };
 
     use super::*;
     use crate::action::PaneAction;
@@ -896,9 +900,36 @@ mod tests {
             PaneAction::ReviewWorktree {
                 repo: south,
                 number: 42,
-                mode: ReviewMode::OpenAndReview,
+                mode: ReviewMode::OpenAndReview(ReviewPass::First),
             }
         );
+    }
+
+    #[test]
+    fn spc_w_r_on_a_pull_request_you_reviewed_before_is_a_follow_up_review() {
+        let omega = RepoSlug::parse("acme/omega").unwrap();
+        for state in [
+            ReviewerState::ReRequested,
+            ReviewerState::Revisit(Revisit::Updated),
+        ] {
+            let mut pane = PrsForReviewPane::new(keymap());
+            pane.apply(
+                Ok(vec![ReviewQueueItem {
+                    pr: pr("acme/omega", 1963, false, CheckState::Passing),
+                    state,
+                }]),
+                t(100),
+            );
+            assert_eq!(
+                press(&mut pane, "SPC w r"),
+                PaneAction::ReviewWorktree {
+                    repo: omega.clone(),
+                    number: 1963,
+                    mode: ReviewMode::OpenAndReview(ReviewPass::Again),
+                },
+                "for {state:?}"
+            );
+        }
     }
 
     #[test]

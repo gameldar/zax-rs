@@ -12,7 +12,7 @@ use anyhow::Result;
 use ratatui::crossterm::event::{self, Event, KeyEventKind};
 use zax_app::queries;
 use zax_domain::keymap::PaneContext;
-use zax_domain::{parse_duration, Command, ReviewPass};
+use zax_domain::{parse_duration, Command, ReviewPass, ReviewScope};
 use zax_exec::{Exec, SystemExec};
 use zax_tui::{
     refresh, BranchStatusPane, ExecPane, MyPrsPane, PaneAction, PrsForReviewPane, ReviewMode,
@@ -254,10 +254,14 @@ fn perform_with<E: Exec>(exec: &E, action: PaneAction) -> Result<Option<String>>
             ];
             match mode {
                 ReviewMode::Open => args.push("--no-review".to_owned()),
-                ReviewMode::OpenAndReview(ReviewPass::Again) => {
-                    args.push("--re-review".to_owned());
+                ReviewMode::OpenAndReview(run) => {
+                    if run.pass == ReviewPass::Again {
+                        args.push("--re-review".to_owned());
+                    }
+                    if run.scope == ReviewScope::Stack {
+                        args.push("--stack".to_owned());
+                    }
                 }
-                ReviewMode::OpenAndReview(ReviewPass::First) => {}
             }
             let result = exec.exec(&zax, &args, None, &[]);
             return Ok(review_message(result));
@@ -353,7 +357,7 @@ fn pipe_into(program: &str, args: &[String], text: &str) -> std::io::Result<()> 
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)]
-    use zax_domain::ReviewPass;
+    use zax_domain::{ReviewPass, ReviewRun};
     use zax_exec::{ExecError, Output, RecordingExec};
     use zax_tui::{PaneAction, ReviewMode};
 
@@ -412,7 +416,7 @@ mod tests {
         let action = PaneAction::ReviewWorktree {
             repo: zax_domain::RepoSlug::parse("acme/omega").unwrap(),
             number: 42,
-            mode: ReviewMode::OpenAndReview(ReviewPass::First),
+            mode: ReviewMode::OpenAndReview(ReviewRun::single(ReviewPass::First)),
         };
 
         let message = perform_with(&exec, action).unwrap().unwrap();
@@ -434,7 +438,7 @@ mod tests {
         let action = PaneAction::ReviewWorktree {
             repo: zax_domain::RepoSlug::parse("acme/omega").unwrap(),
             number: 42,
-            mode: ReviewMode::OpenAndReview(ReviewPass::First),
+            mode: ReviewMode::OpenAndReview(ReviewRun::single(ReviewPass::First)),
         };
         assert_eq!(perform_with(&exec, action).unwrap(), None);
     }
@@ -445,7 +449,7 @@ mod tests {
         let action = PaneAction::ReviewWorktree {
             repo: zax_domain::RepoSlug::parse("acme/omega").unwrap(),
             number: 42,
-            mode: ReviewMode::OpenAndReview(ReviewPass::Again),
+            mode: ReviewMode::OpenAndReview(ReviewRun::single(ReviewPass::Again)),
         };
 
         assert_eq!(perform_with(&exec, action).unwrap(), None);
@@ -457,6 +461,29 @@ mod tests {
                 "review",
                 "https://github.com/acme/omega/pull/42",
                 "--re-review"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_stack_review_passes_stack_to_the_worktree_command() {
+        let exec = RecordingExec::returning("");
+        let action = PaneAction::ReviewWorktree {
+            repo: zax_domain::RepoSlug::parse("acme/omega").unwrap(),
+            number: 42,
+            mode: ReviewMode::OpenAndReview(ReviewRun::stack(ReviewPass::Again)),
+        };
+
+        assert_eq!(perform_with(&exec, action).unwrap(), None);
+
+        assert_eq!(
+            exec.args(0),
+            [
+                "worktree",
+                "review",
+                "https://github.com/acme/omega/pull/42",
+                "--re-review",
+                "--stack"
             ]
         );
     }

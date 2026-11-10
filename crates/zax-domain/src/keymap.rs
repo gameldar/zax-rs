@@ -240,6 +240,8 @@ pub enum Command {
     WorktreeOpen,
     /// Open the selection's worktree and start a review.
     WorktreeReview,
+    /// Open the selection's worktree and start a review of its whole stack.
+    WorktreeReviewStack,
     /// List the selection's worktrees.
     WorktreeList,
     /// Open the selection's pull request.
@@ -263,7 +265,7 @@ pub enum Command {
 }
 
 impl Command {
-    const ALL: [Self; 22] = [
+    const ALL: [Self; 23] = [
         Self::MoveDown,
         Self::MoveUp,
         Self::PageDown,
@@ -276,6 +278,7 @@ impl Command {
         Self::Quit,
         Self::WorktreeOpen,
         Self::WorktreeReview,
+        Self::WorktreeReviewStack,
         Self::WorktreeList,
         Self::OpenPr,
         Self::Transition,
@@ -304,6 +307,7 @@ impl Command {
             Self::Quit => "quit",
             Self::WorktreeOpen => "worktree-open",
             Self::WorktreeReview => "worktree-review",
+            Self::WorktreeReviewStack => "worktree-review-stack",
             Self::WorktreeList => "worktree-list",
             Self::OpenPr => "open-pr",
             Self::Transition => "transition",
@@ -333,6 +337,7 @@ impl Command {
             Self::Quit => "close pane",
             Self::WorktreeOpen => "open worktree",
             Self::WorktreeReview => "open worktree and review",
+            Self::WorktreeReviewStack => "open worktree and review stack",
             Self::WorktreeList => "list worktrees",
             Self::OpenPr => "open pull request",
             Self::Transition => "transition",
@@ -400,6 +405,7 @@ const PR_LIST: &[Command] = &[
     Command::Quit,
     Command::WorktreeOpen,
     Command::WorktreeReview,
+    Command::WorktreeReviewStack,
 ];
 const BRANCH: &[Command] = &[
     Command::Open,
@@ -857,6 +863,7 @@ fn default_table(context: PaneContext) -> Vec<(&'static str, Command)> {
             ("SPC y", Command::CopyUrl),
             ("SPC w o", Command::WorktreeOpen),
             ("SPC w r", Command::WorktreeReview),
+            ("SPC w s", Command::WorktreeReviewStack),
         ],
         PaneContext::BranchStatus => &[
             ("RET", Command::Open),
@@ -1096,6 +1103,7 @@ mod tests {
         }
         for context in [PaneContext::PrsForReview, PaneContext::MyPrs] {
             cmd(context, "SPC w r", Command::WorktreeReview);
+            cmd(context, "SPC w s", Command::WorktreeReviewStack);
             cmd(context, "SPC w o", Command::WorktreeOpen);
             cmd(context, "RET", Command::Open);
             cmd(context, "j", Command::MoveDown);

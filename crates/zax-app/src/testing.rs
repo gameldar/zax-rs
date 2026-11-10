@@ -8,7 +8,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use zax_domain::{
     BranchName, CheckoutProbe, Command, LiveSession, PaneSize, PrFilter, PrRef, PullRequest,
-    PullRequestStatus, RepoSlug, ReviewPass, ReviewedPullRequest, RootRepoName, SessionName,
+    PullRequestStatus, RepoSlug, ReviewRun, ReviewedPullRequest, RootRepoName, SessionName,
     Worktree, WorktreeRoot,
 };
 
@@ -943,7 +943,7 @@ impl Editor for FakeEditor {
 #[derive(Debug, Default)]
 pub struct FakeOpener {
     pub opened: RefCell<Vec<PathBuf>>,
-    pub reviewed: RefCell<Vec<(String, ReviewPass)>>,
+    pub reviewed: RefCell<Vec<(String, ReviewRun)>>,
     failure: Option<PortError>,
 }
 
@@ -966,13 +966,8 @@ impl WorktreeOpener for FakeOpener {
         }
     }
 
-    fn open_for_review(
-        &self,
-        path: &Path,
-        pr_url: &str,
-        pass: ReviewPass,
-    ) -> Result<(), PortError> {
-        self.reviewed.borrow_mut().push((pr_url.to_owned(), pass));
+    fn open_for_review(&self, path: &Path, pr_url: &str, run: ReviewRun) -> Result<(), PortError> {
+        self.reviewed.borrow_mut().push((pr_url.to_owned(), run));
         self.open_worktree(path)
     }
 

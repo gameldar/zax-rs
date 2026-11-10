@@ -9,7 +9,7 @@ use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 use zax_domain::keymap::Keymap;
-use zax_domain::{Attention, KeyCommand, MyPullRequest, PullRequestStatus, ReviewPass};
+use zax_domain::{Attention, KeyCommand, MyPullRequest, PullRequestStatus, ReviewPass, ReviewRun};
 
 use crate::action::{PaneAction, ReviewMode};
 use crate::cache::Cached;
@@ -237,9 +237,12 @@ impl MyPrsPane {
                 .unwrap_or_default(),
             KeyCommand::WorktreeOpen => self.worktree(ReviewMode::Open),
             // Your own pull request: there is no review of yours to follow up.
-            KeyCommand::WorktreeReview => {
-                self.worktree(ReviewMode::OpenAndReview(ReviewPass::First))
-            }
+            KeyCommand::WorktreeReview => self.worktree(ReviewMode::OpenAndReview(
+                ReviewRun::single(ReviewPass::First),
+            )),
+            KeyCommand::WorktreeReviewStack => self.worktree(ReviewMode::OpenAndReview(
+                ReviewRun::stack(ReviewPass::First),
+            )),
             // Not in this pane's context; the keymap refuses to bind them.
             _ => PaneAction::None,
         }
@@ -642,9 +645,17 @@ mod tests {
         assert_eq!(
             press(&mut pane, "SPC w r"),
             PaneAction::ReviewWorktree {
+                repo: repo.clone(),
+                number: 12,
+                mode: ReviewMode::OpenAndReview(ReviewRun::single(ReviewPass::First)),
+            }
+        );
+        assert_eq!(
+            press(&mut pane, "SPC w s"),
+            PaneAction::ReviewWorktree {
                 repo,
                 number: 12,
-                mode: ReviewMode::OpenAndReview(ReviewPass::First),
+                mode: ReviewMode::OpenAndReview(ReviewRun::stack(ReviewPass::First)),
             }
         );
         assert_eq!(press(&mut pane, "SPC r"), PaneAction::Refresh);

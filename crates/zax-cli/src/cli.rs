@@ -96,12 +96,16 @@ pub enum WorktreeCommand {
         #[arg(long)]
         no_open: bool,
         /// Open the worktree in the editor but start no Claude review.
-        #[arg(long, conflicts_with = "re_review")]
+        #[arg(long, conflicts_with_all = ["re_review", "stack"])]
         no_review: bool,
         /// Start the Claude review as a follow-up on a review you already
         /// left (`/pr-review <url> --rereview`).
         #[arg(long)]
         re_review: bool,
+        /// Review every pull request in the stack this one belongs to
+        /// (`/pr-review <url> --stack`).
+        #[arg(long)]
+        stack: bool,
         /// An owner/name slug or a path to a main checkout; defaults to this
         /// repository.
         #[arg(long)]
@@ -283,6 +287,26 @@ mod tests {
             } => assert!(!no_review),
             other => panic!("expected worktree review, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn worktree_review_can_review_the_whole_stack_but_not_without_a_review() {
+        let cli = Cli::try_parse_from(["zax", "worktree", "review", "1963", "--stack"]).unwrap();
+        match cli.command {
+            Commands::Worktree {
+                command: WorktreeCommand::Review { stack, .. },
+            } => assert!(stack),
+            other => panic!("expected worktree review, got {other:?}"),
+        }
+        assert!(Cli::try_parse_from([
+            "zax",
+            "worktree",
+            "review",
+            "1963",
+            "--stack",
+            "--no-review"
+        ])
+        .is_err());
     }
 
     #[test]

@@ -11,7 +11,7 @@ use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 use zax_domain::keymap::Keymap;
-use zax_domain::{KeyCommand, ReviewQueueItem, ReviewerState, Revisit};
+use zax_domain::{KeyCommand, ReviewQueueItem, ReviewRun, ReviewerState, Revisit};
 
 use crate::action::{PaneAction, ReviewMode};
 use crate::cache::Cached;
@@ -246,9 +246,12 @@ impl PrsForReviewPane {
                 .map(|item| PaneAction::CopyUrl(item.pr.url.clone()))
                 .unwrap_or_default(),
             KeyCommand::WorktreeOpen => self.worktree(|_| ReviewMode::Open),
-            KeyCommand::WorktreeReview => {
-                self.worktree(|item| ReviewMode::OpenAndReview(item.state.review_pass()))
-            }
+            KeyCommand::WorktreeReview => self.worktree(|item| {
+                ReviewMode::OpenAndReview(ReviewRun::single(item.state.review_pass()))
+            }),
+            KeyCommand::WorktreeReviewStack => self.worktree(|item| {
+                ReviewMode::OpenAndReview(ReviewRun::stack(item.state.review_pass()))
+            }),
             // Not in this pane's context; the keymap refuses to bind them.
             _ => PaneAction::None,
         }
@@ -323,7 +326,8 @@ mod tests {
     use std::num::NonZeroU32;
 
     use zax_domain::{
-        CheckState, PullRequest, RepoSlug, ReviewPass, ReviewQueueItem, ReviewerState, Revisit,
+        CheckState, PullRequest, RepoSlug, ReviewPass, ReviewQueueItem, ReviewRun, ReviewerState,
+        Revisit,
     };
 
     use super::*;
@@ -900,7 +904,7 @@ mod tests {
             PaneAction::ReviewWorktree {
                 repo: south,
                 number: 42,
-                mode: ReviewMode::OpenAndReview(ReviewPass::First),
+                mode: ReviewMode::OpenAndReview(ReviewRun::single(ReviewPass::First)),
             }
         );
     }
@@ -925,7 +929,34 @@ mod tests {
                 PaneAction::ReviewWorktree {
                     repo: omega.clone(),
                     number: 1963,
-                    mode: ReviewMode::OpenAndReview(ReviewPass::Again),
+                    mode: ReviewMode::OpenAndReview(ReviewRun::single(ReviewPass::Again)),
+                },
+                "for {state:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn spc_w_s_reviews_the_stack_keeping_the_rows_review_pass() {
+        let omega = RepoSlug::parse("acme/omega").unwrap();
+        for (state, pass) in [
+            (ReviewerState::Requested, ReviewPass::First),
+            (ReviewerState::ReRequested, ReviewPass::Again),
+        ] {
+            let mut pane = PrsForReviewPane::new(keymap());
+            pane.apply(
+                Ok(vec![ReviewQueueItem {
+                    pr: pr("acme/omega", 1963, false, CheckState::Passing),
+                    state,
+                }]),
+                t(100),
+            );
+            assert_eq!(
+                press(&mut pane, "SPC w s"),
+                PaneAction::ReviewWorktree {
+                    repo: omega.clone(),
+                    number: 1963,
+                    mode: ReviewMode::OpenAndReview(ReviewRun::stack(pass)),
                 },
                 "for {state:?}"
             );

@@ -339,6 +339,41 @@ pub enum ReviewPass {
     Again,
 }
 
+/// Whether a review agent reviews the one pull request, or every pull request
+/// in the stack it belongs to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReviewScope {
+    Single,
+    Stack,
+}
+
+/// The review a fresh agent runs on a pull request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReviewRun {
+    pub pass: ReviewPass,
+    pub scope: ReviewScope,
+}
+
+impl ReviewRun {
+    /// A review of just this pull request.
+    #[must_use]
+    pub const fn single(pass: ReviewPass) -> Self {
+        Self {
+            pass,
+            scope: ReviewScope::Single,
+        }
+    }
+
+    /// A review of every pull request in this one's stack.
+    #[must_use]
+    pub const fn stack(pass: ReviewPass) -> Self {
+        Self {
+            pass,
+            scope: ReviewScope::Stack,
+        }
+    }
+}
+
 /// A row of the `prs-for-review` pane.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReviewQueueItem {

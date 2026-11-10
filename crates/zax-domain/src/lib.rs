@@ -23,8 +23,8 @@ pub use branch::{BranchName, BranchNameError, BranchOrigin};
 pub use date::{Date, DateError, Weekday};
 pub use forge::{
     Attention, BranchView, CheckState, Mergeable, MyPullRequest, PrRef, PrRefError, PullRequest,
-    PullRequestStatus, RepoSlug, RepoSlugError, ReviewPass, ReviewQueueItem, ReviewState,
-    ReviewedPullRequest, ReviewerState, Revisit,
+    PullRequestStatus, RepoSlug, RepoSlugError, ReviewPass, ReviewQueueItem, ReviewRun,
+    ReviewScope, ReviewState, ReviewedPullRequest, ReviewerState, Revisit,
 };
 pub use keymap::{
     Command as KeyCommand, KeyChord, KeySequence, Keymap, Keymaps, Lookup, PaneContext,

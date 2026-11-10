@@ -3,7 +3,7 @@
 
 use std::path::PathBuf;
 
-use zax_domain::{BranchName, RepoSlug, ReviewPass, TicketKey, TodoEdit};
+use zax_domain::{BranchName, RepoSlug, ReviewRun, TicketKey, TodoEdit};
 
 /// What to do once a pull request's worktree exists. Typed rather than a
 /// bool so a call site reads `Open`, not an unlabelled `false`.
@@ -11,9 +11,9 @@ use zax_domain::{BranchName, RepoSlug, ReviewPass, TicketKey, TodoEdit};
 pub enum ReviewMode {
     /// Just open the worktree in the editor.
     Open,
-    /// Open it and start a Claude review of the pull request: a first look,
-    /// or a follow-up on a review already left.
-    OpenAndReview(ReviewPass),
+    /// Open it and start a Claude review of the pull request: a first look
+    /// or a follow-up on a review already left, of it alone or of its stack.
+    OpenAndReview(ReviewRun),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]

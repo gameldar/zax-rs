@@ -99,7 +99,7 @@ pub enum WorktreeCommand {
         #[arg(long, conflicts_with = "re_review")]
         no_review: bool,
         /// Start the Claude review as a follow-up on a review you already
-        /// left (`/pr-review <url> --re-review`).
+        /// left (`/pr-review <url> --rereview`).
         #[arg(long)]
         re_review: bool,
         /// An owner/name slug or a path to a main checkout; defaults to this

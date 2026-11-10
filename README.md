@@ -843,7 +843,7 @@ command = ["nvim"]
   repository's own. A review worktree (`zax worktree review`, or `SPC w r` in
   the pull request panes) also starts Claude in the new space with
   `/pr-review <url>`, through `herdr agent start review-<number>`, or
-  `/pr-review <url> --re-review` with `--re-review`; `--no-review`
+  `/pr-review <url> --rereview` with `--re-review`; `--no-review`
   (`SPC w o`) only opens the space. A review whose space was already open is
   only focused.
 - With `[editor] via = "herdr"`, a file is edited in a herdr space labelled

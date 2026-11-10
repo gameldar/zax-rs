@@ -22,7 +22,7 @@ const INSTALL_HINT: &str = "install herdr from https://herdr.dev, or set HERDR_B
 /// The skill a review agent is started with, followed by the pull request URL.
 const REVIEW_SKILL: &str = "/pr-review";
 /// The review skill's flag for a follow-up on a review already left.
-const RE_REVIEW_FLAG: &str = "--re-review";
+const RE_REVIEW_FLAG: &str = "--rereview";
 
 /// The `herdr` CLI, which opens a worktree as a herdr space.
 pub struct HerdrCli<E: Exec> {
@@ -409,7 +409,7 @@ mod tests {
 
         assert_eq!(
             herdr.exec_ref().args(2).last().map(String::as_str),
-            Some("/pr-review https://github.com/acme/omega/pull/1963 --re-review")
+            Some("/pr-review https://github.com/acme/omega/pull/1963 --rereview")
         );
     }
 
